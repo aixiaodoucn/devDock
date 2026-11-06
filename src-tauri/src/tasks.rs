@@ -541,7 +541,7 @@ fn build_inner(
         );
         let root = Path::new(&p.path);
         let output = if p.output_dir.is_empty() {
-            root.join("unpackage/release/ai-dev")
+            root.join("unpackage/release/dev-dock")
         } else {
             let o = Path::new(&p.output_dir);
             if o.is_absolute() {

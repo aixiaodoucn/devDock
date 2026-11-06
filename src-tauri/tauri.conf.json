@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AI Dev",
+  "productName": "DevDock",
   "version": "0.1.0",
-  "identifier": "com.aidev.desktop",
+  "identifier": "com.devdock.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "AI Dev",
+        "title": "DevDock",
         "width": 1240,
         "height": 820,
         "minWidth": 960,

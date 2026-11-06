@@ -1,4 +1,4 @@
-# ai-dev
+# DevDock
 
 基于 Tauri 2、Vue 3 和 Rust 的本地开发工作台。首版支持 macOS，管理 uni-app、Node.js 项目，集中执行 App 构建、HBuilderX 菜单操作和终端命令。
 
@@ -44,7 +44,7 @@ macOS 构建结果位于 `src-tauri/target/release/bundle/`。对外分发前需
 | Android WGT | HBuilderX、Android AppID |
 | iOS WGT | HBuilderX、iOS AppID |
 
-APK 采用「HBuilderX 生成本地 App 资源 → 复制资源到原生工程 → Gradle 构建」流程。工程需已完成 Android SDK、签名、DCloud 离线 SDK 等配置。ai-dev 不创建或修改签名材料。
+APK 采用「HBuilderX 生成本地 App 资源 → 复制资源到原生工程 → Gradle 构建」流程。工程需已完成 Android SDK、签名、DCloud 离线 SDK 等配置。DevDock 不创建或修改签名材料。
 
 - 自动查找根目录或 `src/manifest.json`，也可手动指定。支持注释和数字/字符串 versionCode，修改时保留其他字段与注释。
 - 构建面板默认读取 versionName/versionCode，用户输入的新版本写回源码。APK 同步原生模块 Gradle 版本；可选同步 `main.js` 的 `appVersion()`。
@@ -53,8 +53,8 @@ APK 采用「HBuilderX 生成本地 App 资源 → 复制资源到原生工程 �
 - JDK 下拉框右侧提供「获取本地版本」，刷新已安装列表后手动选择；刷新不覆盖当前选择，也支持手动指定路径。
 - JDK 按项目配置 → 全局配置 → JAVA_HOME → 系统检测兜底，仅设置构建子进程环境。
 - Android 模块首版支持单层模块目录，例如 `simpleDemo`；Gradle task 可填 `:simpleDemo:assembleRelease`。Gradle 版本需是唯一的字面量声明；复杂 flavor/变量表达式会明确拒绝，不猜测修改。
-- 原生资源更新前备份到 Android 工程的 `.ai-dev-resource-backups`；uni-app 源资源不会被移走。
-- 产物复制到可配置的归档目录，默认 `<uniapp项目>/unpackage/release/ai-dev`。名称带版本和任务 ID，不覆盖旧包。
+- 原生资源更新前备份到 Android 工程的 `.dev-dock-resource-backups`；uni-app 源资源不会被移走。
+- 产物复制到可配置的归档目录，默认 `<uniapp项目>/unpackage/release/dev-dock`。名称带版本和任务 ID，不覆盖旧包。
 
 `scripts/build-app.sh` 和 `scripts/build.sh` 从指定的 build-app skill 脚本复制后适配，原始脚本保持不变。执行只依赖本项目随包脚本；项目路径、AppID 和 JDK 均通过配置传入。
 
@@ -73,7 +73,7 @@ APK 采用「HBuilderX 生成本地 App 资源 → 复制资源到原生工程 �
 
 执行前打开目标项目的 `App.vue`，校验前台窗口的项目上下文和菜单可用状态。窗口标题需能识别项目目录名与 App.vue；不同 HBuilderX 版本或自定义显示名称可能需要调整适配。菜单任务串行执行，避免跨项目抢占前台。
 
-macOS 需在「系统设置 → 隐私与安全性」中为 AI Dev 授予辅助功能，并按系统提示允许控制 System Events、HBuilderX 或终端。WGT 确认框必须能通过辅助功能识别，具备 WGT 标识及对应按钮；无法识别时明确失败，不盲按回车。
+macOS 需在「系统设置 → 隐私与安全性」中为 DevDock 授予辅助功能，并按系统提示允许控制 System Events、HBuilderX 或终端。WGT 确认框必须能通过辅助功能识别，具备 WGT 标识及对应按钮；无法识别时明确失败，不盲按回车。
 
 菜单操作只报告「已触发」，不将点击菜单误报为编译/发行成功。APK/WGT 另行检查本次新产物、版本/AppID（本地资源）、ZIP 完整性和相关进程退出状态。
 
@@ -84,7 +84,7 @@ macOS 需在「系统设置 → 隐私与安全性」中为 AI Dev 授予辅助�
 - Terminal 通过 AppleScript 打开终端执行。
 - Ghostty / iTerm 使用前台自动化创建标签页并粘贴命令；需要默认的新标签页快捷键和辅助功能权限。
 - 工作目录安全引用，用户自定义命令按原意执行。终端任务只显示「已触发」，运行日志与服务停止在对应终端中处理。
-- 取消 ai-dev 构建可以停止它管理的子进程，无法保证撤回 HBuilderX 已开始的内部发行或终端已收到的命令；请在对应工具中确认。
+- 取消 DevDock 构建可以停止它管理的子进程，无法保证撤回 HBuilderX 已开始的内部发行或终端已收到的命令；请在对应工具中确认。
 
 ## JSON 备份
 
@@ -97,10 +97,12 @@ macOS 需在「系统设置 → 隐私与安全性」中为 AI Dev 授予辅助�
 - 导入不会执行命令。路径可能来自其他机器；执行前需确认路径和导入的自定义命令。
 - 命令中的敏感值会随配置导出，请妥善保存备份文件。
 
-macOS 配置与恢复记录位于 `~/Library/Application Support/com.aidev.desktop/`。配置写入采用临时文件与原子替换；单实例锁防止另一实例误恢复正在构建的 AppID。
+macOS 配置与恢复记录位于 `~/Library/Application Support/com.devdock.desktop/`。配置写入采用临时文件与原子替换；单实例锁防止另一实例误恢复正在构建的 AppID。
+
+首次升级会从旧版 `com.aidev.desktop` 数据目录复制配置及待恢复记录，保留旧数据，不覆盖已存在的 DevDock 配置。请先退出旧版应用再启动 DevDock，避免两版同时操作同一业务项目。应用标识已更新，macOS 可能需要重新授予自动化和辅助功能权限。旧 JSON 备份仍可导入。
 
 ## 验证边界
 
 仓库测试覆盖配置合并/冲突、备份关系校验、JSONC 字段修改、AppID 恢复及冲突保护、版本字段、产物快照和 package scripts 读取。前端可以在浏览器独立验证。
 
-真实 APK/WGT 发行依赖本机 HBuilderX 版本、辅助功能授权、原生工程和签名环境。语法检查、单元测试和 ai-dev 自身打包成功，不代表已替任意业务项目完成真实发行。首次使用建议先用测试项目跑通 WGT，再运行 APK。
+真实 APK/WGT 发行依赖本机 HBuilderX 版本、辅助功能授权、原生工程和签名环境。语法检查、单元测试和 DevDock 自身打包成功，不代表已替任意业务项目完成真实发行。首次使用建议先用测试项目跑通 WGT，再运行 APK。

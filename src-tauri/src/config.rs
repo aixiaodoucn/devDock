@@ -132,7 +132,7 @@ pub fn parse(text: &str) -> Result<AppConfig> {
 pub fn atomic_write(path: &Path, data: &str) -> Result<()> {
     let parent = path.parent().ok_or("路径无父目录")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let temp = parent.join(format!(".ai-dev-{}.tmp", uuid::Uuid::new_v4()));
+    let temp = parent.join(format!(".dev-dock-{}.tmp", uuid::Uuid::new_v4()));
     use std::io::Write;
     let result = (|| {
         let mut f = std::fs::OpenOptions::new()
@@ -153,6 +153,59 @@ pub fn atomic_write(path: &Path, data: &str) -> Result<()> {
         let _ = std::fs::remove_file(temp);
     }
     result
+}
+// 调用方须先取得新版实例锁；返回的旧版锁应持有到应用退出，避免两个版本同时修改项目。
+pub fn migrate_legacy(old_dir: &Path, new_dir: &Path) -> Result<Option<std::fs::File>> {
+    use std::fs;
+    let old_config = old_dir.join("config.json");
+    if !old_config.try_exists().map_err(|e| e.to_string())? {
+        return Ok(None);
+    }
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(old_dir.join("instance.lock"))
+        .map_err(|e| format!("无法取得旧版数据锁: {e}"))?;
+    lock.try_lock()
+        .map_err(|e| format!("请先退出旧版 AI Dev，再启动 DevDock；旧版数据正在使用: {e}"))?;
+    let new_config = new_dir.join("config.json");
+    if new_config.try_exists().map_err(|e| e.to_string())? {
+        return Ok(Some(lock));
+    }
+    let text = fs::read_to_string(&old_config).map_err(|e| format!("读取旧版配置失败: {e}"))?;
+    parse(&text).map_err(|e| format!("旧版配置无效，未迁移: {e}"))?;
+    let pending = old_dir.join("pending");
+    let mut records = vec![];
+    if pending.try_exists().map_err(|e| e.to_string())? {
+        for entry in fs::read_dir(pending).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let data = fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
+            let record: crate::manifest::Recovery = serde_json::from_str(&data)
+                .map_err(|e| format!("旧版恢复记录无效，未迁移: {e}"))?;
+            if !Path::new(&record.path).is_absolute() {
+                return Err("旧版恢复记录路径无效，未迁移".into());
+            }
+            let target = new_dir.join("pending").join(entry.file_name());
+            // 中断后可重试相同记录，但不能覆盖新版已有的不同恢复记录。
+            if target.try_exists().map_err(|e| e.to_string())?
+                && fs::read_to_string(&target).map_err(|e| e.to_string())? != data
+            {
+                return Err(format!("恢复记录冲突，未迁移: {}", target.display()));
+            }
+            records.push((target, data));
+        }
+    }
+    // 全部校验后复制，配置最后落盘作为完成标记；旧数据始终保留。
+    for (target, data) in records {
+        atomic_write(&target, &data)?;
+    }
+    atomic_write(&new_config, &text)?;
+    Ok(Some(lock))
 }
 pub fn manifest_path(p: &Project) -> Result<PathBuf> {
     let root = Path::new(&p.path);
@@ -211,6 +264,106 @@ mod tests {
         invalid["projects"][0]["platforms"] = serde_json::json!(["weixin"]);
         invalid["projects"][0]["commands"][0]["platform"] = "weixin".into();
         assert!(parse(&invalid.to_string()).is_err());
+    }
+    #[test]
+    fn migration_preserves_old_data_and_recovery_records() {
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        let config = serde_json::to_string(&AppConfig::default()).unwrap();
+        let record = r#"{"path":"/tmp/project/manifest.json","original":"old","temporary":"new"}"#;
+        atomic_write(&old.path().join("config.json"), &config).unwrap();
+        atomic_write(&old.path().join("pending/task.json"), record).unwrap();
+        let lock = migrate_legacy(old.path(), new.path()).unwrap().unwrap();
+        for dir in [old.path(), new.path()] {
+            assert_eq!(
+                std::fs::read_to_string(dir.join("config.json")).unwrap(),
+                config
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join("pending/task.json")).unwrap(),
+                record
+            );
+        }
+        let other = std::fs::File::open(old.path().join("instance.lock")).unwrap();
+        assert!(other.try_lock().is_err());
+        drop(lock);
+        assert!(other.try_lock().is_ok());
+    }
+    #[test]
+    fn migration_does_not_overwrite_existing_config() {
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        atomic_write(&old.path().join("config.json"), "invalid old config").unwrap();
+        let config = serde_json::to_string(&AppConfig::default()).unwrap();
+        atomic_write(&new.path().join("config.json"), &config).unwrap();
+        let _lock = migrate_legacy(old.path(), new.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(new.path().join("config.json")).unwrap(),
+            config
+        );
+    }
+    #[test]
+    fn migration_rejects_invalid_config_without_writing_new_data() {
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        for invalid in ["invalid json".to_string(), {
+            let mut config = AppConfig::default();
+            config.schema_version = 2;
+            serde_json::to_string(&config).unwrap()
+        }] {
+            atomic_write(&old.path().join("config.json"), &invalid).unwrap();
+            assert!(migrate_legacy(old.path(), new.path())
+                .unwrap_err()
+                .contains("旧版配置无效"));
+            assert!(!new.path().join("config.json").exists());
+            assert_eq!(
+                std::fs::read_to_string(old.path().join("config.json")).unwrap(),
+                invalid
+            );
+        }
+    }
+    #[test]
+    fn migration_requires_old_instance_to_exit() {
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        atomic_write(
+            &old.path().join("config.json"),
+            &serde_json::to_string(&AppConfig::default()).unwrap(),
+        )
+        .unwrap();
+        let lock = std::fs::File::create(old.path().join("instance.lock")).unwrap();
+        lock.try_lock().unwrap();
+        assert!(migrate_legacy(old.path(), new.path())
+            .unwrap_err()
+            .contains("请先退出旧版 AI Dev"));
+        assert!(!new.path().join("config.json").exists());
+    }
+    #[test]
+    fn migration_rejects_invalid_or_conflicting_recovery_records() {
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        atomic_write(
+            &old.path().join("config.json"),
+            &serde_json::to_string(&AppConfig::default()).unwrap(),
+        )
+        .unwrap();
+        atomic_write(&old.path().join("pending/task.json"), "invalid").unwrap();
+        assert!(migrate_legacy(old.path(), new.path()).is_err());
+        assert!(!new.path().join("config.json").exists());
+        let record = r#"{"path":"/tmp/project/manifest.json","original":"old","temporary":"new"}"#;
+        atomic_write(&old.path().join("pending/task.json"), record).unwrap();
+        atomic_write(&new.path().join("pending/task.json"), "existing").unwrap();
+        assert!(migrate_legacy(old.path(), new.path())
+            .unwrap_err()
+            .contains("恢复记录冲突"));
+        assert_eq!(
+            std::fs::read_to_string(new.path().join("pending/task.json")).unwrap(),
+            "existing"
+        );
+        assert!(!new.path().join("config.json").exists());
+        atomic_write(&new.path().join("pending/task.json"), record).unwrap();
+        let _lock = migrate_legacy(old.path(), new.path()).unwrap();
+        assert!(new.path().join("config.json").is_file());
     }
     #[test]
     fn backup_strict() {

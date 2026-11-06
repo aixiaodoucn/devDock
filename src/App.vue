@@ -406,9 +406,9 @@ onUnmounted(() => {
 <template>
   <div class="app-shell">
     <aside class="sidebar">
-      <a class="brand" href="#" aria-label="ai-dev 工作台" @click.prevent="page = 'project'"
+      <a class="brand" href="#" aria-label="DevDock 工作台" @click.prevent="page = 'project'"
         ><div class="brand-mark"><span></span><span></span><span></span></div>
-        <span>ai-dev<span class="brand-period">.</span></span
+        <span>DevDock<span class="brand-period">.</span></span
         ><span class="brand-tag">DESKTOP</span></a
       >
       <div class="workspace-label">本地工作空间<span>01</span></div>
@@ -474,7 +474,7 @@ onUnmounted(() => {
         </div>
         <div class="topbar-right">
           <span v-if="!desktop" class="preview-badge">预览模式 · 本地调用不可用</span
-          ><span class="platform-badge">macOS FIRST</span><span class="avatar">a.</span>
+          ><span class="platform-badge">macOS FIRST</span><span class="avatar">D.</span>
         </div>
       </header>
       <div v-if="notice" :class="['notice', { error: notice.error }]" role="status">
@@ -851,7 +851,7 @@ onUnmounted(() => {
           </div>
         </section>
         <footer class="workspace-footer">
-          <span>每一次构建，都有迹可循。</span><span>ai-dev / LOCAL FIRST</span>
+          <span>每一次构建，都有迹可循。</span><span>DevDock / LOCAL FIRST</span>
         </footer>
       </section>
     </main>

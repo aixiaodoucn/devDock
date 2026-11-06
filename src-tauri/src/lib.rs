@@ -310,8 +310,12 @@ pub fn run() {
                 .write(true)
                 .open(dir.join("instance.lock"))?;
             lock.try_lock()
-                .map_err(|e| std::io::Error::other(format!("AI Dev 已在运行: {e}")))?;
-            app.manage(lock);
+                .map_err(|e| std::io::Error::other(format!("DevDock 已在运行: {e}")))?;
+            let old_dir = dir.with_file_name("com.aidev.desktop");
+            let legacy_lock =
+                config::migrate_legacy(&old_dir, &dir).map_err(std::io::Error::other)?;
+            // 同时持有新旧实例锁，迁移后的恢复与构建仍受跨版本互斥保护。
+            app.manage((lock, legacy_lock));
             let logs =
                 tasks::recover(app.handle()).unwrap_or_else(|e| vec![format!("启动恢复失败: {e}")]);
             *app.state::<StartupLogs>().0.lock().unwrap() = logs;
@@ -333,7 +337,7 @@ pub fn run() {
             recover_pending
         ])
         .build(tauri::generate_context!())
-        .expect("无法初始化 AI Dev");
+        .expect("无法初始化 DevDock");
     app.run(|handle, event| match event {
         tauri::RunEvent::WindowEvent {
             event: tauri::WindowEvent::CloseRequested { api, .. },

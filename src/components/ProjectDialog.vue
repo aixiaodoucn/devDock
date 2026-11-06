@@ -355,7 +355,7 @@ function submit() {
           <label
             >产物归档目录（可选）<PathInput
               v-model="draft.outputDir"
-              placeholder="默认：uniapp 项目/unpackage/release/ai-dev"
+              placeholder="默认：uniapp 项目/unpackage/release/dev-dock"
               @error="error = $event"
           /></label>
           <label class="checkbox-label"

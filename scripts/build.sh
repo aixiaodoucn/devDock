@@ -8,7 +8,7 @@ resources=$1; android_root=$2; module=$3; jdk=$4; task=$5; appid=$6
 [[ -d "$resources" && -f "$android_root/gradlew" && -x "$jdk/bin/java" ]] || { printf '%s\n' '资源、Gradle wrapper 或 JDK 无效' >&2; exit 1; }
 [[ "$module" =~ ^[A-Za-z0-9_-]+$ && "$task" =~ ^[A-Za-z0-9_:.-]+$ && "$task" != -* && "$appid" =~ ^[A-Za-z0-9_-]+$ ]] || exit 2
 assets="$android_root/$module/src/main/assets/apps/$appid"
-backup_root="$android_root/.ai-dev-resource-backups"
+backup_root="$android_root/.dev-dock-resource-backups"
 mkdir -p "$(dirname -- "$assets")" "$backup_root"
 staging=$(mktemp -d "$backup_root/staging.XXXXXX")
 # 保留资源源目录与旧原生资源，通过新目录避免旧文件混入安装包。

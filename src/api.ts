@@ -5,12 +5,17 @@ import { defaultConfig } from './types';
 
 export const desktop = isTauri();
 // 浏览器预览使用独立本地存储；构建和外部程序调用始终只在桌面应用中执行。
-const PREVIEW_KEY = 'ai-dev-preview-v1';
+const PREVIEW_KEY = 'dev-dock-preview-v1';
 export const api = {
   async load(): Promise<AppConfig> {
     if (desktop) return invoke('load_config');
-    const raw = localStorage.getItem(PREVIEW_KEY);
-    return raw ? JSON.parse(raw) : defaultConfig();
+    const raw = localStorage.getItem(PREVIEW_KEY) ?? localStorage.getItem('ai-dev-preview-v1');
+    const config = raw ? JSON.parse(raw) : defaultConfig();
+    // 仅首次读取时复制旧预览配置，保留旧值且不覆盖已有的新配置。
+    if (raw && localStorage.getItem(PREVIEW_KEY) === null) {
+      localStorage.setItem(PREVIEW_KEY, raw);
+    }
+    return config;
   },
   async persist(config: AppConfig) {
     if (desktop) await invoke('save_config', { config });
@@ -55,13 +60,13 @@ export const api = {
       );
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `ai-dev-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      anchor.download = `dev-dock-backup-${new Date().toISOString().slice(0, 10)}.json`;
       anchor.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       return true;
     }
     const path = await save({
-      defaultPath: `ai-dev-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      defaultPath: `dev-dock-backup-${new Date().toISOString().slice(0, 10)}.json`,
       filters: [{ name: 'JSON 备份', extensions: ['json'] }],
     });
     if (!path) return false;
@@ -80,6 +85,6 @@ export const api = {
 };
 function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!desktop)
-    return Promise.reject(new Error('当前是浏览器预览，请在 ai-dev 桌面应用中执行此操作。'));
+    return Promise.reject(new Error('当前是浏览器预览，请在 DevDock 桌面应用中执行此操作。'));
   return invoke<T>(command, args);
 }
