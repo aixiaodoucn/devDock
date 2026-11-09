@@ -304,18 +304,8 @@ button {
   height: 36px;
   flex-shrink: 0;
 }
-.workspace-label {
-  display: flex;
-  justify-content: space-between;
-  font-size: 10px;
-  letter-spacing: 1.5px;
-  color: var(--sidebar-muted);
-  margin: 28px 10px 12px;
-}
-.workspace-label span {
-  font-family: var(--mono);
-  letter-spacing: 0;
-  color: var(--sidebar-muted);
+.sidebar > .search-box {
+  margin-top: 24px;
 }
 .search-box {
   display: flex;

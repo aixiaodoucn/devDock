@@ -460,7 +460,6 @@ onUnmounted(() => {
         ><img class="brand-mark" src="/devdock-icon.svg" alt="" />
         <span>DevDock<span class="brand-period">.</span></span></a
       >
-      <div class="workspace-label">本地工作空间<span>01</span></div>
       <div class="search-box">
         <Search :size="15" /><input
           v-model="search"
