@@ -670,6 +670,17 @@ onUnmounted(() => {
             /><Layers v-else :size="16" />{{ PLATFORM_LABELS[platform] || platform }}
           </button>
         </nav>
+        <div v-if="project.type === 'nodejs'" class="node-runtime-summary">
+          <span
+            ><Terminal :size="15" />Node.js
+            <strong>{{ project.nodeVersion || '终端默认版本' }}</strong
+            ><span v-if="project.nodeVersion" class="tag">nvm</span></span
+          >
+          <span v-if="project.nvmDir" class="runtime-path">{{ project.nvmDir }}</span>
+          <button class="text-button" :disabled="busy" @click="editProject">
+            修改版本 <ArrowUpRight :size="13" />
+          </button>
+        </div>
         <template v-if="project.type === 'uniapp' && selectedPlatform === 'app'">
           <div class="build-layout">
             <section class="panel build-panel">

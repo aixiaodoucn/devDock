@@ -1,6 +1,15 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { AppConfig, Project, ManifestInfo, Tools, Action, Settings, BuildMode } from './types';
+import type {
+  AppConfig,
+  Project,
+  ManifestInfo,
+  Tools,
+  Action,
+  Settings,
+  BuildMode,
+  NodeVersion,
+} from './types';
 import { defaultConfig } from './types';
 
 export const desktop = isTauri();
@@ -17,6 +26,11 @@ export const api = {
     }
     // 旧版浏览器预览配置没有主题和目录开关，补默认值而不改动项目或工具路径。
     config.settings = { ...defaultConfig().settings, ...config.settings };
+    config.projects = config.projects.map((project: Project) => ({
+      ...project,
+      nodeVersion: project.nodeVersion ?? '',
+      nvmDir: project.nvmDir ?? '',
+    }));
     return config;
   },
   async persist(config: AppConfig) {
@@ -28,6 +42,9 @@ export const api = {
   },
   detect() {
     return native<Tools>('detect_tools');
+  },
+  nodeVersions() {
+    return native<NodeVersion[]>('detect_node_versions');
   },
   packageScripts(project: Project) {
     return native<{ name: string; command: string }[]>('read_package_scripts', { project });

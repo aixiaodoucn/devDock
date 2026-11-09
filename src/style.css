@@ -1842,17 +1842,55 @@ button {
     max-width: calc(100vw - 220px);
   }
 }
-.jdk-select-row {
+.jdk-select-row,
+.version-select-row {
   display: flex;
   align-items: center;
   gap: 9px;
 }
-.jdk-select-row select {
+.jdk-select-row select,
+.version-select-row select {
   flex: 1;
   min-width: 0;
 }
-.jdk-select-row .button {
+.jdk-select-row .button,
+.version-select-row .button {
   flex-shrink: 0;
+}
+.node-version-setting {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 16px 0;
+}
+.node-runtime-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 15px 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.node-runtime-summary > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.node-runtime-summary strong {
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-weight: 500;
+}
+.node-runtime-summary .text-button {
+  margin-left: auto;
+}
+.runtime-path {
+  font-family: var(--mono);
+  font-size: 10px;
+  overflow-wrap: anywhere;
 }
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -62,6 +62,11 @@ pub struct Project {
     pub output_dir: String,
     pub sync_main_version: bool,
     pub terminal: String,
+    // 老配置和备份缺少选择时，继续使用终端自己的默认 Node。
+    #[serde(default)]
+    pub node_version: String,
+    #[serde(default)]
+    pub nvm_dir: String,
     pub commands: Vec<Action>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -130,6 +135,7 @@ impl AppConfig {
                 return Err("项目平台为空、重复或不适用于当前项目类型".into());
             }
             terminal(&p.terminal)?;
+            crate::nvm::validate_selection(&p.node_version, &p.nvm_dir)?;
             let mut actions = HashSet::new();
             for a in &p.commands {
                 if a.id.is_empty()
@@ -255,6 +261,58 @@ pub fn manifest_path(p: &Project) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn node_selection_defaults_roundtrips_and_remains_strict() {
+        let project = serde_json::json!({"id":"node","name":"Node","type":"nodejs","path":"/tmp/node-project","platforms":["pc"],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[]});
+        let mut backup = serde_json::json!({"schemaVersion":1,"projects":[project],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}});
+        let legacy = parse(&backup.to_string()).unwrap();
+        let value = serde_json::to_value(legacy).unwrap();
+        assert_eq!(value["projects"][0]["nodeVersion"], "");
+        assert_eq!(value["projects"][0]["nvmDir"], "");
+        backup["projects"][0]["nodeVersion"] = "v22.12.0".into();
+        backup["projects"][0]["nvmDir"] = "/not-installed/.nvm".into();
+        let parsed = parse(&backup.to_string()).unwrap();
+        let value = serde_json::to_value(parsed).unwrap();
+        assert_eq!(value["projects"][0]["nodeVersion"], "v22.12.0");
+        assert_eq!(value["projects"][0]["nvmDir"], "/not-installed/.nvm");
+        for version in [
+            "default",
+            "node",
+            "v22",
+            "v22.1",
+            "v22.1.0; touch /tmp/injected",
+            "../v22.1.0",
+            "v01.2.3",
+            "v22.1.0-beta",
+        ] {
+            let mut invalid = backup.clone();
+            invalid["projects"][0]["nodeVersion"] = version.into();
+            assert!(parse(&invalid.to_string()).is_err(), "{version}");
+        }
+        for field in ["nodeVersion", "nvmDir"] {
+            let mut invalid = backup.clone();
+            invalid["projects"][0][field] = serde_json::Value::Null;
+            assert!(parse(&invalid.to_string()).is_err());
+        }
+        backup["projects"][0]["nvmDir"] = "relative/.nvm".into();
+        assert!(parse(&backup.to_string()).is_err());
+        backup["projects"][0]["nvmDir"] = "/tmp/.nvm".into();
+        backup["projects"][0]["extra"] = true.into();
+        assert!(parse(&backup.to_string())
+            .unwrap_err()
+            .contains("unknown field"));
+        backup["projects"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("extra");
+        backup["projects"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("jdkPath");
+        assert!(parse(&backup.to_string())
+            .unwrap_err()
+            .contains("missing field"));
+    }
     #[test]
     fn theme_defaults_for_new_and_legacy_configs() {
         assert_eq!(Settings::default().theme, "lavender");

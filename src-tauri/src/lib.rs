@@ -1,6 +1,7 @@
 mod accessibility;
 mod config;
 mod manifest;
+mod nvm;
 mod tasks;
 use config::{Action, AppConfig, Project, Result, Settings};
 use serde::Serialize;
@@ -129,6 +130,10 @@ async fn open_path(path: String) -> Result<()> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+fn detect_node_versions() -> Vec<nvm::NodeVersion> {
+    nvm::detect()
 }
 #[tauri::command]
 fn detect_tools() -> Result<Tools> {
@@ -293,6 +298,32 @@ async fn list_menus(app: AppHandle, hbuilderx_path: String) -> Result<Vec<Vec<St
 mod package_tests {
     use super::*;
     #[test]
+    fn node_backup_import_defaults_and_selection_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("node-backup.json")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let legacy = serde_json::json!({"schemaVersion":1,"projects":[{"id":"node","name":"Node","type":"nodejs","path":"/tmp/node-project","platforms":["pc"],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[]}],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}});
+        fs::write(&path, legacy.to_string()).unwrap();
+        let mut config = read_backup(path.clone()).unwrap();
+        assert!(config.projects[0].node_version.is_empty());
+        assert!(config.projects[0].nvm_dir.is_empty());
+        config.projects[0].node_version = "v22.10.0".into();
+        config.projects[0].nvm_dir = "/portable backup/nvm's data".into();
+        write_backup(path.clone(), config).unwrap();
+        let imported = read_backup(path.clone()).unwrap();
+        assert_eq!(imported.projects[0].node_version, "v22.10.0");
+        assert_eq!(imported.projects[0].nvm_dir, "/portable backup/nvm's data");
+        let original = fs::read_to_string(&path).unwrap();
+        let mut invalid = imported;
+        invalid.projects[0].node_version = "default".into();
+        assert!(write_backup(path.clone(), invalid).is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+    }
+    #[test]
     fn theme_backup_roundtrip_and_legacy_import() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("backup.json").to_str().unwrap().to_owned();
@@ -423,6 +454,7 @@ pub fn run() {
             read_manifest,
             read_package_scripts,
             detect_tools,
+            detect_node_versions,
             read_backup,
             write_backup,
             open_path,

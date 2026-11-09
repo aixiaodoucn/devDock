@@ -1,7 +1,7 @@
 use crate::{
     accessibility::{self, PermissionPrompt},
     config::{self, Action, AppConfig, Project, Result, Settings},
-    manifest,
+    manifest, nvm,
 };
 use serde::Serialize;
 use std::{
@@ -385,11 +385,13 @@ pub fn action(
             if accessibility::terminal_needs_accessibility(terminal) {
                 task.control.permission_prompt.lock().unwrap().ensure()?;
             }
+            // 仅 Node shell 动作有明确选择时激活；交给终端前再次验证安装文件。
+            let command = nvm::command_for(&project, &action)?;
             let mut c = Command::new("/usr/bin/osascript");
             c.arg(scripts.join("terminal.applescript"))
                 .arg(terminal)
                 .arg(&project.path)
-                .arg(&action.command);
+                .arg(command);
             task.command(c, 30)?;
             task.emit(
                 "log",

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { X, Plus, Trash2, FolderGit2, RefreshCw } from 'lucide-vue-next';
-import type { Project, Tools, Action } from '../types';
+import type { Project, Tools, Action, NodeVersion } from '../types';
 import { PLATFORM_LABELS } from '../types';
 import { api, desktop } from '../api';
 import PathInput from './PathInput.vue';
@@ -22,6 +22,44 @@ const loadingMenus = ref(false);
 const reading = ref(false);
 const readingScripts = ref(false);
 const packageScripts = ref<{ name: string; command: string }[]>([]);
+const nodeVersions = ref<NodeVersion[]>([]);
+const readingNodes = ref(false);
+const nodesLoaded = ref(false);
+const nodeKey = (version: Pick<NodeVersion, 'version' | 'nvmDir'>) =>
+  JSON.stringify([version.nvmDir, version.version]);
+const selectedNodeKey = computed(() =>
+  draft.value.nodeVersion
+    ? nodeKey({ version: draft.value.nodeVersion, nvmDir: draft.value.nvmDir })
+    : '',
+);
+const selectedNode = computed(() =>
+  nodeVersions.value.find((version) => nodeKey(version) === selectedNodeKey.value),
+);
+async function loadNodeVersions() {
+  if (readingNodes.value) return;
+  readingNodes.value = true;
+  try {
+    nodeVersions.value = await api.nodeVersions();
+    nodesLoaded.value = true;
+  } catch (reason) {
+    error.value = String(reason);
+  } finally {
+    readingNodes.value = false;
+  }
+}
+function selectNodeVersion(event: Event) {
+  const key = (event.target as HTMLSelectElement).value;
+  const version = nodeVersions.value.find((item) => nodeKey(item) === key);
+  draft.value.nodeVersion = version?.version || '';
+  draft.value.nvmDir = version?.nvmDir || '';
+}
+watch(
+  () => draft.value.type,
+  (type) => {
+    if (type === 'nodejs' && desktop && !nodesLoaded.value) loadNodeVersions();
+  },
+  { immediate: true },
+);
 async function loadScripts() {
   readingScripts.value = true;
   try {
@@ -241,6 +279,49 @@ function submit() {
                 >{{ PLATFORM_LABELS[platform] }}
               </button>
             </div>
+          </div>
+          <div v-if="draft.type === 'nodejs'" class="node-version-setting">
+            <label for="project-node-version" class="field-label">Node.js 版本</label>
+            <div class="version-select-row">
+              <select
+                id="project-node-version"
+                :value="selectedNodeKey"
+                :disabled="readingNodes"
+                @change="selectNodeVersion"
+              >
+                <option value="">跟随终端默认版本</option>
+                <option
+                  v-for="version in nodeVersions"
+                  :key="nodeKey(version)"
+                  :value="nodeKey(version)"
+                >
+                  {{ version.version }}（nvm）
+                </option>
+                <option v-if="draft.nodeVersion && !selectedNode" :value="selectedNodeKey">
+                  {{ draft.nodeVersion }}（{{ nodesLoaded ? '本机未检测到' : '已保存' }}）
+                </option>
+              </select>
+              <button
+                type="button"
+                class="button"
+                :disabled="readingNodes || !desktop"
+                @click="loadNodeVersions"
+              >
+                <RefreshCw :size="14" :class="{ spinning: readingNodes }" />{{
+                  readingNodes ? '获取中…' : '获取本地版本'
+                }}
+              </button>
+            </div>
+            <p v-if="selectedNode" class="field-help runtime-path">{{ selectedNode.path }}</p>
+            <p v-else-if="draft.nodeVersion" class="field-help">
+              已指定 {{ draft.nodeVersion }}。执行前会检查版本是否仍安装，缺少时停止运行。
+            </p>
+            <p v-else class="field-help">
+              选择版本后，执行命令前通过 nvm 启用。仅作用于本次终端，不改变默认版本。
+            </p>
+            <p v-if="nodesLoaded && !nodeVersions.length" class="field-help">
+              未发现已安装的 nvm Node.js 版本，可先使用终端默认版本。
+            </p>
           </div>
           <label v-if="draft.type === 'uniapp'"
             >manifest.json 路径（可选）<PathInput

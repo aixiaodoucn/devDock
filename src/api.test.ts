@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from './api';
-import { defaultConfig } from './types';
+import { defaultConfig, newProject } from './types';
 
 vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => false, invoke: vi.fn() }));
 
@@ -45,6 +45,26 @@ describe('DevDock 预览配置迁移', () => {
       openOutputAfterBuild: true,
       jdkPath: '/local/jdk8',
       hbuilderxPath: '/local/HBuilderX.app',
+    });
+  });
+
+  it('旧项目缺少 Node 版本字段时沿用终端默认，不覆盖已有操作', async () => {
+    const project = {
+      ...newProject(),
+      name: '旧 Node 项目',
+      path: '/local/node-app',
+      type: 'nodejs',
+      platforms: ['pc'],
+    };
+    const config = JSON.parse(JSON.stringify({ ...defaultConfig(), projects: [project] }));
+    delete config.projects[0].nodeVersion;
+    delete config.projects[0].nvmDir;
+    localStorage.setItem('dev-dock-preview-v1', JSON.stringify(config));
+    expect((await api.load()).projects[0]).toMatchObject({
+      nodeVersion: '',
+      nvmDir: '',
+      path: '/local/node-app',
+      commands: [],
     });
   });
 

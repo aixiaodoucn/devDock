@@ -25,7 +25,14 @@ export interface Project {
   outputDir: string;
   syncMainVersion: boolean;
   terminal: string;
+  nodeVersion: string;
+  nvmDir: string;
   commands: Action[];
+}
+export interface NodeVersion {
+  version: string;
+  path: string;
+  nvmDir: string;
 }
 export const THEME_OPTIONS = [
   {
@@ -156,6 +163,8 @@ export function newProject(): Project {
     outputDir: '',
     syncMainVersion: false,
     terminal: '',
+    nodeVersion: '',
+    nvmDir: '',
     commands: [],
   };
 }
