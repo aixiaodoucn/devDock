@@ -65,7 +65,7 @@ APK 采用「HBuilderX 生成本地 App 资源 → 复制资源到原生工程 �
 - Android 模块首版支持单层模块目录，例如 `simpleDemo`；Gradle task 可填 `:simpleDemo:assembleRelease`。Gradle 版本需是唯一的字面量声明；复杂 flavor/变量表达式会明确拒绝，不猜测修改。
 - 原生资源更新前备份到 Android 工程的 `.dev-dock-resource-backups`；uni-app 源资源不会被移走。
 - WGT 在 `<uniapp项目>/unpackage/release` 直接生成版本文件：Android 为 `3.8.8.wgt`，iOS 为 `3.8.8-ios.wgt`，不创建额外子目录。同平台同版本重新打包会替换对应文件，其他版本与平台的包保留。
-- APK 复制到可配置的归档目录，默认 `<uniapp项目>/unpackage/release`；名称带版本和任务 ID，不覆盖旧包。历史 `dev-dock` 目录及其中产物不会自动删除。
+- APK 复制到可配置的归档目录，默认 `<uniapp项目>/unpackage/release`，原样保留 Gradle 生成的文件名，不额外添加版本或任务 ID。例如当前原生工程输出 `hyx-版本号-yyyyMMddHHmm.apk`，归档后仍保持该名称；再次产生同名文件时，以本次完整产物替换。同目录归档不会复制覆盖源文件。历史 `dev-dock` 目录及其中产物不会自动删除。
 
 `scripts/build-app.sh` 和 `scripts/build.sh` 从指定的 build-app skill 脚本复制后适配，原始脚本保持不变。执行只依赖本项目随包脚本；项目路径、AppID 和 JDK 均通过配置传入。
 

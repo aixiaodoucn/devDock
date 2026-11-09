@@ -616,7 +616,7 @@ fn build_inner(
             task.command(c, 900)?;
             let fresh = wait_fresh(task, &apk_dir, "apk", &before, started, 15)?;
             for artifact in fresh {
-                publish(task, &artifact, &output, name)?
+                publish_apk(task, &artifact, &output)?
             }
         } else {
             let release = build_output_dir(root, &p.output_dir, mode);
@@ -702,16 +702,31 @@ fn finalize_wgt(source: &Path, version: &str, ios: bool) -> Result<PathBuf> {
     fs::rename(source, &target).map_err(|e| format!("WGT 重命名失败: {e}"))?;
     Ok(target)
 }
-fn publish(task: &Task, source: &Path, output: &Path, prefix: &str) -> Result<()> {
-    verify_archive(task, source)?;
+fn copy_apk(source: &Path, output: &Path) -> Result<PathBuf> {
+    let filename = source.file_name().ok_or("APK 缺少文件名")?;
+    let original = fs::canonicalize(source).map_err(|e| e.to_string())?;
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
-    let target = output.join(format!(
-        "{prefix}-{}-{}",
-        task.id,
-        source.file_name().ok_or("无文件名")?.to_string_lossy()
-    ));
-    fs::copy(source, &target).map_err(|e| e.to_string())?;
-    task.emit("artifact", "已生成产物", None, Some(&target));
+    let target = output.join(filename);
+    // 用户可直接选择原生输出目录，此时不复制，避免源文件被自身覆盖。
+    if fs::canonicalize(&target).ok().as_ref() == Some(&original) {
+        return Ok(target);
+    }
+    // 保留 Gradle 原始名称，同名包复制完成后再原子替换，不暴露未复制完的文件。
+    let temporary = output.join(format!(".dev-dock-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        fs::copy(source, &temporary).map_err(|e| e.to_string())?;
+        fs::rename(&temporary, &target).map_err(|e| e.to_string())?;
+        Ok(target)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+fn publish_apk(task: &Task, source: &Path, output: &Path) -> Result<()> {
+    verify_archive(task, source)?;
+    let target = copy_apk(source, output)?;
+    task.emit("artifact", "已生成 APK 产物", None, Some(&target));
     Ok(())
 }
 fn resolve_jdk(configured: &str) -> Result<PathBuf> {
@@ -773,6 +788,32 @@ fn patch_gradle(text: &str, name: &str, code: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn apk_archive_keeps_gradle_filename_and_replaces_same_name_safely() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("native apk");
+        let output = dir.path().join("uniapp/release");
+        fs::create_dir_all(&source_dir).unwrap();
+        for filename in ["hyx-3.8.8-202611091037.apk", "other-app-arm64-release.apk"] {
+            let source = source_dir.join(filename);
+            fs::write(&source, "first package").unwrap();
+            let target = copy_apk(&source, &output).unwrap();
+            assert_eq!(target, output.join(filename));
+            fs::write(&source, "new package contents").unwrap();
+            assert_eq!(copy_apk(&source, &output).unwrap(), target);
+            assert_eq!(fs::read_to_string(&target).unwrap(), "new package contents");
+            assert_eq!(fs::read_to_string(&source).unwrap(), "new package contents");
+        }
+        assert_eq!(fs::read_dir(output).unwrap().count(), 2);
+    }
+    #[test]
+    fn apk_archive_can_be_the_native_output_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("hyx-3.8.8-202611091037.apk");
+        fs::write(&source, "keep original package").unwrap();
+        assert_eq!(copy_apk(&source, dir.path()).unwrap(), source);
+        assert_eq!(fs::read_to_string(source).unwrap(), "keep original package");
+    }
     #[test]
     fn output_directory_matches_published_artifacts() {
         let root = Path::new("/tmp/project");
