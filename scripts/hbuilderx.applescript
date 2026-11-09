@@ -1,22 +1,37 @@
 -- 外部参数统一通过 argv 传入，禁止拼接进 AppleScript 源码。
+on isMenuPlaceholder(labelText)
+ if labelText is missing value then return true
+ return labelText is in {"", "数据加载中...", "数据加载中…", "加载中...", "加载中…", "Loading..."}
+end isMenuPlaceholder
+
 on walkMenu(theMenu, prefix)
- set rows to {}
+ local menuPaths, menuEntries, menuEntry, labelText, currentPath, childMenus
+ set menuPaths to {}
  tell application "System Events"
-  repeat with entry in menu items of theMenu
-   set labelText to name of entry
-   if labelText is not missing value and labelText is not "" then
-    set currentPath to prefix & {labelText}
-    if (count of menus of entry) > 0 then
-     set rows to rows & my walkMenu(menu 1 of entry, currentPath)
-    else
-     set AppleScript's text item delimiters to character id 31
-     set end of rows to currentPath as text
-     set AppleScript's text item delimiters to ""
+  -- 先读取列表快照，避免递归中继续使用动态 menu items 引用。
+  set menuEntries to get menu items of theMenu
+  repeat with entryReference in menuEntries
+   try
+    set menuEntry to contents of entryReference
+    set labelText to name of menuEntry
+    if not my isMenuPlaceholder(labelText) then
+     set currentPath to prefix & {labelText}
+     set childMenus to get menus of menuEntry
+     if (count of childMenus) > 0 then
+      set menuPaths to menuPaths & my walkMenu(item 1 of childMenus, currentPath)
+     else
+      set AppleScript's text item delimiters to character id 31
+      set end of menuPaths to currentPath as text
+      set AppleScript's text item delimiters to ""
+     end if
     end if
-   end if
+   on error detailText number errorNumber
+    -- Qt 动态菜单会替换加载占位项，失效引用不应中断其他分支；权限错误必须继续上报。
+    if errorNumber is not in {-1728, -1719, -10000} then error detailText number errorNumber
+   end try
   end repeat
  end tell
- return rows
+ return menuPaths
 end walkMenu
 -- Qt 在辅助功能名称中附带快捷键，例如界面显示“确定”，AX 名称为“确定(O)”。
 on isWgtConfirmName(labelText)
@@ -64,17 +79,22 @@ on findWgtConfirmation(dialogWindow, projectPath)
 end findWgtConfirmation
 
 on run argv
+ -- rows 是 System Events 的控件术语，必须使用不冲突的局部变量。
+ local menuPaths
  set operation to item 1 of argv
  tell application "System Events"
   if not (exists process "HBuilderX") then error "HBuilderX 未运行"
   tell process "HBuilderX"
    if operation is "list" then
-    set rows to {}
+    set frontmost to true
+    delay 0.3
+    set menuPaths to {}
     repeat with topName in {"运行", "发行"}
-     set rows to rows & my walkMenu(menu 1 of menu bar item topName of menu bar 1, {contents of topName})
+     set menuPaths to menuPaths & my walkMenu(menu 1 of menu bar item (contents of topName) of menu bar 1, {contents of topName})
     end repeat
+    if (count of menuPaths) is 0 then error "未读取到运行或发行菜单，请确认 HBuilderX 已就绪"
     set AppleScript's text item delimiters to linefeed
-    return rows as text
+    return menuPaths as text
    end if
    set projectPath to item 2 of argv
    set projectName to item 3 of argv

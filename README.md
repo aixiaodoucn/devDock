@@ -17,7 +17,8 @@ pnpm tauri dev
 pnpm build                       # 类型检查与前端生产构建
 pnpm test                        # 配置合并测试
 cargo test --manifest-path src-tauri/Cargo.toml
-bash scripts/test-hbuilderx.sh    # macOS：WGT 按钮和路径匹配，不触发打包
+bash scripts/test-hbuilderx.sh    # macOS：WGT 匹配和菜单占位项，不触发打包
+bash scripts/test-hbuilderx.sh --live-menus # 只读检查当前 HBuilderX 菜单，不点击运行/发行
 bash scripts/test-build.sh        # macOS：伪 JDK/Gradle 验证兼容参数与资源复制
 pnpm tauri build                 # 构建本机架构的 macOS 应用与 DMG
 ```
