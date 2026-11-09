@@ -353,11 +353,15 @@ function submit() {
               @error="error = $event"
           /></label>
           <label
-            >产物归档目录（可选）<PathInput
+            >APK 归档目录（可选）<PathInput
               v-model="draft.outputDir"
-              placeholder="默认：uniapp 项目/unpackage/release/dev-dock"
+              placeholder="默认：uniapp 项目/unpackage/release"
               @error="error = $event"
           /></label>
+          <p class="field-help">
+            WGT 固定输出到项目的 unpackage/release：版本号.wgt /
+            版本号-ios.wgt，同平台同版本重新打包会替换原包。
+          </p>
           <label class="checkbox-label"
             ><input v-model="draft.syncMainVersion" type="checkbox" />同步 main.js 中 appVersion()
             的返回值</label

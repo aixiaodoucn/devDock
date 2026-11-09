@@ -563,17 +563,17 @@ fn build_inner(
             None,
         );
         let root = Path::new(&p.path);
-        let output = if p.output_dir.is_empty() {
-            root.join("unpackage/release/dev-dock")
-        } else {
-            let o = Path::new(&p.output_dir);
-            if o.is_absolute() {
-                o.to_path_buf()
-            } else {
-                root.join(o)
-            }
-        };
         if mode == "apk" {
+            let output = if p.output_dir.is_empty() {
+                root.join("unpackage/release")
+            } else {
+                let o = Path::new(&p.output_dir);
+                if o.is_absolute() {
+                    o.to_path_buf()
+                } else {
+                    root.join(o)
+                }
+            };
             let android = Path::new(&p.android_project_path);
             let jdk = resolve_jdk(fallback(&p.jdk_path, &settings.jdk_path))?;
             if !android.is_absolute() || !android.join("gradlew").is_file() {
@@ -635,7 +635,10 @@ fn build_inner(
             if !fresh.contains(&source) {
                 return Err("新 WGT 与当前 AppID 不一致".into());
             }
-            publish(task, &source, &output, &format!("{name}-{mode}"))?;
+            verify_archive(task, &source)?;
+            task.check()?;
+            let target = finalize_wgt(&source, name, mode == "wgt-ios")?;
+            task.emit("artifact", "已生成 WGT 产物", None, Some(&target));
         }
         task.check()?;
         Ok("success")
@@ -653,11 +656,22 @@ fn build_inner(
     }
     result
 }
-fn publish(task: &Task, source: &Path, output: &Path, prefix: &str) -> Result<()> {
+fn verify_archive(task: &Task, source: &Path) -> Result<()> {
     task.check()?;
     let mut verify = Command::new("/usr/bin/unzip");
     verify.arg("-t").arg(source);
-    task.command(verify, 60)?;
+    task.command(verify, 60)
+}
+fn finalize_wgt(source: &Path, version: &str, ios: bool) -> Result<PathBuf> {
+    let release = source.parent().ok_or("WGT 文件缺少输出目录")?;
+    let suffix = if ios { "-ios" } else { "" };
+    let target = release.join(format!("{version}{suffix}.wgt"));
+    // 产物校验完成后在同目录重命名；macOS 原子替换同版本包，不影响其他版本或平台。
+    fs::rename(source, &target).map_err(|e| format!("WGT 重命名失败: {e}"))?;
+    Ok(target)
+}
+fn publish(task: &Task, source: &Path, output: &Path, prefix: &str) -> Result<()> {
+    verify_archive(task, source)?;
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     let target = output.join(format!(
         "{prefix}-{}-{}",
@@ -727,6 +741,42 @@ fn patch_gradle(text: &str, name: &str, code: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wgt_versions_are_placed_directly_in_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let release = dir.path().join("unpackage/release");
+        fs::create_dir_all(&release).unwrap();
+        let source = release.join("__UNI__TEST.wgt");
+        fs::write(&source, "android package").unwrap();
+        let android = finalize_wgt(&source, "3.8.8", false).unwrap();
+        assert_eq!(android, release.join("3.8.8.wgt"));
+        assert!(!source.exists());
+        fs::write(&source, "ios package").unwrap();
+        let ios = finalize_wgt(&source, "3.8.8", true).unwrap();
+        assert_eq!(ios, release.join("3.8.8-ios.wgt"));
+        assert_eq!(fs::read_to_string(android).unwrap(), "android package");
+        assert_eq!(fs::read_to_string(ios).unwrap(), "ios package");
+        assert!(!release.join("dev-dock").exists());
+    }
+    #[test]
+    fn wgt_same_version_replaces_only_matching_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("__UNI__TEST.wgt");
+        fs::write(dir.path().join("3.8.8.wgt"), "previous android").unwrap();
+        fs::write(dir.path().join("3.8.8-ios.wgt"), "keep ios").unwrap();
+        fs::write(dir.path().join("3.8.7.wgt"), "keep previous version").unwrap();
+        fs::write(&source, "new android").unwrap();
+        let output = finalize_wgt(&source, "3.8.8", false).unwrap();
+        assert_eq!(fs::read_to_string(output).unwrap(), "new android");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("3.8.8-ios.wgt")).unwrap(),
+            "keep ios"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("3.8.7.wgt")).unwrap(),
+            "keep previous version"
+        );
+    }
     #[test]
     fn native_versions_preserve_comments() {
         let original = "android {\n defaultConfig {\n  versionName = \"1.0.0\" // name\n  versionCode = 10 // code\n }\n}";
