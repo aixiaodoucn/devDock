@@ -417,10 +417,14 @@ button {
 }
 .project-name {
   font-size: 13px;
+  min-width: 0;
+  flex: 1;
+}
+.project-name-text {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
 }
 .project-name small {
   display: block;
@@ -431,6 +435,7 @@ button {
 }
 .project-chevron {
   color: var(--sidebar-accent);
+  flex-shrink: 0;
 }
 .sidebar-empty {
   color: var(--sidebar-muted);

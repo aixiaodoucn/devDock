@@ -488,7 +488,8 @@ onUnmounted(() => {
               v-else-if="item.type === 'nodejs'"
               :size="18" /><Cpu v-else :size="18" /></span
           ><span class="project-name"
-            >{{ item.name }}<small>{{ TYPE_LABELS[item.type] }}</small></span
+            ><span class="project-name-text" :title="item.name">{{ item.name }}</span
+            ><small>{{ TYPE_LABELS[item.type] }}</small></span
           ><span
             v-if="tasks.some((task) => task.projectId === item.id && task.status === 'running')"
             class="running-dot"
