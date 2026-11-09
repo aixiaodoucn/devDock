@@ -18,6 +18,51 @@ on walkMenu(theMenu, prefix)
  end tell
  return rows
 end walkMenu
+-- Qt 在辅助功能名称中附带快捷键，例如界面显示“确定”，AX 名称为“确定(O)”。
+on isWgtConfirmName(labelText)
+ if labelText is missing value then return false
+ set baseName to labelText as text
+ if (count of characters of baseName) > 3 then
+  set openingMark to character -3 of baseName
+  set shortcutKey to character -2 of baseName
+  set closingMark to character -1 of baseName
+  if ((openingMark is "(" and closingMark is ")") or (openingMark is "（" and closingMark is "）")) and "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" contains shortcutKey then
+   set baseName to text 1 thru -4 of baseName
+  end if
+ end if
+ return baseName is in {"确定", "生成", "制作"}
+end isWgtConfirmName
+
+on isProjectWgtPath(outputPath, projectPath)
+ if outputPath is missing value then return false
+ set prefixPath to projectPath as text
+ if prefixPath ends with "/" then set prefixPath to text 1 thru -2 of prefixPath
+ return (outputPath starts with (prefixPath & "/unpackage/release/")) and (outputPath ends with ".wgt")
+end isProjectWgtPath
+
+-- 按真实控件树寻找按钮，兼容嵌套 group；只接受同一弹框中的目标项目 WGT 路径。
+on findWgtConfirmation(dialogWindow, projectPath)
+ tell application "System Events"
+  set matchedButtons to {}
+  set matchingPath to false
+  -- 先取得列表快照再遍历，避免 System Events 将 item of entire contents 当作无效引用。
+  set dialogElements to entire contents of dialogWindow
+  repeat with elementItem in dialogElements
+   try
+    set elementRole to role of elementItem
+    if elementRole is "AXTextField" then
+     if my isProjectWgtPath(value of elementItem as text, projectPath) then set matchingPath to true
+    else if elementRole is "AXButton" then
+     if my isWgtConfirmName(name of elementItem) and (enabled of elementItem) then set end of matchedButtons to contents of elementItem
+    end if
+   end try
+  end repeat
+  if matchingPath and (count of matchedButtons) is 1 then return item 1 of matchedButtons
+  if matchingPath and (count of matchedButtons) > 1 then error "WGT 确认按钮不唯一，未点击"
+ end tell
+ return missing value
+end findWgtConfirmation
+
 on run argv
  set operation to item 1 of argv
  tell application "System Events"
@@ -39,7 +84,7 @@ on run argv
    if (count of windows) = 0 then error "HBuilderX 无项目窗口"
    set windowTitle to name of front window
    -- 同时确认项目上下文和调用方要求打开的文件。
-   if operation is not "confirm-wgt" then
+   if operation is not "confirm-wgt" and operation is not "inspect-wgt" then
     if windowTitle does not contain projectName or windowTitle does not contain "App.vue" then error "无法确认 HBuilderX 当前项目及 App.vue，请检查窗口标题"
     -- 若窗口提供 AXDocument，则校验完整项目路径，避免误操作同名项目。
     set documentPath to ""
@@ -50,7 +95,7 @@ on run argv
      if documentPath does not contain projectPath then error "HBuilderX 文档路径与目标项目不一致"
     end if
    end if
-   if operation is "confirm-wgt" then
+   if operation is "confirm-wgt" or operation is "inspect-wgt" then
     repeat 20 times
      set candidates to (every window whose subrole is "AXDialog")
      if (count of sheets of front window) > 0 then set candidates to candidates & (sheets of front window)
@@ -65,15 +110,13 @@ on run argv
        end repeat
       end try
       if dialogText contains "wgt" or dialogText contains "WGT" then
-       repeat with buttonName in {"生成", "确定", "制作"}
-        if exists button (contents of buttonName) of dialogWindow then
-         set targetButton to button (contents of buttonName) of dialogWindow
-         if enabled of targetButton then
-          click targetButton
-          return "WGT 确认对话框已确认"
-         end if
-        end if
-       end repeat
+       set targetButton to my findWgtConfirmation(dialogWindow, projectPath)
+       if targetButton is not missing value then
+        set buttonLabel to name of targetButton
+        if operation is "inspect-wgt" then return "已识别 WGT 确认按钮: " & buttonLabel & "；项目路径匹配，未点击"
+        click targetButton
+        return "WGT 确认对话框已确认: " & buttonLabel
+       end if
       end if
      end repeat
      delay 0.5

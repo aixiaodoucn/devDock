@@ -17,6 +17,7 @@ pnpm tauri dev
 pnpm build                       # 类型检查与前端生产构建
 pnpm test                        # 配置合并测试
 cargo test --manifest-path src-tauri/Cargo.toml
+bash scripts/test-hbuilderx.sh    # macOS：WGT 按钮和路径匹配，不触发打包
 pnpm tauri build                 # 构建本机架构的 macOS 应用与 DMG
 ```
 
@@ -73,7 +74,7 @@ APK 采用「HBuilderX 生成本地 App 资源 → 复制资源到原生工程 �
 
 执行前打开目标项目的 `App.vue`，校验前台窗口的项目上下文和菜单可用状态。窗口标题需能识别项目目录名与 App.vue；不同 HBuilderX 版本或自定义显示名称可能需要调整适配。菜单任务串行执行，避免跨项目抢占前台。
 
-macOS 需在「系统设置 → 隐私与安全性」中为 DevDock 授予辅助功能，并按系统提示允许控制 System Events、HBuilderX 或终端。WGT 确认框必须能通过辅助功能识别，具备 WGT 标识及对应按钮；无法识别时明确失败，不盲按回车。
+macOS 需在「系统设置 → 隐私与安全性」中为 DevDock 授予辅助功能，并按系统提示允许控制 System Events、HBuilderX 或终端。WGT 确认框必须能通过辅助功能识别，具备 WGT 标识、目标项目的输出路径及对应按钮。支持嵌套控件和 `确定(O)` 等 Qt 快捷键后缀；无法唯一识别时明确失败，不盲按回车。
 
 菜单操作只报告「已触发」，不将点击菜单误报为编译/发行成功。APK/WGT 另行检查本次新产物、版本/AppID（本地资源）、ZIP 完整性和相关进程退出状态。
 
