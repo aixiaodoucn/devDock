@@ -99,19 +99,32 @@ fn write_backup(path: String, config: AppConfig) -> Result<()> {
         &serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?,
     )
 }
+fn path_open_command(path: &Path) -> Result<Command> {
+    let resolved = fs::canonicalize(path)
+        .map_err(|e| format!("路径不存在或无法访问（{}）: {e}", path.display()))?;
+    let mut command = Command::new("/usr/bin/open");
+    // 产物文件应在 Finder 中选中，避免启动 WGT/APK 的关联应用。
+    if resolved.is_file() {
+        command.arg("-R");
+    }
+    command.arg(resolved);
+    Ok(command)
+}
 #[tauri::command]
 async fn open_path(path: String) -> Result<()> {
     tasks::mac_only()?;
-    let path = fs::canonicalize(path).map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let status = Command::new("/usr/bin/open")
-            .arg(path)
-            .status()
+        let output = path_open_command(Path::new(&path))?
+            .output()
             .map_err(|e| e.to_string())?;
-        if status.success() {
+        if output.status.success() {
             Ok(())
         } else {
-            Err(format!("打开路径失败: {status}"))
+            Err(format!(
+                "打开目录或定位文件失败: {} {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
         }
     })
     .await
@@ -279,6 +292,40 @@ async fn list_menus(app: AppHandle, hbuilderx_path: String) -> Result<Vec<Vec<St
 #[cfg(test)]
 mod package_tests {
     use super::*;
+    #[test]
+    fn artifacts_are_revealed_in_finder_instead_of_launched() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["3.8.8.wgt", "3.8.8-ios.wgt", "门店 App.apk"] {
+            let path = dir.path().join(name);
+            fs::write(&path, "test artifact").unwrap();
+            let command = path_open_command(&path).unwrap();
+            let args: Vec<_> = command.get_args().collect();
+            assert_eq!(command.get_program(), "/usr/bin/open");
+            assert_eq!(
+                args,
+                vec![
+                    std::ffi::OsStr::new("-R"),
+                    fs::canonicalize(&path).unwrap().as_os_str()
+                ]
+            );
+        }
+    }
+    #[test]
+    fn project_directories_are_opened_normally() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("项目目录 with spaces");
+        fs::create_dir(&path).unwrap();
+        let command = path_open_command(&path).unwrap();
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![fs::canonicalize(path).unwrap().as_os_str()]
+        );
+    }
+    #[test]
+    fn missing_path_is_rejected_before_launching_finder() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(path_open_command(&dir.path().join("missing.wgt")).is_err());
+    }
     #[test]
     fn scripts_are_suggestions_and_script_names_are_quoted() {
         let dir = tempfile::tempdir().unwrap();

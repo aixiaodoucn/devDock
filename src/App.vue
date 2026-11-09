@@ -843,6 +843,8 @@ onUnmounted(() => {
               v-for="path in currentTask.artifacts"
               :key="path"
               class="artifact"
+              title="在 Finder 中显示"
+              :aria-label="`在 Finder 中显示 ${path}`"
               @click="openPath(path)"
             >
               <FileBox :size="17" /><span>{{ path }}</span
