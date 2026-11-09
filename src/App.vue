@@ -619,13 +619,11 @@ onUnmounted(() => {
             <div class="eyebrow">
               PROJECT WORKSPACE <span>/ {{ TYPE_LABELS[project.type] }}</span>
             </div>
-            <div class="project-title-row">
-              <h1>{{ project.name }}<span class="heading-dot">.</span></h1>
-              <GitBranch :path="project.path" />
-            </div>
+            <h1>{{ project.name }}<span class="heading-dot">.</span></h1>
             <button class="project-path" @click="openPath(project.path)">
               <FolderOpen :size="14" />{{ project.path }}<ArrowUpRight :size="13" />
             </button>
+            <GitBranch :path="project.path" />
           </div>
           <div class="heading-actions">
             <button class="button" :disabled="busy" @click="editProject">

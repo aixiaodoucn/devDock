@@ -565,12 +565,6 @@ button {
   font-size: 26px;
   line-height: 1.2;
 }
-.project-title-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
 .heading-dot {
   color: var(--accent-text);
   padding-left: 3px;
