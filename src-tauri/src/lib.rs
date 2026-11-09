@@ -1,3 +1,4 @@
+mod accessibility;
 mod config;
 mod manifest;
 mod tasks;
@@ -209,6 +210,8 @@ async fn list_menus(app: AppHandle, hbuilderx_path: String) -> Result<Vec<Vec<St
         return Err("HBuilderX 路径不存在".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
+        let mut permission_prompt = accessibility::PermissionPrompt::default();
+        permission_prompt.ensure()?;
         let runtime = app.state::<tasks::Runtime>();
         if runtime.busy.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return Err("HBuilderX 正忙".into());
@@ -254,6 +257,9 @@ async fn list_menus(app: AppHandle, hbuilderx_path: String) -> Result<Vec<Vec<St
             let out = reader.join().map_err(|_| "读取菜单失败")?;
             let err = errors.join().map_err(|_| "读取菜单错误失败")?;
             if !status.success() {
+                if accessibility::is_denied(&err) {
+                    return Err(permission_prompt.denied());
+                }
                 return Err(err);
             }
             Ok(out

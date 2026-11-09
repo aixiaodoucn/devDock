@@ -1,4 +1,5 @@
 use crate::{
+    accessibility::{self, PermissionPrompt},
     config::{self, Action, AppConfig, Project, Result, Settings},
     manifest,
 };
@@ -27,6 +28,7 @@ pub struct Runtime {
 pub struct Control {
     cancel: AtomicBool,
     pid: Mutex<Option<u32>>,
+    permission_prompt: Mutex<PermissionPrompt>,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +72,7 @@ impl Task {
     }
     pub fn command(&self, mut command: Command, timeout: u64) -> Result<()> {
         self.check()?;
+        let automation = accessibility::is_automation_command(&command);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(unix)]
         {
@@ -91,12 +94,22 @@ impl Task {
         });
         let t = self.clone();
         let errors = std::thread::spawn(move || {
+            let mut denial = None;
             for line in BufReader::new(err)
                 .lines()
                 .map_while(std::result::Result::ok)
             {
-                t.emit("log", &line, None, None)
+                if automation && accessibility::is_denied(&line) {
+                    let message = t.control.permission_prompt.lock().unwrap().denied();
+                    if denial.is_none() {
+                        t.emit("log", &message, None, None);
+                        denial = Some(message);
+                    }
+                } else {
+                    t.emit("log", &line, None, None)
+                }
             }
+            denial
         });
         let start = Instant::now();
         let result = loop {
@@ -131,7 +144,11 @@ impl Task {
         kill_group(child.id());
         *self.control.pid.lock().unwrap() = None;
         let _ = reader.join();
-        let _ = errors.join();
+        if let Ok(Some(denial)) = errors.join() {
+            if self.check().is_ok() {
+                return Err(denial);
+            }
+        }
         result
     }
 }
@@ -222,6 +239,9 @@ fn spawn(
     work: impl FnOnce(&Task) -> Result<&'static str> + Send + 'static,
 ) -> Result<String> {
     mac_only()?;
+    if exclusive {
+        PermissionPrompt::default().ensure()?;
+    }
     let runtime = app.state::<Runtime>();
     let _guard = runtime.recovery_lock.lock().unwrap();
     if runtime.shutting_down.load(Ordering::SeqCst) {
@@ -361,6 +381,9 @@ pub fn action(
             };
             if terminal != "Terminal" && !Path::new(terminal).is_absolute() {
                 return Err("终端必须使用绝对路径".into());
+            }
+            if accessibility::terminal_needs_accessibility(terminal) {
+                task.control.permission_prompt.lock().unwrap().ensure()?;
             }
             let mut c = Command::new("/usr/bin/osascript");
             c.arg(scripts.join("terminal.applescript"))
