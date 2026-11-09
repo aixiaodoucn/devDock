@@ -828,14 +828,16 @@ onUnmounted(() => {
         >
           <div class="section-heading">
             <div>
-              <div v-if="project.type !== 'nodejs'" class="eyebrow">PROJECT ACTIONS</div>
+              <div v-if="project.type !== 'nodejs' && selectedPlatform === 'app'" class="eyebrow">
+                PROJECT ACTIONS
+              </div>
               <h2>
                 {{
                   project.type === 'nodejs'
                     ? '运行命令'
                     : selectedPlatform === 'app'
                       ? '更多操作'
-                      : '常用操作，随时启动'
+                      : '运行与发行'
                 }}
               </h2>
               <p>
@@ -859,16 +861,22 @@ onUnmounted(() => {
             </button>
           </div>
           <div
-            v-else-if="project.type === 'nodejs'"
+            v-else-if="project.type === 'nodejs' || selectedPlatform !== 'app'"
             class="command-list"
             role="list"
-            aria-label="项目运行命令"
+            aria-label="项目操作命令"
           >
             <article v-for="action in actions" :key="action.id" class="command-row" role="listitem">
               <div class="command-name" :title="action.name">
-                <Terminal :size="15" /><span>{{ action.name }}</span>
+                <Terminal v-if="action.kind === 'shell'" :size="15" /><Layers
+                  v-else
+                  :size="15"
+                /><span>{{ action.name }}</span>
               </div>
-              <code :title="action.command">{{ action.command }}</code>
+              <code
+                :title="action.kind === 'shell' ? action.command : action.menuPath.join(' → ')"
+                >{{ action.kind === 'shell' ? action.command : action.menuPath.join(' → ') }}</code
+              >
               <button
                 class="button small"
                 :disabled="busy || !desktop"
