@@ -18,6 +18,7 @@ pnpm build                       # 类型检查与前端生产构建
 pnpm test                        # 配置合并测试
 cargo test --manifest-path src-tauri/Cargo.toml
 bash scripts/test-hbuilderx.sh    # macOS：WGT 按钮和路径匹配，不触发打包
+bash scripts/test-build.sh        # macOS：伪 JDK/Gradle 验证兼容参数与资源复制
 pnpm tauri build                 # 构建本机架构的 macOS 应用与 DMG
 ```
 
@@ -52,7 +53,8 @@ APK 采用「HBuilderX 生成本地 App 资源 → 复制资源到原生工程 �
 - 不自动套用 `3.4.8 → 34800` 等项目专属编码规则。versionCode 为有效的非负整数，并受原生构建版本范围约束。
 - AppID 仅在构建时临时切换；成功、失败或取消后恢复原值，保留版本修改。恢复记录先落盘，崩溃后下次启动继续恢复。发现 AppID 被用户另行修改时保留冲突记录，不强行覆盖。
 - JDK 下拉框右侧提供「获取本地版本」，刷新已安装列表后手动选择；刷新不覆盖当前选择，也支持手动指定路径。
-- JDK 按项目配置 → 全局配置 → JAVA_HOME → 系统检测兜底，仅设置构建子进程环境。
+- JDK 按项目配置 → 全局配置 → JAVA_HOME → 系统检测兜底，仅设置构建子进程环境；构建日志会显示实际版本和路径。
+- JDK 9+ 通过构建进程的 `JAVA_TOOL_OPTIONS` 追加旧版 Android 工具所需的 `--add-opens`，同时传给 Gradle 派生 JVM，保留已有环境选项及工程 `org.gradle.jvmargs` 内存配置。JDK 8 不添加模块参数。Gradle 6.5 / AGP 4.1.1 等旧工程仍建议优先选择原工程已验证的 JDK 8；这些兼容参数不等同于升级工具链。
 - Android 模块首版支持单层模块目录，例如 `simpleDemo`；Gradle task 可填 `:simpleDemo:assembleRelease`。Gradle 版本需是唯一的字面量声明；复杂 flavor/变量表达式会明确拒绝，不猜测修改。
 - 原生资源更新前备份到 Android 工程的 `.dev-dock-resource-backups`；uni-app 源资源不会被移走。
 - 产物复制到可配置的归档目录，默认 `<uniapp项目>/unpackage/release/dev-dock`。名称带版本和任务 ID，不覆盖旧包。
