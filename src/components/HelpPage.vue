@@ -324,6 +324,7 @@ const filteredFaqs = computed(() => {
 }
 .help-search {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
   color: var(--muted);
@@ -332,9 +333,13 @@ const filteredFaqs = computed(() => {
   border-radius: 7px;
   padding: 0 12px;
 }
+.help-search > svg {
+  flex-shrink: 0;
+}
 .help-search input {
   flex: 1;
   min-width: 0;
+  padding: 10px 0;
   border: 0;
   background: none;
   box-shadow: none;
