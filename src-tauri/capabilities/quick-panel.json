@@ -1,0 +1,6 @@
+{
+  "identifier": "quick-panel",
+  "description": "快捷弹框仅订阅配置与任务事件",
+  "windows": ["quick-panel"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

@@ -58,6 +58,12 @@ export const api = {
   cancel(taskId: string) {
     return native<void>('cancel_task', { taskId });
   },
+  showMain(projectId?: string) {
+    return native<void>('show_main_window', { projectId: projectId ?? null });
+  },
+  hideQuickPanel() {
+    return native<void>('hide_quick_panel');
+  },
   openPath(path: string) {
     return native<void>('open_path', { path });
   },

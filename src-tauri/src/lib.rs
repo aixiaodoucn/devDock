@@ -3,6 +3,8 @@ mod config;
 mod manifest;
 mod nvm;
 mod tasks;
+mod tray;
+mod tray_geometry;
 use config::{Action, AppConfig, Project, Result, Settings};
 use serde::Serialize;
 use std::{
@@ -11,7 +13,7 @@ use std::{
     process::Command,
     sync::Mutex,
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 #[derive(Default)]
 struct StartupLogs(Mutex<Vec<String>>);
 #[derive(Serialize)]
@@ -37,7 +39,10 @@ fn save_config(app: AppHandle, config: AppConfig) -> Result<()> {
     config::atomic_write(
         &tasks::config_path(&app)?,
         &serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?,
-    )
+    )?;
+    // 文件已保存，通知失败不能将成功写入误报为保存失败。
+    let _ = app.emit("config-updated", ());
+    Ok(())
 }
 #[tauri::command]
 fn read_manifest(project: Project) -> Result<manifest::ManifestInfo> {
@@ -446,6 +451,8 @@ pub fn run() {
             let logs =
                 tasks::recover(app.handle()).unwrap_or_else(|e| vec![format!("启动恢复失败: {e}")]);
             *app.state::<StartupLogs>().0.lock().unwrap() = logs;
+            // tray 初始化失败明确终止启动，避免主窗口隐藏后应用失联。
+            tray::init(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -462,19 +469,35 @@ pub fn run() {
             run_action,
             cancel_task,
             list_menus,
-            recover_pending
+            recover_pending,
+            tray::show_main_window,
+            tray::hide_quick_panel
         ])
         .build(tauri::generate_context!())
         .expect("无法初始化 DevDock");
     app.run(|handle, event| match event {
         tauri::RunEvent::WindowEvent {
+            label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
-        } => {
-            // 保留窗口直到退出清理完成，避免恢复期间界面已被销毁。
-            api.prevent_close();
-            handle.exit(0);
-        }
+        } => match label.as_str() {
+            tray::QUICK_PANEL => {
+                api.prevent_close();
+                let _ = tray::hide_quick_panel(handle.clone());
+            }
+            "main" => {
+                // 保留窗口直到退出清理完成，避免恢复期间界面已被销毁。
+                api.prevent_close();
+                if handle.tray_by_id(tray::TRAY_ID).is_some() {
+                    if let Some(main) = handle.get_webview_window("main") {
+                        let _ = main.hide();
+                    }
+                } else {
+                    handle.exit(0);
+                }
+            }
+            _ => {}
+        },
         tauri::RunEvent::ExitRequested { api, code, .. } => {
             let runtime = handle.state::<tasks::Runtime>();
             // 与任务注册使用同一把锁，避免检查为空后又注册新任务。

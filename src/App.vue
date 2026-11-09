@@ -30,6 +30,7 @@ import {
 import ProjectDialog from './components/ProjectDialog.vue';
 import SettingsPage from './components/SettingsPage.vue';
 import { api, desktop } from './api';
+import { applyTheme } from './theme';
 import {
   defaultConfig,
   newProject,
@@ -77,6 +78,7 @@ const versionCode = ref('');
 const buildMode = ref<BuildMode>('apk');
 const showProjectMenu = ref(false);
 let unlisten: UnlistenFn | undefined;
+let projectSelectionUnlisten: UnlistenFn | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let manifestRequest = 0;
 const project = computed(() => config.value.projects.find((item) => item.id === selectedId.value));
@@ -214,20 +216,7 @@ async function setOpenOutput(event: Event) {
   // 保存失败时恢复勾选状态，避免界面与实际构建配置不一致。
   input.checked = config.value.settings.openOutputAfterBuild;
 }
-watch(
-  () => config.value.settings.theme,
-  (theme) => {
-    document.documentElement.dataset.theme = THEME_OPTIONS.some((option) => option.id === theme)
-      ? theme
-      : 'lavender';
-    const sidebarColor = getComputedStyle(document.documentElement)
-      .getPropertyValue('--sidebar')
-      .trim();
-    if (sidebarColor)
-      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', sidebarColor);
-  },
-  { immediate: true, flush: 'sync' },
-);
+watch(() => config.value.settings.theme, applyTheme, { immediate: true, flush: 'sync' });
 async function deleteProject() {
   if (!deleting.value || busy.value) return;
   saving.value = true;
@@ -432,6 +421,11 @@ onMounted(async () => {
   if (desktop) {
     try {
       unlisten = await listen<TaskEvent>('task-event', (event) => handleEvent(event.payload));
+      projectSelectionUnlisten = await listen<string>('open-project', async (event) => {
+        if (!config.value.projects.some((item) => item.id === event.payload)) await load();
+        const selected = config.value.projects.find((item) => item.id === event.payload);
+        if (selected) selectProject(selected);
+      });
     } catch (error) {
       fail(error);
     }
@@ -447,6 +441,7 @@ onMounted(async () => {
 });
 onUnmounted(() => {
   unlisten?.();
+  projectSelectionUnlisten?.();
   if (noticeTimer) clearTimeout(noticeTimer);
 });
 </script>
