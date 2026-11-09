@@ -33,6 +33,7 @@ import SettingsPage from './components/SettingsPage.vue';
 import { api, desktop } from './api';
 import { applyTheme } from './theme';
 import { stopMenuAction } from './actions';
+import { useSidebarResize } from './sidebar';
 import {
   defaultConfig,
   newProject,
@@ -54,6 +55,7 @@ import type {
   TaskStatus,
   Action,
 } from './types';
+const sidebar = useSidebarResize();
 const config = ref<AppConfig>(defaultConfig());
 const selectedId = ref('');
 const page = ref<'project' | 'settings'>('project');
@@ -454,7 +456,11 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div
+    class="app-shell"
+    :class="{ 'sidebar-resizing': sidebar.resizing.value }"
+    :style="{ '--sidebar-width': `${sidebar.width.value}px` }"
+  >
     <aside class="sidebar">
       <a class="brand" href="#" aria-label="DevDock 工作台" @click.prevent="page = 'project'"
         ><img class="brand-mark" src="/devdock-icon.svg" alt="" />
@@ -512,6 +518,23 @@ onUnmounted(() => {
           <span></span>{{ desktop ? '本地工作台' : '浏览器预览' }}<small>v0.1.0</small>
         </div>
       </div>
+      <div
+        class="sidebar-resizer"
+        role="separator"
+        aria-label="调整侧栏宽度"
+        aria-orientation="vertical"
+        :aria-valuemin="sidebar.minWidth"
+        :aria-valuemax="sidebar.maxWidth.value"
+        :aria-valuenow="sidebar.width.value"
+        tabindex="0"
+        title="拖拽调整侧栏宽度，或使用左右方向键"
+        @pointerdown.prevent="sidebar.start"
+        @pointermove="sidebar.move"
+        @pointerup="sidebar.finish"
+        @pointercancel="sidebar.finish"
+        @lostpointercapture="sidebar.finish"
+        @keydown="sidebar.keydown"
+      ></div>
     </aside>
     <main class="main-area">
       <header class="topbar">

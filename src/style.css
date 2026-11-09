@@ -274,7 +274,7 @@ button {
   min-height: 100vh;
 }
 .sidebar {
-  width: 208px;
+  width: var(--sidebar-width, 208px);
   flex-shrink: 0;
   background: var(--sidebar);
   color: var(--sidebar-text);
@@ -284,6 +284,36 @@ button {
   flex-direction: column;
   padding: 24px 12px 0;
   z-index: 10;
+}
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+.sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  inset: 0 3px;
+  background: transparent;
+  transition: background 0.16s;
+}
+.sidebar-resizer:hover::after,
+.sidebar-resizer:focus-visible::after,
+.sidebar-resizing .sidebar-resizer::after {
+  background: var(--sidebar-accent);
+}
+.sidebar-resizer:focus-visible {
+  outline: none;
+}
+.sidebar-resizing,
+.sidebar-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 .brand {
   display: flex;
@@ -471,7 +501,7 @@ button {
   font-size: 9px;
 }
 .main-area {
-  margin-left: 208px;
+  margin-left: var(--sidebar-width, 208px);
   flex: 1;
   min-width: 0;
 }
@@ -1779,14 +1809,6 @@ button {
   }
 }
 @media (max-width: 1100px) {
-  .sidebar {
-    width: 196px;
-    padding-left: 12px;
-    padding-right: 12px;
-  }
-  .main-area {
-    margin-left: 196px;
-  }
   .project-page,
   .settings-page {
     padding: 20px 20px 14px;
@@ -1842,12 +1864,6 @@ button {
   }
 }
 @media (max-width: 900px) {
-  .sidebar {
-    width: 184px;
-  }
-  .main-area {
-    margin-left: 184px;
-  }
   .build-layout {
     grid-template-columns: 1fr;
   }
