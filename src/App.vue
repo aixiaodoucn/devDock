@@ -26,10 +26,12 @@ import {
   Cpu,
   Copy,
   Palette,
+  CircleHelp,
 } from 'lucide-vue-next';
 import ProjectDialog from './components/ProjectDialog.vue';
 import GitBranch from './components/GitBranch.vue';
 import SettingsPage from './components/SettingsPage.vue';
+import HelpPage from './components/HelpPage.vue';
 import { api, desktop } from './api';
 import { applyTheme } from './theme';
 import { stopMenuAction } from './actions';
@@ -58,7 +60,7 @@ import type {
 const sidebar = useSidebarResize();
 const config = ref<AppConfig>(defaultConfig());
 const selectedId = ref('');
-const page = ref<'project' | 'settings'>('project');
+const page = ref<'project' | 'settings' | 'help'>('project');
 const search = ref('');
 const selectedPlatform = ref('app');
 const editing = ref<Project | null>(null);
@@ -508,6 +510,9 @@ onUnmounted(() => {
         <Plus :size="17" />添加项目
       </button>
       <div class="sidebar-bottom">
+        <button :class="['settings-button', { active: page === 'help' }]" @click="page = 'help'">
+          <CircleHelp :size="18" />使用帮助<span>↗</span>
+        </button>
         <button
           :class="['settings-button', { active: page === 'settings' }]"
           :disabled="loadFailed"
@@ -541,7 +546,11 @@ onUnmounted(() => {
       <header class="topbar">
         <div class="breadcrumbs">
           <span>工作空间</span><ChevronRight :size="13" /><strong>{{
-            page === 'settings' ? '偏好设置' : project?.name || '概览'
+            page === 'help'
+              ? '使用帮助'
+              : page === 'settings'
+                ? '偏好设置'
+                : project?.name || '概览'
           }}</strong>
         </div>
         <div class="topbar-right">
@@ -571,7 +580,8 @@ onUnmounted(() => {
           <X :size="16" />
         </button>
       </div>
-      <div v-if="loading" class="loading-state">
+      <HelpPage v-if="page === 'help'" />
+      <div v-else-if="loading" class="loading-state">
         <RefreshCw :size="24" class="spinning" />
         <p>正在载入工作空间…</p>
       </div>
