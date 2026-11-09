@@ -4,12 +4,34 @@ use std::{
     path::{Path, PathBuf},
 };
 pub type Result<T> = std::result::Result<T, String>;
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
     pub hbuilderx_path: String,
     pub terminal: String,
     pub jdk_path: String,
+    // 仅新增字段提供默认值，保留旧字段的严格必填校验。
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_open_output_after_build")]
+    pub open_output_after_build: bool,
+}
+fn default_theme() -> String {
+    "lavender".into()
+}
+fn default_open_output_after_build() -> bool {
+    true
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            hbuilderx_path: String::new(),
+            terminal: String::new(),
+            jdk_path: String::new(),
+            theme: default_theme(),
+            open_output_after_build: default_open_output_after_build(),
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -71,6 +93,11 @@ impl AppConfig {
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
             return Err("不支持的 schemaVersion".into());
+        }
+        if !["lavender", "blue", "cyan", "rose", "amber", "slate"]
+            .contains(&self.settings.theme.as_str())
+        {
+            return Err("无效的 theme：仅支持 lavender、blue、cyan、rose、amber 或 slate".into());
         }
         terminal(&self.settings.terminal)?;
         let mut ids = HashSet::new();
@@ -228,6 +255,90 @@ pub fn manifest_path(p: &Project) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn theme_defaults_for_new_and_legacy_configs() {
+        assert_eq!(Settings::default().theme, "lavender");
+        assert_eq!(AppConfig::default().settings.theme, "lavender");
+        let legacy = r#"{"schemaVersion":1,"projects":[],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}}"#;
+        let config = parse(legacy).unwrap();
+        assert_eq!(config.settings.theme, "lavender");
+        assert_eq!(config.schema_version, 1);
+        let mut value: serde_json::Value = serde_json::from_str(legacy).unwrap();
+        value["settings"]["unexpected"] = true.into();
+        assert!(parse(&value.to_string())
+            .unwrap_err()
+            .contains("unknown field"));
+        value["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("unexpected");
+        value["settings"].as_object_mut().unwrap().remove("jdkPath");
+        assert!(parse(&value.to_string())
+            .unwrap_err()
+            .contains("missing field"));
+    }
+    #[test]
+    fn output_preference_defaults_and_roundtrips() {
+        assert!(Settings::default().open_output_after_build);
+        let legacy = r#"{"schemaVersion":1,"projects":[],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}}"#;
+        assert!(parse(legacy).unwrap().settings.open_output_after_build);
+        for enabled in [true, false] {
+            let mut config = AppConfig::default();
+            config.settings.open_output_after_build = enabled;
+            let text = serde_json::to_string(&config).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["settings"]["openOutputAfterBuild"], enabled);
+            assert_eq!(
+                parse(&text).unwrap().settings.open_output_after_build,
+                enabled
+            );
+        }
+        let mut value: serde_json::Value = serde_json::from_str(legacy).unwrap();
+        value["settings"]["openOutputAfterBuild"] = "false".into();
+        assert!(parse(&value.to_string()).is_err());
+    }
+    #[test]
+    fn theme_roundtrips_through_config_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        for theme in ["lavender", "blue", "cyan", "rose", "amber", "slate"] {
+            let mut config = AppConfig::default();
+            config.settings.theme = theme.into();
+            config.validate().unwrap();
+            atomic_write(&path, &serde_json::to_string_pretty(&config).unwrap()).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["settings"]["theme"], theme);
+            assert_eq!(parse(&text).unwrap().settings.theme, theme);
+        }
+    }
+    #[test]
+    fn theme_rejects_invalid_values() {
+        for theme in ["", "dark", "Blue", " lavender "] {
+            let mut config = AppConfig::default();
+            config.settings.theme = theme.into();
+            let error = config.validate().unwrap_err();
+            assert!(error.contains("theme"));
+            assert!(error.contains("lavender") && error.contains("blue"));
+            assert!(parse(&serde_json::to_string(&config).unwrap()).is_err());
+        }
+        for theme in [serde_json::Value::Null, true.into(), 1.into()] {
+            let mut value = serde_json::to_value(AppConfig::default()).unwrap();
+            value["settings"]["theme"] = theme;
+            assert!(parse(&value.to_string()).is_err());
+        }
+    }
+    #[test]
+    fn theme_defaults_after_legacy_migration() {
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        let legacy = r#"{"schemaVersion":1,"projects":[],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}}"#;
+        atomic_write(&old.path().join("config.json"), legacy).unwrap();
+        let _lock = migrate_legacy(old.path(), new.path()).unwrap();
+        let text = std::fs::read_to_string(new.path().join("config.json")).unwrap();
+        assert_eq!(text, legacy);
+        assert_eq!(parse(&text).unwrap().settings.theme, "lavender");
+    }
     #[test]
     fn backup_rejects_invalid_project_relationships() {
         let project = serde_json::json!({"id":"p1","name":"示例","type":"uniapp","path":"/tmp/project","platforms":["app"],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"app","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[{"id":"a1","name":"发行","platform":"app","kind":"menu","menuPath":["发行","App-制作应用wgt包"],"command":""}]});

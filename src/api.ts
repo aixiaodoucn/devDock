@@ -15,6 +15,8 @@ export const api = {
     if (raw && localStorage.getItem(PREVIEW_KEY) === null) {
       localStorage.setItem(PREVIEW_KEY, raw);
     }
+    // 旧版浏览器预览配置没有主题和目录开关，补默认值而不改动项目或工具路径。
+    config.settings = { ...defaultConfig().settings, ...config.settings };
     return config;
   },
   async persist(config: AppConfig) {

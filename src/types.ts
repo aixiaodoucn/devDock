@@ -27,10 +27,57 @@ export interface Project {
   terminal: string;
   commands: Action[];
 }
+export const THEME_OPTIONS = [
+  {
+    id: 'lavender',
+    name: '浅紫微光',
+    english: 'LAVENDER',
+    description: '轻盈紫调，留一点灵感空间。',
+    color: '#7760cf',
+  },
+  {
+    id: 'blue',
+    name: '深海蓝',
+    english: 'OCEAN',
+    description: '沉稳蓝调，让每次交付更从容。',
+    color: '#3267b7',
+  },
+  {
+    id: 'cyan',
+    name: '冰川青',
+    english: 'GLACIER',
+    description: '清透青调，让工作空间更轻快。',
+    color: '#167b89',
+  },
+  {
+    id: 'rose',
+    name: '玫瑰粉',
+    english: 'ROSE',
+    description: '柔和玫瑰色，温暖而不张扬。',
+    color: '#ad4c70',
+  },
+  {
+    id: 'amber',
+    name: '暖砂金',
+    english: 'SANDSTONE',
+    description: '温润砂金色，安静沉着的质感。',
+    color: '#94671f',
+  },
+  {
+    id: 'slate',
+    name: '石墨灰',
+    english: 'GRAPHITE',
+    description: '克制中性色，把注意力留给项目。',
+    color: '#57657a',
+  },
+] as const;
+export type ThemeName = (typeof THEME_OPTIONS)[number]['id'];
 export interface Settings {
   hbuilderxPath: string;
   terminal: string;
   jdkPath: string;
+  theme: ThemeName;
+  openOutputAfterBuild: boolean;
 }
 export interface AppConfig {
   schemaVersion: 1;
@@ -87,6 +134,8 @@ export function defaultConfig(): AppConfig {
       hbuilderxPath: '/Applications/HBuilderX.app',
       terminal: '/Applications/Ghostty.app',
       jdkPath: '',
+      theme: 'lavender',
+      openOutputAfterBuild: true,
     },
   };
 }

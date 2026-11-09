@@ -25,15 +25,24 @@ import {
   Trash2,
   Cpu,
   Copy,
+  Palette,
 } from 'lucide-vue-next';
 import ProjectDialog from './components/ProjectDialog.vue';
 import SettingsPage from './components/SettingsPage.vue';
 import { api, desktop } from './api';
-import { defaultConfig, newProject, mergeConfig, PLATFORM_LABELS, TYPE_LABELS } from './types';
+import {
+  defaultConfig,
+  newProject,
+  mergeConfig,
+  PLATFORM_LABELS,
+  TYPE_LABELS,
+  THEME_OPTIONS,
+} from './types';
 import type {
   AppConfig,
   Project,
   Settings,
+  ThemeName,
   Tools,
   Task,
   TaskEvent,
@@ -180,6 +189,45 @@ async function saveSettings(settings: Settings) {
     saving.value = false;
   }
 }
+async function updatePreference(patch: Partial<Pick<Settings, 'theme' | 'openOutputAfterBuild'>>) {
+  if (saving.value || loadFailed.value) return;
+  saving.value = true;
+  try {
+    await persist({ ...config.value, settings: { ...config.value.settings, ...patch } });
+  } catch (error) {
+    fail(error);
+  } finally {
+    saving.value = false;
+  }
+}
+function setTheme(theme: ThemeName) {
+  return updatePreference({ theme });
+}
+async function setThemeFromMenu(event: Event) {
+  const input = event.target as HTMLSelectElement;
+  await setTheme(input.value as ThemeName);
+  input.value = config.value.settings.theme;
+}
+async function setOpenOutput(event: Event) {
+  const input = event.target as HTMLInputElement;
+  await updatePreference({ openOutputAfterBuild: input.checked });
+  // 保存失败时恢复勾选状态，避免界面与实际构建配置不一致。
+  input.checked = config.value.settings.openOutputAfterBuild;
+}
+watch(
+  () => config.value.settings.theme,
+  (theme) => {
+    document.documentElement.dataset.theme = THEME_OPTIONS.some((option) => option.id === theme)
+      ? theme
+      : 'lavender';
+    const sidebarColor = getComputedStyle(document.documentElement)
+      .getPropertyValue('--sidebar')
+      .trim();
+    if (sidebarColor)
+      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', sidebarColor);
+  },
+  { immediate: true, flush: 'sync' },
+);
 async function deleteProject() {
   if (!deleting.value || busy.value) return;
   saving.value = true;
@@ -407,9 +455,8 @@ onUnmounted(() => {
   <div class="app-shell">
     <aside class="sidebar">
       <a class="brand" href="#" aria-label="DevDock 工作台" @click.prevent="page = 'project'"
-        ><div class="brand-mark"><span></span><span></span><span></span></div>
-        <span>DevDock<span class="brand-period">.</span></span
-        ><span class="brand-tag">DESKTOP</span></a
+        ><img class="brand-mark" src="/devdock-icon.svg" alt="" />
+        <span>DevDock<span class="brand-period">.</span></span></a
       >
       <div class="workspace-label">本地工作空间<span>01</span></div>
       <div class="search-box">
@@ -473,6 +520,20 @@ onUnmounted(() => {
           }}</strong>
         </div>
         <div class="topbar-right">
+          <label class="theme-toggle" title="切换主题">
+            <Palette :size="14" />
+            <select
+              aria-label="切换主题"
+              :value="config.settings.theme"
+              :disabled="saving || loading || loadFailed"
+              @change="setThemeFromMenu"
+            >
+              <option v-for="theme in THEME_OPTIONS" :key="theme.id" :value="theme.id">
+                {{ theme.name }}
+              </option>
+            </select>
+            <span class="theme-toggle-dot"></span>
+          </label>
           <span v-if="!desktop" class="preview-badge">预览模式 · 本地调用不可用</span
           ><span class="platform-badge">macOS FIRST</span><span class="avatar">D.</span>
         </div>
@@ -504,6 +565,7 @@ onUnmounted(() => {
         :busy="busy"
         :project-count="config.projects.length"
         @save="saveSettings"
+        @theme="setTheme"
         @detect="detect(true)"
         @export="exportBackup"
         @import="importBackup"
@@ -677,14 +739,26 @@ onUnmounted(() => {
                 </button>
               </div>
               <div class="build-footer">
-                <span><span class="local-dot"></span>{{ busy ? '任务执行中' : '本机执行' }}</span
-                ><button
-                  class="button primary build-button"
-                  :disabled="busy || refreshing || !desktop"
-                  @click="build"
-                >
-                  <Play :size="16" fill="currentColor" />{{ submitting ? '正在启动…' : '开始构建' }}
-                </button>
+                <span><span class="local-dot"></span>{{ busy ? '任务执行中' : '本机执行' }}</span>
+                <div class="build-footer-actions">
+                  <label class="open-output-option"
+                    ><input
+                      type="checkbox"
+                      :checked="config.settings.openOutputAfterBuild"
+                      :disabled="saving || busy"
+                      @change="setOpenOutput"
+                    />构建完打开输出目录</label
+                  >
+                  <button
+                    class="button primary build-button"
+                    :disabled="busy || saving || refreshing || !desktop"
+                    @click="build"
+                  >
+                    <Play :size="16" fill="currentColor" />{{
+                      submitting ? '正在启动…' : '开始构建'
+                    }}
+                  </button>
+                </div>
               </div>
             </section>
             <aside class="build-aside">

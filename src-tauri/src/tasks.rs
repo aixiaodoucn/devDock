@@ -564,16 +564,7 @@ fn build_inner(
         );
         let root = Path::new(&p.path);
         if mode == "apk" {
-            let output = if p.output_dir.is_empty() {
-                root.join("unpackage/release")
-            } else {
-                let o = Path::new(&p.output_dir);
-                if o.is_absolute() {
-                    o.to_path_buf()
-                } else {
-                    root.join(o)
-                }
-            };
+            let output = build_output_dir(root, &p.output_dir, mode);
             let android = Path::new(&p.android_project_path);
             let jdk = resolve_jdk(fallback(&p.jdk_path, &settings.jdk_path))?;
             if !android.is_absolute() || !android.join("gradlew").is_file() {
@@ -626,7 +617,7 @@ fn build_inner(
                 publish(task, &artifact, &output, name)?
             }
         } else {
-            let release = root.join("unpackage/release");
+            let release = build_output_dir(root, &p.output_dir, mode);
             let source = release.join(format!("{appid}.wgt"));
             let before = snapshot(&release, "wgt");
             let started = SystemTime::now();
@@ -654,7 +645,46 @@ fn build_inner(
             return Err(format!("AppID 恢复未完成: {e}; 构建结果: {result:?}"));
         }
     }
-    result
+    // 恢复完成后再次检查取消；打开目录失败只警告，不改变成功的构建结果。
+    let result = result.and_then(|status| task.check().map(|_| status));
+    finish_build(
+        result,
+        settings.open_output_after_build,
+        || {
+            let output = build_output_dir(Path::new(&p.path), &p.output_dir, mode);
+            let status = Command::new("/usr/bin/open")
+                .arg(&output)
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err(format!("{}: {status}", output.display()));
+            }
+            Ok(())
+        },
+        |warning| task.emit("log", warning, None, None),
+    )
+}
+fn build_output_dir(root: &Path, configured: &str, mode: &str) -> PathBuf {
+    if mode != "apk" || configured.is_empty() {
+        root.join("unpackage/release")
+    } else {
+        // join 对绝对路径直接使用该路径，相对路径则以项目目录为基准。
+        root.join(configured)
+    }
+}
+fn finish_build(
+    result: Result<&'static str>,
+    open_enabled: bool,
+    open: impl FnOnce() -> Result<()>,
+    warn: impl FnOnce(&str),
+) -> Result<&'static str> {
+    let status = result?;
+    if open_enabled {
+        if let Err(error) = open() {
+            warn(&format!("警告：构建已完成，但打开输出目录失败: {error}"));
+        }
+    }
+    Ok(status)
 }
 fn verify_archive(task: &Task, source: &Path) -> Result<()> {
     task.check()?;
@@ -741,6 +771,77 @@ fn patch_gradle(text: &str, name: &str, code: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn output_directory_matches_published_artifacts() {
+        let root = Path::new("/tmp/project");
+        for mode in ["wgt-android", "wgt-ios", "apk"] {
+            assert_eq!(
+                build_output_dir(root, "", mode),
+                root.join("unpackage/release")
+            );
+        }
+        assert_eq!(
+            build_output_dir(root, "dist/apk", "apk"),
+            root.join("dist/apk")
+        );
+        assert_eq!(
+            build_output_dir(root, "/tmp/output", "apk"),
+            PathBuf::from("/tmp/output")
+        );
+        assert_eq!(
+            build_output_dir(root, "/tmp/output", "wgt-ios"),
+            root.join("unpackage/release")
+        );
+    }
+    #[test]
+    fn completed_build_only_opens_enabled_success_and_open_failure_is_warning() {
+        for message in ["构建失败", "已取消", "AppID 恢复未完成"] {
+            let result = finish_build(
+                Err(message.into()),
+                true,
+                || panic!("不应打开目录"),
+                |_| panic!("不应警告"),
+            );
+            assert_eq!(result.unwrap_err(), message);
+        }
+        assert_eq!(
+            finish_build(
+                Ok("success"),
+                false,
+                || panic!("不应打开目录"),
+                |_| panic!("不应警告")
+            )
+            .unwrap(),
+            "success"
+        );
+        let mut opened = false;
+        assert_eq!(
+            finish_build(
+                Ok("success"),
+                true,
+                || {
+                    opened = true;
+                    Ok(())
+                },
+                |_| panic!("不应警告")
+            )
+            .unwrap(),
+            "success"
+        );
+        assert!(opened);
+        let mut warning = String::new();
+        assert_eq!(
+            finish_build(
+                Ok("success"),
+                true,
+                || Err("访达不可用".into()),
+                |message| warning = message.into()
+            )
+            .unwrap(),
+            "success"
+        );
+        assert!(warning.contains("访达不可用"));
+    }
     #[test]
     fn wgt_versions_are_placed_directly_in_release() {
         let dir = tempfile::tempdir().unwrap();

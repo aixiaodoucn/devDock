@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="shell" x1="180" y1="100" x2="840" y2="960" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#414C83"/><stop offset=".48" stop-color="#232944"/><stop offset="1" stop-color="#121B33"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="220" y1="100" x2="820" y2="940" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#AAB8F9" stop-opacity=".8"/><stop offset=".4" stop-color="#5C6AA9" stop-opacity=".2"/><stop offset="1" stop-color="#070D22" stop-opacity=".8"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="310" y1="265" x2="715" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F0E9FF"/><stop offset=".48" stop-color="#BDA8FF"/><stop offset="1" stop-color="#729DFF"/>
+    </linearGradient>
+    <linearGradient id="dock" x1="293" y1="720" x2="728" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B79CFF"/><stop offset="1" stop-color="#74C8FF"/>
+    </linearGradient>
+  </defs>
+  <rect x="80" y="88" width="864" height="864" rx="200" fill="#0B1229" fill-opacity=".16"/>
+  <rect x="80" y="72" width="864" height="864" rx="200" fill="url(#shell)"/>
+  <rect x="84" y="76" width="856" height="856" rx="196" stroke="url(#edge)" stroke-width="8"/>
+  <rect x="128" y="120" width="768" height="768" rx="155" stroke="#ACB9F7" stroke-opacity=".08" stroke-width="2"/>
+  <!-- 开放式电路框与停靠轨道，呼应开发工作台的项目汇聚。 -->
+  <path d="M215 397V305C215 259 252 222 298 222H365M659 222H726C772 222 809 259 809 305V397M215 627V719C215 765 252 802 298 802H365M659 802H726C772 802 809 765 809 719V627" stroke="#A6BAF3" stroke-opacity=".23" stroke-width="8" stroke-linecap="round"/>
+  <path d="M363 327H495C610 327 677 385 677 490C677 595 610 653 495 653H363" stroke="#090F28" stroke-opacity=".3" stroke-width="94" stroke-linejoin="round" transform="translate(0 12)"/>
+  <path d="M363 301H495C610 301 677 359 677 464C677 569 610 627 495 627H363V301Z" stroke="url(#mark)" stroke-width="76" stroke-linejoin="round"/>
+  <path d="M441 427L482 464L441 501" stroke="#F0EDFF" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M526 501H566" stroke="#B8D2FF" stroke-width="18" stroke-linecap="round"/>
+  <path d="M325 735H699" stroke="#090F28" stroke-opacity=".35" stroke-width="44" stroke-linecap="round"/>
+  <path d="M325 722H699" stroke="url(#dock)" stroke-width="28" stroke-linecap="round"/>
+  <path d="M425 722H599" stroke="#E6E7FF" stroke-opacity=".55" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="742" cy="272" r="14" fill="#93D6FF"/>
+  <circle cx="742" cy="272" r="24" stroke="#93D6FF" stroke-opacity=".15" stroke-width="8"/>
+</svg>

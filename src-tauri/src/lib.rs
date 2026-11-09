@@ -293,6 +293,49 @@ async fn list_menus(app: AppHandle, hbuilderx_path: String) -> Result<Vec<Vec<St
 mod package_tests {
     use super::*;
     #[test]
+    fn theme_backup_roundtrip_and_legacy_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("backup.json").to_str().unwrap().to_owned();
+        let legacy = r#"{"schemaVersion":1,"projects":[],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}}"#;
+        fs::write(&path, legacy).unwrap();
+        let mut config = read_backup(path.clone()).unwrap();
+        assert_eq!(config.settings.theme, "lavender");
+        assert!(config.settings.open_output_after_build);
+        for (theme, enabled) in [
+            ("lavender", true),
+            ("blue", false),
+            ("cyan", true),
+            ("rose", false),
+            ("amber", true),
+            ("slate", false),
+        ] {
+            config.settings.theme = theme.into();
+            config.settings.open_output_after_build = enabled;
+            write_backup(path.clone(), config.clone()).unwrap();
+            assert_eq!(read_backup(path.clone()).unwrap().settings.theme, theme);
+            let value: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(value["settings"]["theme"], theme);
+            assert_eq!(value["settings"]["openOutputAfterBuild"], enabled);
+            assert_eq!(
+                read_backup(path.clone())
+                    .unwrap()
+                    .settings
+                    .open_output_after_build,
+                enabled
+            );
+            assert_eq!(value["schemaVersion"], 1);
+        }
+        let original = fs::read_to_string(&path).unwrap();
+        config.settings.theme = "dark".into();
+        assert!(write_backup(path.clone(), config.clone())
+            .unwrap_err()
+            .contains("theme"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        fs::write(&path, serde_json::to_string(&config).unwrap()).unwrap();
+        assert!(read_backup(path).unwrap_err().contains("theme"));
+    }
+    #[test]
     fn artifacts_are_revealed_in_finder_instead_of_launched() {
         let dir = tempfile::tempdir().unwrap();
         for name in ["3.8.8.wgt", "3.8.8-ios.wgt", "门店 App.apk"] {

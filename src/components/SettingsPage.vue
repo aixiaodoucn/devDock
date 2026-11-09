@@ -7,8 +7,11 @@ import {
   SlidersHorizontal,
   Terminal,
   ShieldCheck,
+  Palette,
+  Check,
 } from 'lucide-vue-next';
-import type { Settings, Tools } from '../types';
+import type { Settings, Tools, ThemeName } from '../types';
+import { THEME_OPTIONS } from '../types';
 import { desktop } from '../api';
 import PathInput from './PathInput.vue';
 const props = defineProps<{
@@ -21,6 +24,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   save: [settings: Settings];
+  theme: [theme: ThemeName];
   detect: [];
   export: [];
   import: [];
@@ -29,8 +33,18 @@ const emit = defineEmits<{
 const draft = ref({ ...props.settings });
 watch(
   () => props.settings,
-  (value) => {
-    draft.value = { ...value };
+  (value, previous) => {
+    // 快速切换主题时保留尚未保存的工具输入，只同步外观与构建偏好。
+    if (
+      value.hbuilderxPath !== previous.hbuilderxPath ||
+      value.terminal !== previous.terminal ||
+      value.jdkPath !== previous.jdkPath
+    ) {
+      draft.value = { ...value };
+    } else {
+      draft.value.theme = value.theme;
+      draft.value.openOutputAfterBuild = value.openOutputAfterBuild;
+    }
   },
   { deep: true },
 );
@@ -45,6 +59,47 @@ watch(
       </div>
       <SlidersHorizontal :size="32" class="heading-icon" />
     </div>
+    <section class="appearance-section" aria-labelledby="appearance-title">
+      <div class="section-heading">
+        <div>
+          <div class="eyebrow">MAKE IT YOURS</div>
+          <h2 id="appearance-title"><Palette :size="18" />外观主题</h2>
+          <p>为你的工作空间，选一种舒服的颜色。切换即保存。</p>
+        </div>
+        <span class="appearance-note">六种色彩，同样专注</span>
+      </div>
+      <div class="theme-options">
+        <button
+          v-for="theme in THEME_OPTIONS"
+          :key="theme.id"
+          type="button"
+          :class="['theme-option', { selected: settings.theme === theme.id }]"
+          :aria-pressed="settings.theme === theme.id"
+          :title="theme.description"
+          :disabled="saving"
+          @click="emit('theme', theme.id)"
+        >
+          <div :class="['theme-preview', theme.id]" aria-hidden="true">
+            <div class="theme-preview-sidebar"><span></span><i></i><i></i><i></i></div>
+            <div class="theme-preview-main">
+              <span class="theme-preview-line"></span>
+              <div class="theme-preview-cards"><i></i><i></i><i></i></div>
+              <span class="theme-preview-line short"></span
+              ><span class="theme-preview-action"></span>
+            </div>
+            <span class="theme-preview-check" v-if="settings.theme === theme.id"
+              ><Check :size="16"
+            /></span>
+          </div>
+          <div class="theme-option-caption">
+            <span
+              ><strong>{{ theme.name }}</strong
+              ><small>{{ theme.english }}</small></span
+            ><span class="theme-color-swatch" :style="{ background: theme.color }"></span>
+          </div>
+        </button>
+      </div>
+    </section>
     <div class="settings-columns">
       <section class="panel">
         <div class="panel-heading">
