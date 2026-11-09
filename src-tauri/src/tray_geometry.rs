@@ -39,6 +39,33 @@ pub(crate) fn place(anchor: Rect, work: Rect, scale: f64) -> Placement {
     }
 }
 
+// tray-icon 的物理坐标以主屏左上为原点；AppKit frame 使用主屏左下原点的点坐标。
+#[cfg(target_os = "macos")]
+pub(crate) fn native_frame(
+    anchor: Rect,
+    visible: Rect,
+    primary_height: f64,
+    scale: f64,
+) -> Placement {
+    let mut result = place(
+        Rect {
+            x: anchor.x / scale,
+            y: anchor.y / scale,
+            width: anchor.width / scale,
+            height: anchor.height / scale,
+        },
+        Rect {
+            x: visible.x,
+            y: primary_height - visible.y - visible.height,
+            width: visible.width,
+            height: visible.height,
+        },
+        1.,
+    );
+    result.y = primary_height - result.y - result.height;
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,6 +77,45 @@ mod tests {
             width,
             height,
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_retina_frame_flips_primary_origin_and_scales_once() {
+        assert_eq!(
+            native_frame(
+                rect(1400., 0., 44., 48.),
+                rect(0., 24., 1440., 852.),
+                900.,
+                2.
+            ),
+            Placement {
+                x: 516.,
+                y: 310.,
+                width: 390.,
+                height: 560.
+            }
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_frame_handles_negative_and_above_primary_mixed_dpi_screens() {
+        // 副屏位于主屏左侧并高出 200 点，tray-icon 将整个全局坐标乘副屏缩放。
+        assert_eq!(
+            native_frame(
+                rect(-1000., -400., 44., 48.),
+                rect(-1920., 224., 1920., 852.),
+                900.,
+                2.
+            ),
+            Placement {
+                x: -684.,
+                y: 510.,
+                width: 390.,
+                height: 560.
+            }
+        );
     }
 
     #[test]

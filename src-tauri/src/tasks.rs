@@ -387,6 +387,8 @@ pub fn action(
             }
             // 仅 Node shell 动作有明确选择时激活；交给终端前再次验证安装文件。
             let command = nvm::command_for(&project, &action)?;
+            // 非激活面板可能仍持有键盘焦点；先收起再让终端接收新标签和粘贴按键。
+            crate::tray::hide_quick_panel(task.app.clone())?;
             let mut c = Command::new("/usr/bin/osascript");
             c.arg(scripts.join("terminal.applescript"))
                 .arg(terminal)

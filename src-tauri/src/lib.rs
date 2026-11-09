@@ -5,6 +5,8 @@ mod nvm;
 mod tasks;
 mod tray;
 mod tray_geometry;
+#[cfg(target_os = "macos")]
+mod tray_panel;
 use config::{Action, AppConfig, Project, Result, Settings};
 use serde::Serialize;
 use std::{
@@ -530,7 +532,11 @@ pub fn run() {
                 }
             }
         }
-        tauri::RunEvent::Exit => tasks::cancel_all(handle),
+        tauri::RunEvent::Exit => {
+            #[cfg(target_os = "macos")]
+            tray_panel::shutdown();
+            tasks::cancel_all(handle);
+        }
         _ => {}
     });
 }

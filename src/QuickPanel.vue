@@ -186,7 +186,8 @@ onMounted(async () => {
     status.value = `快捷状态监听失败，请在工作台执行：${message(error)}`;
     statusError.value = true;
   }
-  if (!disposed) await refresh(true);
+  // 隐藏预创建的弹框不主动请求输入焦点，仅收到显示事件后再聚焦搜索。
+  if (!disposed) await refresh();
 });
 onUnmounted(() => {
   disposed = true;

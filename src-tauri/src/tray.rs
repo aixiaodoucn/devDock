@@ -1,13 +1,12 @@
-use crate::{
-    config::Result,
-    tray_geometry::{self, Rect},
-};
+use crate::{config::Result, tray_geometry::Rect};
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder,
 };
+#[cfg(not(target_os = "macos"))]
+use {crate::tray_geometry, tauri::PhysicalSize};
 
 #[cfg(all(test, target_os = "macos"))]
 mod spaces_tests {
@@ -36,7 +35,7 @@ mod spaces_tests {
 }
 
 #[cfg(target_os = "macos")]
-fn quick_panel_spaces(
+pub(crate) fn quick_panel_spaces(
     mut behavior: objc2_app_kit::NSWindowCollectionBehavior,
 ) -> objc2_app_kit::NSWindowCollectionBehavior {
     use objc2_app_kit::NSWindowCollectionBehavior as Behavior;
@@ -48,15 +47,20 @@ fn quick_panel_spaces(
 }
 
 #[cfg(target_os = "macos")]
-fn configure_quick_panel_spaces(panel: &tauri::WebviewWindow) -> tauri::Result<()> {
-    let pointer = panel.ns_window()?;
-    // SAFETY: 仅从 Tauri setup 主线程调用；指针属于仍存活的 quick-panel NSWindow。
-    // 不改变 NSWindow 类或应用激活策略，保留 Tauri 的焦点、输入与窗口事件处理。
-    unsafe {
-        let window = &*pointer.cast::<objc2_app_kit::NSWindow>();
-        window.setCollectionBehavior(quick_panel_spaces(window.collectionBehavior()));
+fn on_panel_main_thread(
+    app: &AppHandle,
+    operation: impl FnOnce() -> Result<()> + Send + 'static,
+) -> Result<()> {
+    if objc2_foundation::MainThreadMarker::new().is_some() {
+        return operation();
     }
-    Ok(())
+    // IPC 可能来自工作线程；同步等待 hide 完成，保证打开主窗口之前先释放 panel 的焦点。
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = send.send(operation());
+    })
+    .map_err(|e| e.to_string())?;
+    receive.recv().map_err(|e| e.to_string())?
 }
 
 pub const TRAY_ID: &str = "dev-dock-tray";
@@ -64,10 +68,17 @@ pub const QUICK_PANEL: &str = "quick-panel";
 
 #[tauri::command]
 pub fn hide_quick_panel(app: AppHandle) -> Result<()> {
-    if let Some(panel) = app.get_webview_window(QUICK_PANEL) {
-        panel.hide().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        on_panel_main_thread(&app, crate::tray_panel::hide)
     }
-    Ok(())
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(panel) = app.get_webview_window(QUICK_PANEL) {
+            panel.hide().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -86,7 +97,7 @@ pub fn show_main_window(app: AppHandle, project_id: Option<String>) -> Result<()
     Ok(())
 }
 
-fn physical_rect(rect: tauri::Rect) -> Rect {
+pub(crate) fn physical_rect(rect: tauri::Rect) -> Rect {
     // tray-icon 返回物理坐标；转换只为解开 Tauri 的 Position/Size 枚举。
     let position = rect.position.to_physical::<f64>(1.);
     let size = rect.size.to_physical::<f64>(1.);
@@ -98,6 +109,18 @@ fn physical_rect(rect: tauri::Rect) -> Rect {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn toggle_panel(
+    app: &AppHandle,
+    rect: tauri::Rect,
+    _position: PhysicalPosition<f64>,
+) -> Result<()> {
+    let handle = app.clone();
+    let anchor = physical_rect(rect);
+    on_panel_main_thread(app, move || crate::tray_panel::toggle(&handle, anchor))
+}
+
+#[cfg(not(target_os = "macos"))]
 fn toggle_panel(app: &AppHandle, rect: tauri::Rect, position: PhysicalPosition<f64>) -> Result<()> {
     let panel = app
         .get_webview_window(QUICK_PANEL)
@@ -140,6 +163,7 @@ fn toggle_panel(app: &AppHandle, rect: tauri::Rect, position: PhysicalPosition<f
 }
 
 // 点击状态栏图标会先令窗口失焦；此时让左键回调处理切换，避免隐藏后又立即打开。
+#[cfg(not(target_os = "macos"))]
 fn cursor_over_tray(app: &AppHandle) -> bool {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return false;
@@ -174,23 +198,28 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
     .inner_size(390., 560.)
     .visible(false)
     .focused(false)
+    // 非激活弹框需要把首次点击直接交给按钮，而非只用来激活 WebView。
+    .accept_first_mouse(true)
     .decorations(false)
     .resizable(false)
     .always_on_top(true)
     .skip_taskbar(true)
     .shadow(true)
     .build()?;
-    // 仅快捷窗加入其他桌面和全屏 Space；必须在第一次显示/聚焦前完成。
+    // macOS 仅借用隐藏 wrapper 的 webview；之后绝不通过 Tauri 显示或聚焦这个普通窗口。
     #[cfg(target_os = "macos")]
-    configure_quick_panel_spaces(&panel)?;
-    let handle = app.clone();
-    panel.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Focused(false)) && !cursor_over_tray(&handle) {
-            if let Err(error) = hide_quick_panel(handle.clone()) {
-                report_error(&handle, error);
+    crate::tray_panel::init(&panel)?;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let handle = app.clone();
+        panel.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Focused(false)) && !cursor_over_tray(&handle) {
+                if let Err(error) = hide_quick_panel(handle.clone()) {
+                    report_error(&handle, error);
+                }
             }
-        }
-    });
+        });
+    }
     let open = MenuItem::with_id(app, "tray-open-main", "打开 DevDock", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "tray-quit", "退出 DevDock", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
