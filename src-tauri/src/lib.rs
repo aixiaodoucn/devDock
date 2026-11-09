@@ -487,6 +487,19 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("无法初始化 DevDock");
     app.run(|handle, event| match event {
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => {
+            // 点击程序坞图标时恢复被关闭隐藏的主窗口，不依赖快捷弹框的可见状态。
+            if !handle
+                .state::<tasks::Runtime>()
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                if let Err(error) = tray::show_main_window(handle.clone(), None) {
+                    eprintln!("无法重新打开 DevDock 主窗口: {error}");
+                }
+            }
+        }
         tauri::RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
