@@ -11,9 +11,11 @@ import {
   Play,
   FolderGit2,
   AlertCircle,
+  Square,
 } from 'lucide-vue-next';
 import { api, desktop } from './api';
 import { applyTheme } from './theme';
+import { stopMenuAction } from './actions';
 import {
   defaultConfig,
   TYPE_LABELS,
@@ -40,6 +42,7 @@ let requestId = 0;
 let disposed = false;
 const unlisteners: UnlistenFn[] = [];
 const taskStates = new Map<string, TaskEvent>();
+const taskNotices = new Map<string, string>();
 const needle = computed(() => query.value.trim().toLowerCase());
 function matchesAction(action: Action) {
   return `${action.name} ${action.command} ${action.menuPath.join(' ')}`
@@ -124,7 +127,7 @@ function applyTask(event: TaskEvent) {
   statusError.value = event.status === 'error';
   status.value =
     event.status === 'triggered'
-      ? '已触发，请在对应工具查看运行日志。'
+      ? taskNotices.get(event.taskId) || '已触发，请在对应工具查看运行日志。'
       : event.status === 'running'
         ? '正在启动…'
         : event.status === 'success'
@@ -132,10 +135,22 @@ function applyTask(event: TaskEvent) {
           : event.message;
 }
 function handleTask(event: TaskEvent) {
+  if (event.kind === 'notice') {
+    taskNotices.set(event.taskId, event.message);
+    if (event.taskId === activeTaskId) {
+      status.value = event.message;
+      statusError.value = false;
+    }
+    return;
+  }
   if (event.kind !== 'status') return;
   // 任务事件可能先于 invoke 返回，先缓存状态，避免漏掉快速失败。
   taskStates.set(event.taskId, event);
-  if (taskStates.size > 50) taskStates.delete(taskStates.keys().next().value!);
+  if (taskStates.size > 50) {
+    const oldest = taskStates.keys().next().value!;
+    taskStates.delete(oldest);
+    taskNotices.delete(oldest);
+  }
   if (event.taskId === activeTaskId) applyTask(event);
 }
 async function run(project: Project, action: Action) {
@@ -158,6 +173,10 @@ async function run(project: Project, action: Action) {
     status.value = message(error);
     statusError.value = true;
   }
+}
+async function runStop(project: Project, action: Action) {
+  const stop = stopMenuAction(action);
+  if (stop) await run(project, stop);
 }
 watch(() => config.value.settings.theme, applyTheme, { immediate: true, flush: 'sync' });
 onMounted(async () => {
@@ -280,23 +299,33 @@ onUnmounted(() => {
           </button>
         </div>
         <div v-if="isExpanded(project.id)" class="quick-actions">
-          <button
-            v-for="action in projectActions(project)"
-            :key="action.id"
-            class="quick-action"
-            :disabled="launching || loading || !desktop || !eventsReady"
-            :title="actionText(action)"
-            :aria-label="`执行 ${project.name}：${action.name}`"
-            @click="run(project, action)"
-          >
-            <span class="quick-action-copy"
-              ><strong>{{ action.name }}</strong
-              ><code>{{ actionText(action) }}</code></span
-            ><span class="quick-platform">{{
-              PLATFORM_LABELS[action.platform] || action.platform
-            }}</span
-            ><Play :size="12" />
-          </button>
+          <div v-for="action in projectActions(project)" :key="action.id" class="quick-action-line">
+            <button
+              class="quick-action"
+              :disabled="launching || loading || !desktop || !eventsReady"
+              :title="actionText(action)"
+              :aria-label="`执行 ${project.name}：${action.name}`"
+              @click="run(project, action)"
+            >
+              <span class="quick-action-copy"
+                ><strong>{{ action.name }}</strong
+                ><code>{{ actionText(action) }}</code></span
+              ><span class="quick-platform">{{
+                PLATFORM_LABELS[action.platform] || action.platform
+              }}</span
+              ><Play :size="12" />
+            </button>
+            <button
+              v-if="stopMenuAction(action)"
+              class="icon-button quick-stop"
+              :disabled="launching || loading || !desktop || !eventsReady"
+              :aria-label="`停止 ${project.name}：${action.name}`"
+              title="停止当前项目的运行任务"
+              @click="runStop(project, action)"
+            >
+              <Square :size="12" />
+            </button>
+          </div>
           <div v-if="!projectActions(project).length" class="quick-no-actions">
             <span>{{ project.type === 'backend' ? '后端操作待后续支持' : '暂无快捷命令' }}</span
             ><button class="text-button" :disabled="!desktop" @click="openMain(project.id)">

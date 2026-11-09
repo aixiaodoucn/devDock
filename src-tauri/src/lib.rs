@@ -1,5 +1,6 @@
 mod accessibility;
 mod config;
+mod hbuilder_owner;
 mod manifest;
 mod nvm;
 mod tasks;

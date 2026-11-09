@@ -20,16 +20,47 @@ on run argv
  repeat with labelText in {"运行", "发行", "钉钉小程序-开发"}
   if automation's isMenuPlaceholder(contents of labelText) then error "不应跳过正常菜单: " & labelText
  end repeat
- set resultText to "WGT 匹配测试通过（17 项）；菜单占位项测试通过（10 项）"
+ if (automation's runningMenuCandidates("钉钉小程序-开发")) is not {"停止钉钉小程序-开发", "停止 钉钉小程序-开发"} then error "运行状态应匹配同一命令的停止入口"
+ if (automation's runningMenuCandidates("停止钉钉小程序-开发")) is not {} then error "明确配置的停止命令不应被当作重复启动"
+ if (automation's runningMenuCandidates("")) is not {} then error "空菜单不应生成运行状态候选"
+ if (automation's baseRunMenuName("停止微信开发者工具 - [shop]")) is not "微信开发者工具 - [shop]" then error "应识别运行中的微信菜单别名"
+ if (automation's baseRunMenuName("停止 钉钉小程序-开发")) is not "钉钉小程序-开发" then error "应兼容停止前缀后的空格"
+ if (automation's baseRunMenuName("发行到微信")) is not "发行到微信" then error "不应修改普通菜单名"
+ if (automation's runningMenuCandidates(missing value)) is not {} then error "缺失菜单不应生成候选"
+ if (automation's runningMenuCandidates("停止 微信开发者工具")) is not {} then error "显式停止预设不能识别为启动"
+ if (automation's baseRunMenuName(missing value)) is not missing value then error "缺失名称应保持缺失"
+ if (automation's baseRunMenuName("停止微信开发者工具")) is not "微信开发者工具" then error "停止微信应保留预设基名"
+ if (automation's baseRunMenuName("停止;$(touch never)")) is not ";$(touch never)" then error "命令文本只能作为名称处理"
+ if (automation's runningMenuCandidates("项目 ' ;$(touch never)")) is not {"停止项目 ' ;$(touch never)", "停止 项目 ' ;$(touch never)"} then error "菜单特殊字符必须原样保留"
+ repeat with labelText in {"微信开发者工具 - [shop]", "微信开发者工具 - shop", "停止微信开发者工具 - [shop]", "停止 微信开发者工具 - shop"}
+  if not (automation's isProjectWeixinMenu(contents of labelText, "shop")) then error "应匹配目标项目的运行/停止微信别名"
+ end repeat
+ repeat with labelText in {"微信开发者工具 - [other]", "停止微信开发者工具 - [shop] 指定页面", "微信开发者工具"}
+  if automation's isProjectWeixinMenu(contents of labelText, "shop") then error "不能匹配其他项目或指定页面微信菜单"
+ end repeat
+ set resultText to "WGT 匹配（17 项）、菜单占位项（10 项）、重复运行及停止命令（12 项）、微信别名（7 项）测试通过"
  if (count of argv) > 1 and item 2 of argv is "--live-menus" then
   tell application "System Events" to set originalFrontApp to unix id of first application process whose frontmost is true
   set menuText to run script automation with parameters {"list"}
+  set idleState to run script automation with parameters {"inspect-running", "/fake-read-only-project", "", "运行", "停止__DEVDOCK_TEST_DOES_NOT_EXIST__"}
+  if idleState is not "idle" then error "不存在的运行命令应提示无需停止"
+  set inspectedCount to 0
+  repeat with menuLine in paragraphs of menuText
+   set AppleScript's text item delimiters to character id 31
+   set menuArgs to text items of (contents of menuLine)
+   set AppleScript's text item delimiters to ""
+   if item 1 of menuArgs is "运行" and (last item of menuArgs) starts with "停止" then
+    set stateText to run script automation with parameters ({"inspect-running", "/fake-read-only-project", ""} & menuArgs)
+    if stateText does not start with "__DEVDOCK_HX_ALREADY_RUNNING__:" then error "未识别实际停止菜单，且检查不应点击"
+    set inspectedCount to inspectedCount + 1
+   end if
+  end repeat
   tell application "System Events" to set currentFrontApp to unix id of first application process whose frontmost is true
   if originalFrontApp is not currentFrontApp then error "读取菜单不应切换前台应用"
   if menuText does not contain ("运行" & character id 31) then error "未读取到运行菜单"
   if menuText does not contain ("发行" & character id 31) then error "未读取到发行菜单"
   if menuText contains "数据加载中..." then error "结果不应包含加载占位项"
-  set resultText to resultText & "；实际菜单读取通过（" & (count of paragraphs of menuText) & " 条路径）"
+  set resultText to resultText & "；实际菜单读取通过（" & (count of paragraphs of menuText) & " 条路径，" & inspectedCount & " 个停止菜单只读检查）"
  end if
  return resultText
 end run

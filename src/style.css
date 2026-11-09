@@ -1127,6 +1127,20 @@ button {
   min-height: 48px;
   padding: 8px 12px;
 }
+.command-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.button.stop-command {
+  color: #a45548;
+  border-color: #e6c9c2;
+  background: #fff8f5;
+}
+.button.stop-command:hover:not(:disabled) {
+  background: #fff0eb;
+  border-color: #d5a498;
+}
 .command-row + .command-row {
   border-top: 1px solid var(--line);
 }

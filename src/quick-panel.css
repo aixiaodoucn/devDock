@@ -180,6 +180,25 @@ html[data-view='quick'] #app {
 .quick-actions {
   padding: 0 3px 8px 34px;
 }
+.quick-action-line {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.quick-action-line .quick-action {
+  flex: 1;
+  width: 0;
+}
+.quick-stop {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  color: #a45548;
+}
+.quick-stop:hover:not(:disabled) {
+  color: #a45548;
+  background: #fff0eb;
+}
 .quick-action {
   display: flex;
   align-items: center;

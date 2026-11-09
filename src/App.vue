@@ -31,6 +31,7 @@ import ProjectDialog from './components/ProjectDialog.vue';
 import SettingsPage from './components/SettingsPage.vue';
 import { api, desktop } from './api';
 import { applyTheme } from './theme';
+import { stopMenuAction } from './actions';
 import {
   defaultConfig,
   newProject,
@@ -265,6 +266,7 @@ async function refreshManifest() {
   }
 }
 function handleEvent(event: TaskEvent) {
+  if (event.kind === 'notice') notify(event.message);
   let task = tasks.value.find((item) => item.id === event.taskId);
   // 后端事件可能先于 invoke 返回，按任务 ID 接收，避免遗漏首条日志。
   if (!task) {
@@ -345,6 +347,10 @@ async function runAction(action: Action) {
         ...config.value.settings,
       }),
     );
+}
+async function runStopAction(action: Action) {
+  const stop = stopMenuAction(action);
+  if (stop) await runAction(stop);
 }
 async function cancelTask() {
   if (!currentTask.value) return;
@@ -872,14 +878,26 @@ onUnmounted(() => {
                 :title="action.kind === 'shell' ? action.command : action.menuPath.join(' → ')"
                 >{{ action.kind === 'shell' ? action.command : action.menuPath.join(' → ') }}</code
               >
-              <button
-                class="button small"
-                :disabled="busy || !desktop"
-                :aria-label="`执行 ${action.name}`"
-                @click="runAction(action)"
-              >
-                <Play :size="13" />执行
-              </button>
+              <div class="command-row-actions">
+                <button
+                  class="button small"
+                  :disabled="busy || !desktop"
+                  :aria-label="`执行 ${action.name}`"
+                  @click="runAction(action)"
+                >
+                  <Play :size="13" />执行
+                </button>
+                <button
+                  v-if="stopMenuAction(action)"
+                  class="button small stop-command"
+                  :disabled="busy || !desktop"
+                  :aria-label="`停止 ${action.name}`"
+                  title="停止当前项目的运行任务"
+                  @click="runStopAction(action)"
+                >
+                  <Square :size="11" />停止
+                </button>
+              </div>
             </article>
           </div>
           <div v-else class="action-grid">
@@ -946,7 +964,10 @@ onUnmounted(() => {
             <template v-if="currentTask?.logs.length"
               ><div v-for="(line, index) in currentTask.logs" :key="index" class="log-line">
                 <time>{{ line.time }}</time
-                ><span :class="{ 'log-status': line.kind === 'status' }">{{ line.message }}</span>
+                ><span
+                  :class="{ 'log-status': line.kind === 'status' || line.kind === 'notice' }"
+                  >{{ line.message }}</span
+                >
               </div></template
             >
             <div v-else class="log-placeholder">

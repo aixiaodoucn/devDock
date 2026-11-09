@@ -4,6 +4,92 @@ on isMenuPlaceholder(labelText)
  return labelText is in {"", "数据加载中...", "数据加载中…", "加载中...", "加载中…", "Loading..."}
 end isMenuPlaceholder
 
+-- 运行中的自定义菜单会被 HBuilderX 改为“停止 + 原名称”。
+on runningMenuCandidates(labelText)
+ if labelText is missing value or labelText is "" then return {}
+ if labelText starts with "停止" then return {}
+ return {"停止" & labelText, "停止 " & labelText}
+end runningMenuCandidates
+
+on baseRunMenuName(labelText)
+ if labelText is missing value then return missing value
+ if labelText starts with "停止 " and (count of labelText) > 3 then return text 4 thru -1 of labelText
+ if labelText starts with "停止" and (count of labelText) > 2 then return text 3 thru -1 of labelText
+ return labelText
+end baseRunMenuName
+
+on findRunningMenu(theMenu, labelText)
+ local stopNames, candidateLabel
+ set stopNames to my runningMenuCandidates(labelText)
+ tell application "System Events"
+  repeat with candidateReference in stopNames
+   set candidateLabel to contents of candidateReference
+   if exists menu item candidateLabel of theMenu then return candidateLabel
+  end repeat
+ end tell
+ return missing value
+end findRunningMenu
+
+on isProjectWeixinMenu(labelText, projectName)
+ local baseLabel
+ set baseLabel to my baseRunMenuName(labelText)
+ if baseLabel is missing value then return false
+ return baseLabel is ("微信开发者工具 - [" & projectName & "]") or baseLabel is ("微信开发者工具 - " & projectName)
+end isProjectWeixinMenu
+
+-- 预设微信名称在实际菜单中带项目后缀；显式停止沿用同一别名规则。
+on resolveMenuLabel(theMenu, requestedLabel, projectName)
+ local baseLabel, matchingNames, currentEntries, candidateName, resolvedName, runningLabel
+ set baseLabel to my baseRunMenuName(requestedLabel)
+ if baseLabel is not "微信开发者工具" then return requestedLabel
+ tell application "System Events"
+  if exists menu item requestedLabel of theMenu then return requestedLabel
+  set matchingNames to {}
+  set currentEntries to get menu items of theMenu
+  repeat with candidateReference in currentEntries
+   try
+    set candidateName to name of (contents of candidateReference)
+    set resolvedName to my baseRunMenuName(candidateName)
+    if my isProjectWeixinMenu(resolvedName, projectName) then
+     if resolvedName is not in matchingNames then set end of matchingNames to resolvedName
+    end if
+   on error detailText number errorNumber
+    if errorNumber is not in {-1728, -1719, -10000} then error detailText number errorNumber
+   end try
+  end repeat
+  if (count of matchingNames) is 0 then return requestedLabel
+  if (count of matchingNames) is not 1 then error "微信开发者工具项目菜单不唯一，未选择指定页面菜单"
+  set baseLabel to item 1 of matchingNames
+  if requestedLabel starts with "停止" then
+   set runningLabel to my findRunningMenu(theMenu, baseLabel)
+   if runningLabel is not missing value then return runningLabel
+   return "停止" & baseLabel
+  end if
+ end tell
+ return baseLabel
+end resolveMenuLabel
+
+-- 归属检查只读，不激活窗口，不改变当前选择，更不点击运行/停止。
+on inspectRunningMenu(menuArgs, projectName)
+ local topName, currentMenu, labelText, runningLabel
+ set topName to item 1 of menuArgs
+ if topName is not "运行" then return "idle"
+ tell application "System Events" to tell process "HBuilderX"
+  set currentMenu to menu 1 of menu bar item topName of menu bar 1
+  repeat with idx from 2 to count of menuArgs
+   set labelText to my resolveMenuLabel(currentMenu, item idx of menuArgs, projectName)
+   if idx is (count of menuArgs) then
+    set runningLabel to my findRunningMenu(currentMenu, my baseRunMenuName(labelText))
+    if runningLabel is not missing value then return "__DEVDOCK_HX_ALREADY_RUNNING__:" & my baseRunMenuName(runningLabel)
+    return "idle"
+   end if
+   if not (exists menu item labelText of currentMenu) then error "菜单不存在: " & labelText
+   set currentMenu to menu 1 of menu item labelText of currentMenu
+  end repeat
+ end tell
+ return "idle"
+end inspectRunningMenu
+
 on walkMenu(theMenu, prefix)
  local menuPaths, menuEntries, menuEntry, labelText, currentPath, childMenus
  set menuPaths to {}
@@ -80,10 +166,13 @@ end findWgtConfirmation
 
 on run argv
  -- rows 是 System Events 的控件术语，必须使用不冲突的局部变量。
- local menuPaths
+ local menuPaths, runningLabel
  set operation to item 1 of argv
  tell application "System Events"
-  if not (exists process "HBuilderX") then error "HBuilderX 未运行"
+  if not (exists process "HBuilderX") then
+   if operation is "inspect-running" then return "idle"
+   error "HBuilderX 未运行"
+  end if
   tell process "HBuilderX"
    if operation is "list" then
     -- 只读扫描保持调用方在前台；执行菜单操作时才激活 HBuilderX。
@@ -97,6 +186,10 @@ on run argv
    end if
    set projectPath to item 2 of argv
    set projectName to item 3 of argv
+   if operation is "inspect-running" then
+    if (count of argv) < 5 then error "菜单路径为空"
+    return my inspectRunningMenu(items 4 thru -1 of argv, projectName)
+   end if
    set frontmost to true
    delay 1
    if frontmost is not true then error "HBuilderX 不在前台"
@@ -149,18 +242,11 @@ on run argv
    repeat with idx from 5 to count of argv
     set labelText to item idx of argv
     -- 微信预设仅匹配目标项目的普通菜单，不匹配指定页面入口。
-    if labelText is "微信开发者工具" and not (exists menu item labelText of currentMenu) then
-     set matchingNames to {}
-     repeat with candidateItem in menu items of currentMenu
-      set candidateName to name of candidateItem
-      if candidateName is not missing value then
-       if candidateName is ("微信开发者工具 - [" & projectName & "]") or candidateName is ("微信开发者工具 - " & projectName) then
-        if candidateName does not contain "指定页面" then set end of matchingNames to candidateName
-       end if
-      end if
-     end repeat
-     if (count of matchingNames) is not 1 then error "微信开发者工具项目菜单不唯一或不存在，未选择指定页面菜单"
-     set labelText to item 1 of matchingNames
+    set labelText to my resolveMenuLabel(currentMenu, labelText, projectName)
+    if topName is "运行" and idx is (count of argv) then
+     set runningLabel to my findRunningMenu(currentMenu, labelText)
+     if runningLabel is not missing value then return "__DEVDOCK_HX_ALREADY_RUNNING__:" & labelText
+     if labelText starts with "停止" and not (exists menu item labelText of currentMenu) then return "当前命令未运行，无需停止"
     end if
     if not (exists menu item labelText of currentMenu) then error "菜单不存在: " & labelText
     set targetItem to menu item labelText of currentMenu

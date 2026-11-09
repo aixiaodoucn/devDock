@@ -1,7 +1,7 @@
 use crate::{
     accessibility::{self, PermissionPrompt},
     config::{self, Action, AppConfig, Project, Result, Settings},
-    manifest, nvm,
+    hbuilder_owner, manifest, nvm,
 };
 use serde::Serialize;
 use std::{
@@ -70,7 +70,16 @@ impl Task {
             Ok(())
         }
     }
-    pub fn command(&self, mut command: Command, timeout: u64) -> Result<()> {
+    pub fn command(&self, command: Command, timeout: u64) -> Result<()> {
+        self.command_logs(command, timeout, |line| Some(line.to_owned()))
+    }
+    // 仅菜单调用转换结构化结果；Gradle 等普通任务仍逐行原样输出。
+    fn command_logs(
+        &self,
+        mut command: Command,
+        timeout: u64,
+        output: impl Fn(&str) -> Option<String> + Send + 'static,
+    ) -> Result<()> {
         self.check()?;
         let automation = accessibility::is_automation_command(&command);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -89,7 +98,9 @@ impl Task {
                 .lines()
                 .map_while(std::result::Result::ok)
             {
-                t.emit("log", &line, None, None)
+                if let Some(message) = output(&line) {
+                    t.emit("log", &message, None, None)
+                }
             }
         });
         let t = self.clone();
@@ -369,9 +380,67 @@ pub fn action(
     spawn(app, project.id.clone(), exclusive, move |task| {
         let scripts = scripts(&task.app)?;
         if action.kind == "menu" {
+            let bundle = PathBuf::from(hbuilder(&settings)?);
+            let projects = load(&task.app)?.projects;
+            if action.menu_path.first().is_some_and(|s| s == "运行")
+                && action
+                    .menu_path
+                    .last()
+                    .is_some_and(|s| s.starts_with("停止"))
+            {
+                // 停止必须先读真实菜单与实时 owner；不能从 B 项目的按钮误停 A。
+                let state = Arc::new(Mutex::new(None));
+                let captured = state.clone();
+                let mut inspect = Command::new("/usr/bin/osascript");
+                inspect
+                    .arg(scripts.join("hbuilderx.applescript"))
+                    .arg("inspect-running")
+                    .arg(&project.path)
+                    .arg(Path::new(&project.path).file_name().unwrap_or_default())
+                    .args(&action.menu_path);
+                task.command_logs(inspect, 15, move |line| {
+                    *captured.lock().unwrap() = Some(line.to_owned());
+                    None
+                })?;
+                let state = state
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .ok_or("未读取到 HBuilderX 运行状态，未执行停止")?;
+                if state == "idle" {
+                    task.emit("notice", "当前命令未运行，无需停止", None, None);
+                    return Ok("triggered");
+                }
+                let label = state
+                    .strip_prefix(hbuilder_owner::RUNNING_MARKER)
+                    .ok_or("无法确认运行菜单，未执行停止")?;
+                let owner = hbuilder_owner::discover(&bundle, label);
+                hbuilder_owner::allow_stop(
+                    owner.as_ref().map(|o| o.path.as_path()),
+                    &project,
+                    &projects,
+                )?;
+            }
             let mut c = menu_command(&scripts, &project, &settings, "menu")?;
             c.args(&action.menu_path);
-            task.command(c, 45)?;
+            let menu_task = task.clone();
+            task.command_logs(c, 45, move |line| {
+                if let Some(label) = line.strip_prefix(hbuilder_owner::RUNNING_MARKER) {
+                    let owner = hbuilder_owner::discover(&bundle, label);
+                    let mut message = hbuilder_owner::running_message(
+                        owner.as_ref().map(|o| o.path.as_path()),
+                        &project,
+                        &projects,
+                    );
+                    if let Some(owner) = owner.filter(|o| o.command != label) {
+                        message.push_str(&format!("；实际运行命令「{}」", owner.command));
+                    }
+                    menu_task.emit("notice", &message, None, None);
+                    None
+                } else {
+                    Some(line.to_owned())
+                }
+            })?;
         } else {
             let terminal = fallback(&project.terminal, &settings.terminal);
             let terminal = if terminal.is_empty() {
@@ -790,6 +859,46 @@ fn patch_gradle(text: &str, name: &str, code: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn menu_paths_and_names_remain_literal_argv_without_shell_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("项目 ' ;$(touch NEVER)");
+        let bundle = dir.path().join("HX ' ;$(touch NEVER).app");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&bundle).unwrap();
+        fs::write(root.join("App.vue"), "").unwrap();
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "id":"p","name":"project","type":"uniapp","path":root,"platforms":["dingtalk"],
+            "manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"",
+            "androidModule":"","jdkPath":"","gradleTask":"","outputDir":"",
+            "syncMainVersion":false,"terminal":"","commands":[]
+        }))
+        .unwrap();
+        let settings = Settings {
+            hbuilderx_path: bundle.to_string_lossy().into(),
+            ..Settings::default()
+        };
+        let scripts = dir.path().join("scripts ' ;$(touch NEVER)");
+        for label in ["钉钉 ' ;$(touch NEVER)", "停止钉钉 ' ;$(touch NEVER)"] {
+            let mut command = menu_command(&scripts, &project, &settings, "menu").unwrap();
+            command.args(["运行", label]);
+            assert_eq!(command.get_program(), "/bin/bash");
+            let args: Vec<_> = command.get_args().map(|a| a.to_owned()).collect();
+            assert_eq!(
+                args,
+                vec![
+                    scripts.join("build-app.sh").into_os_string(),
+                    "menu".into(),
+                    bundle.clone().into_os_string(),
+                    root.clone().into_os_string(),
+                    root.join("App.vue").into_os_string(),
+                    "运行".into(),
+                    label.into()
+                ]
+            );
+        }
+        assert!(!dir.path().join("NEVER").exists());
+    }
     #[test]
     fn apk_archive_keeps_gradle_filename_and_replaces_same_name_safely() {
         let dir = tempfile::tempdir().unwrap();

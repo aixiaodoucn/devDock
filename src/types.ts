@@ -109,7 +109,7 @@ export type TaskStatus = 'running' | 'success' | 'error' | 'cancelled' | 'trigge
 export interface TaskEvent {
   taskId: string;
   projectId: string;
-  kind: 'log' | 'status' | 'artifact';
+  kind: 'log' | 'status' | 'artifact' | 'notice';
   message: string;
   status?: TaskStatus;
   path?: string;

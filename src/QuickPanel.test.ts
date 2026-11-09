@@ -110,6 +110,30 @@ describe('菜单栏快捷弹框', () => {
       panel.dispose();
     }
   });
+  it('快捷停止派生同一项目的停止菜单，且终端命令不显示停止入口', async () => {
+    const panel = await mount();
+    try {
+      expect(panel.root.querySelector('.quick-stop')).toBeNull();
+      const input = panel.root.querySelector('input')!;
+      input.value = '微信开发';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await nextTick();
+      panel.root.querySelector<HTMLButtonElement>('.quick-stop')!.click();
+      await flush();
+      expect(api.runAction).toHaveBeenCalledWith(
+        uni,
+        expect.objectContaining({
+          id: uni.commands[0].id,
+          name: '停止 · 微信开发',
+          menuPath: ['运行', '运行到小程序模拟器', '停止微信开发者工具'],
+        }),
+        config.settings,
+      );
+      expect(uni.commands[0].menuPath).toEqual(['运行', '运行到小程序模拟器', '微信开发者工具']);
+    } finally {
+      panel.dispose();
+    }
+  });
   it('从项目入口打开主窗口时传递项目 ID', async () => {
     const panel = await mount();
     try {
@@ -142,6 +166,37 @@ describe('菜单栏快捷弹框', () => {
       expect(panel.root.textContent).toContain('配置损坏');
       expect(panel.root.querySelector('.quick-action')).toBeNull();
       expect(api.runAction).not.toHaveBeenCalled();
+    } finally {
+      panel.dispose();
+    }
+  });
+  it('项目占用提示不会被通用任务结束状态覆盖', async () => {
+    vi.mocked(api.runAction).mockImplementation(async () => {
+      handlers.get('task-event')?.({
+        payload: {
+          taskId: 'occupied',
+          projectId: 'node',
+          kind: 'notice',
+          message: '有项目「shopopening」已经在运行了；当前项目未启动',
+        },
+      });
+      handlers.get('task-event')?.({
+        payload: {
+          taskId: 'occupied',
+          projectId: 'node',
+          kind: 'status',
+          status: 'triggered',
+          message: '任务结束',
+        },
+      });
+      return 'occupied';
+    });
+    const panel = await mount();
+    try {
+      panel.root.querySelector<HTMLButtonElement>('.quick-action')!.click();
+      await flush();
+      expect(panel.root.querySelector('[role="status"]')?.textContent).toContain('shopopening');
+      expect(panel.root.querySelector('[role="status"]')?.textContent).toContain('当前项目未启动');
     } finally {
       panel.dispose();
     }
