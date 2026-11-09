@@ -828,8 +828,16 @@ onUnmounted(() => {
         >
           <div class="section-heading">
             <div>
-              <div class="eyebrow">PROJECT ACTIONS</div>
-              <h2>{{ selectedPlatform === 'app' ? '更多操作' : '常用操作，随时启动' }}</h2>
+              <div v-if="project.type !== 'nodejs'" class="eyebrow">PROJECT ACTIONS</div>
+              <h2>
+                {{
+                  project.type === 'nodejs'
+                    ? '运行命令'
+                    : selectedPlatform === 'app'
+                      ? '更多操作'
+                      : '常用操作，随时启动'
+                }}
+              </h2>
               <p>
                 {{
                   project.type === 'nodejs'
@@ -849,6 +857,27 @@ onUnmounted(() => {
             <button class="button" :disabled="busy" @click="editProject">
               添加操作 <ArrowUpRight :size="14" />
             </button>
+          </div>
+          <div
+            v-else-if="project.type === 'nodejs'"
+            class="command-list"
+            role="list"
+            aria-label="项目运行命令"
+          >
+            <article v-for="action in actions" :key="action.id" class="command-row" role="listitem">
+              <div class="command-name" :title="action.name">
+                <Terminal :size="15" /><span>{{ action.name }}</span>
+              </div>
+              <code :title="action.command">{{ action.command }}</code>
+              <button
+                class="button small"
+                :disabled="busy || !desktop"
+                :aria-label="`执行 ${action.name}`"
+                @click="runAction(action)"
+              >
+                <Play :size="13" />执行
+              </button>
+            </article>
           </div>
           <div v-else class="action-grid">
             <article v-for="action in actions" :key="action.id" class="action-card">

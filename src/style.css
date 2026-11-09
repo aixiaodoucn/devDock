@@ -1111,6 +1111,51 @@ button {
 .section-heading .eyebrow {
   margin-bottom: 9px;
 }
+.command-list {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  max-height: 360px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.command-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.75fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 48px;
+  padding: 8px 12px;
+}
+.command-row + .command-row {
+  border-top: 1px solid var(--line);
+}
+.command-row:hover {
+  background: var(--surface-subtle);
+}
+.command-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+.command-name svg {
+  flex-shrink: 0;
+  color: var(--accent-text);
+}
+.command-name span,
+.command-row code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-row code {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
 .action-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
