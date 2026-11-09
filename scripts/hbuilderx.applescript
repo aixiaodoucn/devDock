@@ -86,8 +86,7 @@ on run argv
   if not (exists process "HBuilderX") then error "HBuilderX 未运行"
   tell process "HBuilderX"
    if operation is "list" then
-    set frontmost to true
-    delay 0.3
+    -- 只读扫描保持调用方在前台；执行菜单操作时才激活 HBuilderX。
     set menuPaths to {}
     repeat with topName in {"运行", "发行"}
      set menuPaths to menuPaths & my walkMenu(menu 1 of menu bar item (contents of topName) of menu bar 1, {contents of topName})

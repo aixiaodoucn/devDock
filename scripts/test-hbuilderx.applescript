@@ -22,7 +22,10 @@ on run argv
  end repeat
  set resultText to "WGT 匹配测试通过（17 项）；菜单占位项测试通过（10 项）"
  if (count of argv) > 1 and item 2 of argv is "--live-menus" then
+  tell application "System Events" to set originalFrontApp to unix id of first application process whose frontmost is true
   set menuText to run script automation with parameters {"list"}
+  tell application "System Events" to set currentFrontApp to unix id of first application process whose frontmost is true
+  if originalFrontApp is not currentFrontApp then error "读取菜单不应切换前台应用"
   if menuText does not contain ("运行" & character id 31) then error "未读取到运行菜单"
   if menuText does not contain ("发行" & character id 31) then error "未读取到发行菜单"
   if menuText contains "数据加载中..." then error "结果不应包含加载占位项"
