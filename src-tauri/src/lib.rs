@@ -1,5 +1,6 @@
 mod accessibility;
 mod config;
+mod git;
 mod hbuilder_owner;
 mod manifest;
 mod nvm;
@@ -92,6 +93,12 @@ fn package_scripts(root: &Path) -> Result<Vec<PackageScript>> {
 #[tauri::command]
 fn read_package_scripts(project: Project) -> Result<Vec<PackageScript>> {
     package_scripts(Path::new(&project.path))
+}
+#[tauri::command]
+async fn read_git_branch(path: String) -> Result<String> {
+    tauri::async_runtime::spawn_blocking(move || git::read_branch(Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 fn read_backup(path: String) -> Result<AppConfig> {
@@ -463,6 +470,7 @@ pub fn run() {
             save_config,
             read_manifest,
             read_package_scripts,
+            read_git_branch,
             detect_tools,
             detect_node_versions,
             read_backup,

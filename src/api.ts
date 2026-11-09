@@ -37,6 +37,9 @@ export const api = {
     if (desktop) await invoke('save_config', { config });
     else localStorage.setItem(PREVIEW_KEY, JSON.stringify(config));
   },
+  gitBranch(path: string) {
+    return native<string>('read_git_branch', { path });
+  },
   manifest(project: Project) {
     return native<ManifestInfo>('read_manifest', { project });
   },

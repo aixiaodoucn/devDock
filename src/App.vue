@@ -28,6 +28,7 @@ import {
   Palette,
 } from 'lucide-vue-next';
 import ProjectDialog from './components/ProjectDialog.vue';
+import GitBranch from './components/GitBranch.vue';
 import SettingsPage from './components/SettingsPage.vue';
 import { api, desktop } from './api';
 import { applyTheme } from './theme';
@@ -618,7 +619,10 @@ onUnmounted(() => {
             <div class="eyebrow">
               PROJECT WORKSPACE <span>/ {{ TYPE_LABELS[project.type] }}</span>
             </div>
-            <h1>{{ project.name }}<span class="heading-dot">.</span></h1>
+            <div class="project-title-row">
+              <h1>{{ project.name }}<span class="heading-dot">.</span></h1>
+              <GitBranch :path="project.path" />
+            </div>
             <button class="project-path" @click="openPath(project.path)">
               <FolderOpen :size="14" />{{ project.path }}<ArrowUpRight :size="13" />
             </button>
