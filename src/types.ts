@@ -100,6 +100,14 @@ export interface AppConfig {
   projects: Project[];
   settings: Settings;
 }
+export interface UniappScript {
+  id: string;
+  title: string;
+  uniPlatform: string;
+  platform: string;
+  runMenuPath: string[];
+  publishMenuPath: string[];
+}
 export interface ManifestInfo {
   versionName: string;
   versionCode: string;

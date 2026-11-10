@@ -8,6 +8,7 @@ mod nvm;
 mod tasks;
 mod tray;
 mod tray_geometry;
+mod uniapp_scripts;
 #[cfg(target_os = "macos")]
 mod tray_panel;
 use config::{Action, AppConfig, Project, Result, Settings};
@@ -94,6 +95,10 @@ fn package_scripts(root: &Path) -> Result<Vec<PackageScript>> {
 #[tauri::command]
 fn read_package_scripts(project: Project) -> Result<Vec<PackageScript>> {
     package_scripts(Path::new(&project.path))
+}
+#[tauri::command]
+fn read_uniapp_scripts(project: Project) -> Result<Vec<uniapp_scripts::UniappScript>> {
+    uniapp_scripts::read(Path::new(&project.path))
 }
 #[tauri::command]
 async fn read_git_branch(path: String) -> Result<String> {
@@ -533,6 +538,7 @@ pub fn run() {
             save_config,
             read_manifest,
             read_package_scripts,
+            read_uniapp_scripts,
             read_git_branch,
             detect_tools,
             detect_node_versions,

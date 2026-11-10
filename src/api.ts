@@ -9,6 +9,7 @@ import type {
   Settings,
   BuildMode,
   NodeVersion,
+  UniappScript,
 } from './types';
 import { defaultConfig } from './types';
 
@@ -79,6 +80,9 @@ export const api = {
   },
   menus(hbuilderxPath: string) {
     return native<string[][]>('list_menus', { hbuilderxPath });
+  },
+  uniappScripts(project: Project) {
+    return native<UniappScript[]>('read_uniapp_scripts', { project });
   },
   recover() {
     return native<string[]>('recover_pending');

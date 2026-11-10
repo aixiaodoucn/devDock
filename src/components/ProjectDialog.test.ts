@@ -5,7 +5,10 @@ import ProjectDialog from './ProjectDialog.vue';
 import { api } from '../api';
 import { newProject, type Project } from '../types';
 
-vi.mock('../api', () => ({ desktop: true, api: { nodeVersions: vi.fn(), choosePath: vi.fn() } }));
+vi.mock('../api', () => ({
+  desktop: true,
+  api: { nodeVersions: vi.fn(), choosePath: vi.fn(), uniappScripts: vi.fn() },
+}));
 const versions = [
   {
     version: 'v22.22.2',
@@ -27,7 +30,6 @@ async function mountDialog(project: Project) {
       h(ProjectDialog, {
         project,
         tools: { hbuilderxPath: '', terminals: [], jdks: [] },
-        hbuilderxPath: '',
         existing: [],
         saving: false,
         detecting: false,

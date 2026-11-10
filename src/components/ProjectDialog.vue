@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { X, Plus, Trash2, FolderGit2, RefreshCw } from 'lucide-vue-next';
-import type { Project, Tools, Action, NodeVersion } from '../types';
+import type { Project, Tools, Action, NodeVersion, UniappScript } from '../types';
 import { PLATFORM_LABELS } from '../types';
 import { api, desktop } from '../api';
 import PathInput from './PathInput.vue';
 const props = defineProps<{
   project: Project;
   tools: Tools;
-  hbuilderxPath: string;
+  hbuilderxPath?: string;
   existing: Project[];
   saving: boolean;
   detecting: boolean;
@@ -17,8 +17,44 @@ const emit = defineEmits<{ close: []; save: [project: Project]; detect: [] }>();
 const draft = ref<Project>(JSON.parse(JSON.stringify(props.project)));
 const tab = ref('general');
 const error = ref('');
-const menus = ref<string[][]>([]);
-const loadingMenus = ref(false);
+const hbuilderMenus = ref<string[][]>([]);
+const loadingHbuilderMenus = ref(false);
+const hbuilderMenusNotice = ref('');
+let hbuilderMenusRequest = 0;
+const uniappScripts = ref<UniappScript[]>([]);
+const loadingUniappScripts = ref(false);
+const uniappScriptsNotice = ref('');
+let uniappScriptsRequest = 0;
+const uniappActions = computed(() =>
+  uniappScripts.value.flatMap((script) => [
+    {
+      name: `${script.title} · 运行`,
+      platform: script.platform,
+      menuPath: script.runMenuPath,
+      uniPlatform: script.uniPlatform,
+    },
+    {
+      name: `${script.title} · 发行`,
+      platform: script.platform,
+      menuPath: script.publishMenuPath,
+      uniPlatform: script.uniPlatform,
+    },
+  ]),
+);
+// 项目目录或类型变化后，旧候选和在途读取结果均不能用于新项目。
+watch(
+  () => [draft.value.path, draft.value.type],
+  () => {
+    uniappScriptsRequest++;
+    hbuilderMenusRequest++;
+    hbuilderMenus.value = [];
+    loadingHbuilderMenus.value = false;
+    hbuilderMenusNotice.value = '';
+    uniappScripts.value = [];
+    uniappScriptsNotice.value = '';
+    loadingUniappScripts.value = false;
+  },
+);
 const reading = ref(false);
 const readingScripts = ref(false);
 const packageScripts = ref<{ name: string; command: string }[]>([]);
@@ -153,15 +189,138 @@ function applyPreset(kind: string) {
   if (!draft.value.platforms.includes(action.platform)) draft.value.platforms.push(action.platform);
   draft.value.commands.push(action);
 }
-async function loadMenus() {
-  loadingMenus.value = true;
+async function loadHbuilderMenus() {
+  if (loadingHbuilderMenus.value) return;
+  const request = ++hbuilderMenusRequest;
+  loadingHbuilderMenus.value = true;
+  hbuilderMenus.value = [];
+  hbuilderMenusNotice.value = '';
+  error.value = '';
   try {
-    menus.value = await api.menus(props.hbuilderxPath);
+    const menus = await api.menus(props.hbuilderxPath || props.tools.hbuilderxPath);
+    if (request !== hbuilderMenusRequest) return;
+    const unique = new Map<string, string[]>();
+    for (const source of menus) {
+      const path = [...source];
+      // 微信内置运行项可能带当前项目后缀，保存通用名称以便执行时定位目标项目。
+      if (
+        path[0] === '运行' &&
+        path[1] === '运行到小程序模拟器' &&
+        path.at(-1)?.includes('微信开发者工具') &&
+        !path.at(-1)?.includes('指定页面')
+      ) {
+        path[path.length - 1] = '微信开发者工具';
+      }
+      unique.set(JSON.stringify(path), path);
+    }
+    hbuilderMenus.value = [...unique.values()];
+    hbuilderMenusNotice.value = menus.length
+      ? `已读取 HBuilderX 当前激活项目的菜单，共 ${hbuilderMenus.value.length} 项。`
+      : 'HBuilderX 当前激活项目没有可读取的运行或发行菜单。';
   } catch (reason) {
-    error.value = String(reason);
+    if (request === hbuilderMenusRequest) error.value = String(reason);
   } finally {
-    loadingMenus.value = false;
+    if (request === hbuilderMenusRequest) loadingHbuilderMenus.value = false;
   }
+}
+function selectHbuilderMenu(event: Event, existing?: Action) {
+  const select = event.target as HTMLSelectElement;
+  const value = select.value;
+  select.value = '';
+  if (value === '') return;
+  const path = hbuilderMenus.value[Number(value)];
+  if (!path) return;
+  if (
+    !existing &&
+    draft.value.commands.some(
+      (action) =>
+        action.kind === 'menu' && JSON.stringify(action.menuPath) === JSON.stringify(path),
+    )
+  ) {
+    hbuilderMenusNotice.value = '该菜单操作已存在，未重复添加。';
+    return;
+  }
+  const platform = path.some((part) => part.includes('微信'))
+    ? 'weixin'
+    : existing?.platform || draft.value.platforms[0] || 'app';
+  if (!draft.value.platforms.includes(platform)) draft.value.platforms.push(platform);
+  const action: Action = existing ?? {
+    id: crypto.randomUUID(),
+    name: '',
+    platform,
+    kind: 'menu',
+    menuPath: [],
+    command: '',
+  };
+  action.name = action.name.trim() || `${path.at(-1)} · ${path[0]}`;
+  action.platform = platform;
+  action.kind = 'menu';
+  action.menuPath = [...path];
+  action.command = '';
+  if (!existing) draft.value.commands.push(action);
+}
+async function loadUniappScripts() {
+  if (loadingUniappScripts.value) return;
+  if (!draft.value.path.trim()) {
+    error.value = '请先选择项目目录，再读取 package.json 中的 uni-app.scripts。';
+    tab.value = 'general';
+    return;
+  }
+  const request = ++uniappScriptsRequest;
+  loadingUniappScripts.value = true;
+  error.value = '';
+  uniappScripts.value = [];
+  uniappScriptsNotice.value = '';
+  try {
+    const scripts = await api.uniappScripts(JSON.parse(JSON.stringify(draft.value)));
+    if (request !== uniappScriptsRequest) return;
+    uniappScripts.value = scripts;
+    const unsupported = [
+      ...new Set(scripts.filter((script) => !script.platform).map((script) => script.uniPlatform)),
+    ];
+    uniappScriptsNotice.value = scripts.length
+      ? `已读取 ${scripts.length} 个 uni-app 脚本，可选择添加运行或发行操作。${unsupported.length ? `暂不支持导入的平台：${unsupported.join('、')}。` : ''}`
+      : '此项目的 package.json 未配置 uni-app.scripts。';
+  } catch (reason) {
+    if (request === uniappScriptsRequest) error.value = String(reason);
+  } finally {
+    if (request === uniappScriptsRequest) loadingUniappScripts.value = false;
+  }
+}
+function selectUniappAction(event: Event, existing?: Action) {
+  const select = event.target as HTMLSelectElement;
+  const value = select.value;
+  select.value = '';
+  if (value === '') return;
+  const candidate = uniappActions.value[Number(value)];
+  if (!candidate?.platform) return;
+  if (
+    !existing &&
+    draft.value.commands.some(
+      (action) =>
+        action.kind === 'menu' &&
+        JSON.stringify(action.menuPath) === JSON.stringify(candidate.menuPath),
+    )
+  ) {
+    uniappScriptsNotice.value = '该操作已存在，未重复添加。';
+    return;
+  }
+  if (!draft.value.platforms.includes(candidate.platform))
+    draft.value.platforms.push(candidate.platform);
+  const action = existing ?? {
+    id: crypto.randomUUID(),
+    name: '',
+    platform: '',
+    kind: 'menu' as const,
+    menuPath: [],
+    command: '',
+  };
+  action.name = action.name.trim() || candidate.name;
+  action.platform = candidate.platform;
+  action.kind = 'menu';
+  action.menuPath = [...candidate.menuPath];
+  action.command = '';
+  if (!existing) draft.value.commands.push(action);
 }
 function submit() {
   error.value = '';
@@ -487,6 +646,71 @@ function submit() {
               {{ script.name }}
             </button>
           </div>
+          <template v-if="draft.type === 'uniapp'">
+            <button
+              type="button"
+              class="button"
+              :disabled="loadingUniappScripts || !desktop"
+              @click="loadUniappScripts"
+            >
+              <RefreshCw :size="15" :class="{ spinning: loadingUniappScripts }" />{{
+                loadingUniappScripts ? '读取中…' : '读取 package.json uni-app.scripts'
+              }}
+            </button>
+            <p v-if="uniappScriptsNotice" class="field-help" role="status">
+              {{ uniappScriptsNotice }}
+            </p>
+            <select
+              v-if="uniappActions.length"
+              aria-label="从 uni-app.scripts 添加操作"
+              @change="selectUniappAction($event)"
+            >
+              <option value="">选择运行或发行操作添加…</option>
+              <option
+                v-for="(candidate, candidateIndex) in uniappActions"
+                :key="candidateIndex"
+                :value="String(candidateIndex)"
+                :disabled="!candidate.platform"
+              >
+                {{ candidate.menuPath.join(' → ')
+                }}{{ candidate.platform ? '' : `（${candidate.uniPlatform} 暂不支持）` }}
+              </option>
+            </select>
+          </template>
+          <template v-if="draft.type === 'uniapp'">
+            <button
+              type="button"
+              class="button"
+              :disabled="loadingHbuilderMenus || !desktop"
+              @click="loadHbuilderMenus"
+            >
+              <RefreshCw :size="15" :class="{ spinning: loadingHbuilderMenus }" />{{
+                loadingHbuilderMenus ? '读取 HBuilderX 菜单中…' : '读取 HBuilderX 菜单'
+              }}
+            </button>
+            <p class="field-help">
+              读取的是 HBuilderX
+              当前激活项目的菜单，不一定是正在配置的项目。用于选择内置公共菜单；目标项目的自定义脚本请通过上方
+              package.json 读取。
+            </p>
+            <p v-if="hbuilderMenusNotice" class="field-help" role="status">
+              {{ hbuilderMenusNotice }}
+            </p>
+            <select
+              v-if="hbuilderMenus.length"
+              aria-label="从 HBuilderX 当前激活项目菜单添加操作"
+              @change="selectHbuilderMenu($event)"
+            >
+              <option value="">从 HBuilderX 当前激活项目菜单选择…</option>
+              <option
+                v-for="(path, menuIndex) in hbuilderMenus"
+                :key="menuIndex"
+                :value="String(menuIndex)"
+              >
+                {{ path.join(' → ') }}
+              </option>
+            </select>
+          </template>
           <div v-if="!draft.commands.length" class="empty-inline">
             尚未配置操作。添加常用命令，让下一次启动更简单。
           </div>
@@ -539,26 +763,37 @@ function submit() {
                       .filter(Boolean)
                   " /></label
               ><select
-                v-if="menus.length"
-                aria-label="选择 HBuilderX 菜单"
-                @change="action.menuPath = JSON.parse(($event.target as HTMLSelectElement).value)"
+                v-if="uniappActions.length"
+                aria-label="从 uni-app.scripts 选择菜单"
+                @change="selectUniappAction($event, action)"
               >
-                <option value="[]">从当前 HBuilderX 菜单选择…</option>
-                <option v-for="path in menus" :key="path.join('/')" :value="JSON.stringify(path)">
-                  {{ path.join(' / ') }}
+                <option value="">从 uni-app.scripts 选择菜单…</option>
+                <option
+                  v-for="(candidate, candidateIndex) in uniappActions"
+                  :key="candidateIndex"
+                  :value="String(candidateIndex)"
+                  :disabled="!candidate.platform"
+                >
+                  {{ candidate.menuPath.join(' → ')
+                  }}{{ candidate.platform ? '' : `（${candidate.uniPlatform} 暂不支持）` }}
                 </option>
-              </select></template
-            >
+              </select>
+              <select
+                v-if="hbuilderMenus.length"
+                aria-label="从 HBuilderX 当前激活项目菜单选择"
+                @change="selectHbuilderMenu($event, action)"
+              >
+                <option value="">从 HBuilderX 当前激活项目菜单选择…</option>
+                <option
+                  v-for="(path, menuIndex) in hbuilderMenus"
+                  :key="menuIndex"
+                  :value="String(menuIndex)"
+                >
+                  {{ path.join(' → ') }}
+                </option>
+              </select>
+            </template>
           </div>
-          <button
-            v-if="draft.type === 'uniapp'"
-            type="button"
-            class="button"
-            :disabled="loadingMenus || !desktop"
-            @click="loadMenus"
-          >
-            <RefreshCw :size="15" :class="{ spinning: loadingMenus }" />读取当前 HBuilderX 菜单
-          </button>
         </div>
       </form>
       <footer class="modal-footer">
