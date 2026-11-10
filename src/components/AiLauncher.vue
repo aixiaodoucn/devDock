@@ -31,8 +31,18 @@ watch(
   { immediate: true },
 );
 const selected = computed(() => available.value.find((tool) => tool.id === selectedId.value));
+const selectionHint = computed(() =>
+  available.value.length
+    ? '请选择 AI 工具，或前往偏好设置配置'
+    : '请先在偏好设置配置并启用 AI 工具',
+);
 function launch() {
-  if (!props.busy && desktop) emit('launch', selected.value);
+  if (props.busy || !desktop) return;
+  if (!selected.value) {
+    emit('configure');
+    return;
+  }
+  emit('launch', selected.value);
 }
 function openDirectory() {
   // 目录入口始终不传工具，保留用户当前选择的常用 AI。
@@ -44,7 +54,10 @@ function openDirectory() {
   <section class="ai-launcher" aria-label="项目终端入口">
     <div class="ai-launcher-copy">
       <Terminal :size="16" />
-      <div><strong>在终端中打开</strong><small>进入项目目录，可选启动 AI 工具</small></div>
+      <div>
+        <strong>在终端中打开</strong>
+        <small>{{ selected ? '进入项目目录，启动所选 AI 工具' : selectionHint }}</small>
+      </div>
     </div>
     <div class="ai-launcher-controls">
       <select
@@ -54,11 +67,14 @@ function openDirectory() {
         @change="rememberTool"
       >
         <option value="">仅打开项目目录</option>
+        <option v-if="!selected" value="" disabled>
+          {{ available.length ? '请选择 AI 工具' : '请配置 AI 工具' }}
+        </option>
         <option v-for="tool in available" :key="tool.id" :value="tool.id">{{ tool.name }}</option>
       </select>
       <button
         class="button primary small"
-        :title="selected?.command || '在终端中打开项目目录'"
+        :title="selected?.command || selectionHint"
         :disabled="busy || !desktop"
         @click="launch"
       >

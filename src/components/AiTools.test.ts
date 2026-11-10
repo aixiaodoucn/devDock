@@ -44,7 +44,9 @@ describe('项目 AI 工具', () => {
       const select = panel.root.querySelector('select')!;
       expect(select.value).toBe('');
       panel.root.querySelector<HTMLButtonElement>('.primary')!.click();
-      expect(launch).toHaveBeenCalledWith(undefined);
+      expect(launch).not.toHaveBeenCalled();
+      expect(configure).toHaveBeenCalledOnce();
+      expect(panel.root.textContent).toContain('请选择 AI 工具');
       select.value = 'codex';
       select.dispatchEvent(new Event('change', { bubbles: true }));
       await nextTick();
@@ -61,10 +63,13 @@ describe('项目 AI 工具', () => {
       state.tools = [];
       await nextTick();
       expect(panel.root.querySelectorAll('option')).toHaveLength(1);
+      const launches = launch.mock.calls.length;
       panel.root.querySelector<HTMLButtonElement>('.primary')!.click();
-      expect(launch).toHaveBeenLastCalledWith(undefined);
+      expect(launch).toHaveBeenCalledTimes(launches);
+      expect(configure).toHaveBeenCalledTimes(2);
+      expect(panel.root.textContent).toContain('请先在偏好设置配置并启用 AI 工具');
       panel.root.querySelector<HTMLButtonElement>('[aria-label="配置 AI 工具"]')!.click();
-      expect(configure).toHaveBeenCalledOnce();
+      expect(configure).toHaveBeenCalledTimes(3);
     } finally {
       panel.dispose();
     }
