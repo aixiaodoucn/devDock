@@ -60,13 +60,20 @@ function openDirectory() {
       </div>
     </div>
     <div class="ai-launcher-controls">
+      <button
+        class="icon-button"
+        aria-label="配置 AI 工具"
+        title="配置 AI 工具"
+        @click="emit('configure')"
+      >
+        <Settings2 :size="15" />
+      </button>
       <select
         v-model="selectedId"
         aria-label="选择 AI 工具（可选）"
         :disabled="busy"
         @change="rememberTool"
       >
-        <option value="">仅打开项目目录</option>
         <option v-if="!selected" value="" disabled>
           {{ available.length ? '请选择 AI 工具' : '请配置 AI 工具' }}
         </option>
@@ -78,7 +85,7 @@ function openDirectory() {
         :disabled="busy || !desktop"
         @click="launch"
       >
-        <Terminal :size="14" />打开
+        <Terminal :size="14" />打开 AI
       </button>
       <button
         class="button small directory-only"
@@ -86,14 +93,6 @@ function openDirectory() {
         @click="openDirectory"
       >
         <FolderOpen :size="14" />仅打开目录
-      </button>
-      <button
-        class="icon-button"
-        aria-label="配置 AI 工具"
-        title="配置 AI 工具"
-        @click="emit('configure')"
-      >
-        <Settings2 :size="15" />
       </button>
     </div>
   </section>
