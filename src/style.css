@@ -570,6 +570,59 @@ button {
   align-items: center;
   gap: 12px;
 }
+.topbar-task {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--control-height-small);
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+  color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.topbar-task:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+.topbar-task-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.topbar-task.running {
+  color: var(--warning-text);
+  border-color: var(--warning-soft);
+  background: var(--warning-soft);
+}
+.topbar-task.running .topbar-task-dot {
+  background: var(--warning-text);
+  animation: task-pulse 1.4s ease-in-out infinite;
+}
+.topbar-task.success {
+  color: var(--success-text);
+  border-color: var(--success-soft);
+  background: var(--success-soft);
+}
+.topbar-task.success .topbar-task-dot {
+  background: var(--success-text);
+}
+.topbar-task.error {
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+.topbar-task.error .topbar-task-dot {
+  background: var(--danger);
+}
+@keyframes task-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
 .platform-badge {
   font-family: var(--mono);
   font-size: 9px;

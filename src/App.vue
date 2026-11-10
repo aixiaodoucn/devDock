@@ -490,6 +490,9 @@ async function applyImport() {
     saving.value = false;
   }
 }
+function scrollToLog() {
+  logElement.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 async function copyLogs() {
   try {
     await navigator.clipboard.writeText(
@@ -648,6 +651,14 @@ onUnmounted(() => {
           }}</strong>
         </div>
         <div class="topbar-right">
+          <button
+            v-if="currentTask && page === 'project'"
+            :class="['topbar-task', currentTask.status]"
+            title="滚动到任务输出"
+            @click="scrollToLog"
+          >
+            <span class="topbar-task-dot"></span>{{ statusLabels[currentTask.status] }}
+          </button>
           <label class="theme-toggle" title="切换主题">
             <Palette :size="14" />
             <select
@@ -662,7 +673,11 @@ onUnmounted(() => {
             </select>
             <span class="theme-toggle-dot"></span>
           </label>
-          <span v-if="!desktop" class="preview-badge">预览模式 · 本地调用不可用</span
+          <span
+            v-if="!desktop"
+            class="preview-badge"
+            title="本地构建、终端和菜单操作需在桌面应用中执行"
+            >预览模式</span
           ><span class="platform-badge">macOS FIRST</span>
         </div>
       </header>
