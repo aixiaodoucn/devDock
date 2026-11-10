@@ -37,6 +37,7 @@ import { api, desktop } from './api';
 import { applyTheme } from './theme';
 import { stopMenuAction } from './actions';
 import { useSidebarResize } from './sidebar';
+import { moveProject, dropIndex } from './sort';
 import {
   defaultConfig,
   newProject,
@@ -85,6 +86,9 @@ const versionName = ref('');
 const versionCode = ref('');
 const buildMode = ref<BuildMode>('apk');
 const showProjectMenu = ref(false);
+const draggingProjectId = ref('');
+let dragOrderBefore: string[] = [];
+let dragCommitted = false;
 let unlisten: UnlistenFn | undefined;
 let projectSelectionUnlisten: UnlistenFn | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -247,6 +251,58 @@ function selectProject(item: Project) {
   selectedId.value = item.id;
   page.value = 'project';
   showProjectMenu.value = false;
+}
+function startProjectDrag(event: DragEvent, item: Project) {
+  if (saving.value) return;
+  draggingProjectId.value = item.id;
+  dragOrderBefore = config.value.projects.map((project) => project.id);
+  dragCommitted = false;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', item.id);
+  }
+}
+function dragOverProject(event: DragEvent, item: Project) {
+  event.preventDefault();
+  const from = draggingProjectId.value;
+  if (!from || from === item.id || saving.value) return;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  // 按鼠标位于目标项上半或下半区决定插入位置，避免实时重排后目标元素移动造成抖动。
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const after = event.clientY > rect.top + rect.height / 2;
+  const index = dropIndex(config.value.projects, from, item.id, after);
+  if (index < 0) return;
+  const next = moveProject(config.value.projects, from, index);
+  if (next !== config.value.projects) config.value.projects = next;
+}
+async function dropProject() {
+  if (!draggingProjectId.value) return;
+  dragCommitted = true;
+  await persistProjectOrder();
+}
+async function endProjectDrag() {
+  if (!draggingProjectId.value) return;
+  // 拖到列表外取消时恢复拖动前顺序，不写入配置。
+  if (!dragCommitted && dragOrderBefore.length) {
+    const order = dragOrderBefore;
+    config.value.projects = [...config.value.projects].sort(
+      (a, b) => order.indexOf(a.id) - order.indexOf(b.id),
+    );
+  }
+  draggingProjectId.value = '';
+  dragOrderBefore = [];
+  dragCommitted = false;
+}
+async function persistProjectOrder() {
+  if (saving.value || loadFailed.value) return;
+  saving.value = true;
+  try {
+    await persist(JSON.parse(JSON.stringify(config.value)));
+  } catch (error) {
+    fail(error);
+  } finally {
+    saving.value = false;
+  }
 }
 function editProject() {
   if (project.value) editing.value = JSON.parse(JSON.stringify(project.value));
@@ -510,8 +566,18 @@ onUnmounted(() => {
         <button
           v-for="item in filteredProjects"
           :key="item.id"
-          :class="['project-item', { active: selectedId === item.id && page === 'project' }]"
+          :class="[
+            'project-item',
+            { active: selectedId === item.id && page === 'project' },
+            { dragging: draggingProjectId === item.id },
+          ]"
+          draggable="true"
+          title="拖拽调整项目顺序"
           @click="selectProject(item)"
+          @dragstart="startProjectDrag($event, item)"
+          @dragover="dragOverProject($event, item)"
+          @drop.prevent="dropProject"
+          @dragend="endProjectDrag"
         >
           <span :class="['project-icon', item.type]"
             ><Layers v-if="item.type === 'uniapp'" :size="18" /><Terminal

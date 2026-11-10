@@ -406,6 +406,13 @@ button {
 .project-item:hover {
   background: var(--sidebar-hover);
 }
+.project-item[draggable='true'] {
+  cursor: grab;
+}
+.project-item.dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
 .project-item.active {
   background: var(--sidebar-selected);
   color: #fff;

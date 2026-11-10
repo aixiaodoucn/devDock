@@ -25,7 +25,7 @@ const features = [
   {
     icon: Layers,
     title: '集中管理本地项目',
-    text: 'uni-app 支持 App、Web、小程序，Node.js 支持 Web、小程序。微信、钉钉等统一归入小程序，具体目标由操作名称和命令区分。移除项目记录不会删除源码。',
+    text: 'uni-app 支持 App、Web、小程序，Node.js 支持 Web、小程序。微信、钉钉等统一归入小程序，具体目标由操作名称和命令区分。左侧列表可拖拽排序并保存；移除项目记录不会删除源码。',
   },
   {
     icon: Package,
