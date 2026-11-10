@@ -23,6 +23,9 @@ const versions = [
 ];
 async function mountDialog(project: Project) {
   let saved: Project | undefined;
+  const save = vi.fn((value: Project) => {
+    saved = value;
+  });
   const root = document.createElement('div');
   document.body.append(root);
   const app = createApp({
@@ -33,9 +36,7 @@ async function mountDialog(project: Project) {
         existing: [],
         saving: false,
         detecting: false,
-        onSave: (value: Project) => {
-          saved = value;
-        },
+        onSave: save,
       }),
   });
   app.mount(root);
@@ -43,6 +44,7 @@ async function mountDialog(project: Project) {
   await nextTick();
   return {
     root,
+    save,
     async select(value: string) {
       const select = root.querySelector<HTMLSelectElement>('#project-node-version')!;
       select.value = value;
@@ -68,13 +70,43 @@ function nodeProject(): Project {
     name: '开发项目',
     type: 'nodejs',
     path: '/local/project',
-    platforms: ['pc'],
+    platforms: ['web'],
   };
 }
 describe('Node 项目版本选择', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.nodeVersions).mockResolvedValue(versions);
+  });
+  it('Node 项目保存环境变量，并拦截缺少等号或重复的格式', async () => {
+    const dialog = await mountDialog(nodeProject());
+    try {
+      const textarea = dialog.root.querySelector<HTMLTextAreaElement>('#project-env-vars')!;
+      expect(textarea).not.toBeNull();
+      textarea.value =
+        'AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com;';
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      await nextTick();
+      expect(await dialog.submit()).toMatchObject({
+        envVars:
+          'AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com;',
+      });
+      for (const [value, message] of [
+        ['NO_EQUALS', '环境变量缺少名称或等号'],
+        ['1BAD=x', '环境变量名称无效'],
+        ['A=1;A=2', '环境变量重复'],
+      ]) {
+        textarea.value = value;
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        await nextTick();
+        const calls = dialog.save.mock.calls.length;
+        await dialog.submit();
+        expect(dialog.save).toHaveBeenCalledTimes(calls);
+        expect(dialog.root.querySelector('[role="alert"]')?.textContent).toContain(message);
+      }
+    } finally {
+      dialog.dispose();
+    }
   });
   it('Node 显示 Web 和小程序，uni-app 额外提供 App 并可启用 Web', async () => {
     const dialog = await mountDialog(nodeProject());

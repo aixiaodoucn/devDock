@@ -154,17 +154,70 @@ fn scan(roots: Vec<PathBuf>) -> Vec<NodeVersion> {
     found.into_iter().map(|(_, version)| version).collect()
 }
 
+// 解析 KEY=VALUE;KEY2=VALUE2 或逐行输入；值保留空格和符号，仅去掉首尾空白。
+pub fn parse_env_vars(text: &str) -> Result<Vec<(String, String)>> {
+    let mut result: Vec<(String, String)> = vec![];
+    for entry in text.split([';', '\n', '\r']) {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (key, value) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("环境变量缺少等号: {entry}"))?;
+        let key = key.trim();
+        if key.is_empty()
+            || !key.bytes().enumerate().all(|(index, b)| {
+                b == b'_' || b.is_ascii_alphabetic() || (index > 0 && b.is_ascii_digit())
+            })
+        {
+            return Err(format!("环境变量名称无效: {key}"));
+        }
+        if value.contains('\0') {
+            return Err(format!("环境变量 {key} 的值包含无效空字符"));
+        }
+        if result.iter().any(|(existing, _)| existing == key) {
+            return Err(format!("环境变量重复: {key}"));
+        }
+        result.push((key.to_owned(), value.trim().to_owned()));
+    }
+    Ok(result)
+}
+
+pub fn validate_env_vars(text: &str) -> Result<()> {
+    parse_env_vars(text).map(|_| ())
+}
+
+fn env_prefix(text: &str) -> Result<String> {
+    let vars = parse_env_vars(text)?;
+    Ok(vars
+        .iter()
+        .map(|(key, value)| format!("export {key}={}", quote(value)))
+        .collect::<Vec<_>>()
+        .join("; "))
+}
+
 pub fn command_for(project: &Project, action: &Action) -> Result<String> {
-    if project.project_type != "nodejs" || action.kind != "shell" || project.node_version.is_empty()
-    {
+    if action.kind != "shell" {
         return Ok(action.command.clone());
     }
-    activation(
-        &project.nvm_dir,
-        &project.node_version,
-        &action.command,
-        &NVM_SCRIPTS.map(PathBuf::from),
-    )
+    let env = env_prefix(&project.env_vars)?;
+    let base = if project.project_type == "nodejs" && !project.node_version.is_empty() {
+        activation(
+            &project.nvm_dir,
+            &project.node_version,
+            &action.command,
+            &NVM_SCRIPTS.map(PathBuf::from),
+        )?
+    } else {
+        action.command.clone()
+    };
+    // 环境变量先于 Node 激活和原命令导出，失败时以 && 阻止继续执行。
+    Ok(if env.is_empty() {
+        base
+    } else {
+        format!("{env} && {base}")
+    })
 }
 
 fn activation(dir: &str, version: &str, command: &str, scripts: &[PathBuf]) -> Result<String> {
@@ -238,6 +291,68 @@ mod tests {
         }
         assert_eq!(scan(roots).len(), 4);
         assert!(candidate_roots(Some("relative".into()), None, Some("relative".into())).is_empty());
+    }
+
+    #[test]
+    fn env_vars_parse_values_with_spaces_and_symbols() {
+        assert_eq!(parse_env_vars("").unwrap(), vec![]);
+        assert_eq!(
+            parse_env_vars(
+                "AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;ALERT_EMAIL_SMTP_HOST=smtp.qq.com;"
+            )
+            .unwrap(),
+            vec![
+                ("AI_ALERT_EMAIL_ENABLED".into(), "false".into()),
+                ("ALERT_EMAIL_FROM".into(), "艾小逗 <1144755431@qq.com>".into()),
+                ("ALERT_EMAIL_SMTP_HOST".into(), "smtp.qq.com".into()),
+            ]
+        );
+        assert_eq!(
+            parse_env_vars("A=1\nB=two words\n\nC=\nD=a'b; E=x=y").unwrap(),
+            vec![
+                ("A".into(), "1".into()),
+                ("B".into(), "two words".into()),
+                ("C".into(), "".into()),
+                ("D".into(), "a'b".into()),
+                ("E".into(), "x=y".into()),
+            ]
+        );
+        for invalid in ["NO_EQUALS", "=value", "1BAD=x", "A=1;A=2", "A=bad\0"] {
+            assert!(validate_env_vars(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn env_vars_are_exported_before_node_activation_and_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("nvm data");
+        installed(&root, "v22.10.0");
+        fs::write(root.join("nvm.sh"), "# fake").unwrap();
+        let mut project: Project = serde_json::from_value(serde_json::json!({"id":"node","name":"Node","type":"nodejs","path":"/tmp/node-project","platforms":["web"],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[]})).unwrap();
+        let mut action: Action = serde_json::from_value(serde_json::json!({"id":"dev","name":"Dev","platform":"web","kind":"shell","menuPath":[],"command":"npm run dev"})).unwrap();
+        project.node_version = "v22.10.0".into();
+        project.nvm_dir = root.to_string_lossy().into();
+        project.env_vars = "ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;TOKEN=a'b".into();
+        let command = command_for(&project, &action).unwrap();
+        assert!(command.starts_with(
+            "export ALERT_EMAIL_FROM='艾小逗 <1144755431@qq.com>'; export TOKEN='a'\\''b' && test -x "
+        ));
+        assert!(command.contains("nvm use --silent 'v22.10.0' && eval 'npm run dev'"));
+        // 未配置环境变量时保持原命令；菜单动作不注入环境变量。
+        project.env_vars.clear();
+        assert!(command_for(&project, &action)
+            .unwrap()
+            .starts_with("test -x "));
+        project.env_vars = "A=1".into();
+        action.kind = "menu".into();
+        assert_eq!(command_for(&project, &action).unwrap(), "npm run dev");
+        // 非 Node 项目的 shell 命令同样使用项目环境变量。
+        project.project_type = "backend".into();
+        action.kind = "shell".into();
+        assert_eq!(
+            command_for(&project, &action).unwrap(),
+            "export A='1' && npm run dev"
+        );
     }
 
     #[test]

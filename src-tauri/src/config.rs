@@ -106,6 +106,9 @@ pub struct Project {
     pub node_version: String,
     #[serde(default)]
     pub nvm_dir: String,
+    // 每个项目可配置终端命令使用的环境变量，旧配置默认为空。
+    #[serde(default)]
+    pub env_vars: String,
     pub commands: Vec<Action>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -219,6 +222,7 @@ impl AppConfig {
                 return Err("aiToolId 不能含 NUL".into());
             }
             crate::nvm::validate_selection(&p.node_version, &p.nvm_dir)?;
+            crate::nvm::validate_env_vars(&p.env_vars)?;
             let mut actions = HashSet::new();
             for a in &p.commands {
                 if a.id.is_empty()
@@ -503,6 +507,29 @@ mod tests {
         );
         assert_eq!(migrated, serde_json::to_value(loaded).unwrap());
         assert_eq!(std::fs::read_to_string(path).unwrap(), text);
+    }
+
+    #[test]
+    fn project_env_vars_default_roundtrip_and_validate() {
+        let mut value = serde_json::json!({"schemaVersion":1,"projects":[{"id":"p","name":"Project","type":"nodejs","path":"/tmp/project","platforms":["web"],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[]}],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}});
+        // 旧配置没有 envVars 时默认为空。
+        let parsed = parse(&value.to_string()).unwrap();
+        assert!(parsed.projects[0].env_vars.is_empty());
+        value["projects"][0]["envVars"] =
+            "ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com".into();
+        let parsed = parse(&value.to_string()).unwrap();
+        assert_eq!(parsed.projects[0].env_vars, value["projects"][0]["envVars"]);
+        let serialized = serde_json::to_value(parsed).unwrap();
+        assert_eq!(
+            serialized["projects"][0]["envVars"],
+            value["projects"][0]["envVars"]
+        );
+        for invalid in ["NO_EQUALS", "=x", "A=1;A=2", "A=bad\0"] {
+            value["projects"][0]["envVars"] = invalid.into();
+            assert!(parse(&value.to_string()).is_err(), "{invalid}");
+        }
+        value["projects"][0]["envVars"] = 42.into();
+        assert!(parse(&value.to_string()).is_err());
     }
 
     #[test]

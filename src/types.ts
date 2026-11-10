@@ -27,6 +27,7 @@ export interface Project {
   terminal: string;
   nodeVersion: string;
   nvmDir: string;
+  envVars: string;
   aiToolId: string;
   commands: Action[];
 }
@@ -183,6 +184,7 @@ export function newProject(): Project {
     terminal: '',
     nodeVersion: '',
     nvmDir: '',
+    envVars: '',
     aiToolId: '',
     commands: [],
   };

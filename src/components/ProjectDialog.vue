@@ -325,6 +325,20 @@ function selectUniappAction(event: Event, existing?: Action) {
   action.command = '';
   if (!existing) draft.value.commands.push(action);
 }
+function envVarsError(text: string) {
+  const seen = new Set<string>();
+  for (const entry of text.split(/[;\n\r]/)) {
+    const item = entry.trim();
+    if (!item) continue;
+    const index = item.indexOf('=');
+    if (index <= 0) return `环境变量缺少名称或等号：${item}`;
+    const key = item.slice(0, index).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return `环境变量名称无效：${key}`;
+    if (seen.has(key)) return `环境变量重复：${key}`;
+    seen.add(key);
+  }
+  return '';
+}
 function submit() {
   error.value = '';
   const item = draft.value;
@@ -348,6 +362,14 @@ function submit() {
     error.value = '此目录已添加，请编辑已有项目。';
     tab.value = 'general';
     return;
+  }
+  if (item.type === 'nodejs') {
+    const envError = envVarsError(item.envVars);
+    if (envError) {
+      error.value = envError;
+      tab.value = 'general';
+      return;
+    }
   }
   if (item.type !== 'backend' && !item.platforms.length) {
     error.value = '请至少选择一个平台。';
@@ -483,6 +505,20 @@ function submit() {
             </p>
             <p v-if="nodesLoaded && !nodeVersions.length" class="field-help">
               未发现已安装的 nvm Node.js 版本，可先使用终端默认版本。
+            </p>
+          </div>
+          <div v-if="draft.type === 'nodejs'" class="node-env-setting">
+            <label for="project-env-vars" class="field-label">环境变量（可选）</label>
+            <textarea
+              id="project-env-vars"
+              v-model="draft.envVars"
+              rows="3"
+              spellcheck="false"
+              placeholder="KEY=VALUE;KEY2=VALUE2&#10;AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_SMTP_HOST=smtp.qq.com"
+            />
+            <p class="field-help">
+              用分号或换行分隔，值可包含空格和符号。执行终端命令前导出，仅作用于本次会话，同样适用于
+              AI 或自定义命令。
             </p>
           </div>
           <label v-if="draft.type === 'uniapp'"

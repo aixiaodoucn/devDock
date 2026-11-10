@@ -32,6 +32,7 @@ export const api = {
         ...project,
         nodeVersion: project.nodeVersion ?? '',
         nvmDir: project.nvmDir ?? '',
+        envVars: project.envVars ?? '',
         aiToolId: project.aiToolId ?? '',
       }),
     );

@@ -66,6 +66,7 @@ describe('DevDock 预览配置迁移', () => {
     expect((await api.load()).projects[0]).toMatchObject({
       nodeVersion: '',
       nvmDir: '',
+      envVars: '',
       aiToolId: '',
       platforms: ['web'],
       path: '/local/node-app',
