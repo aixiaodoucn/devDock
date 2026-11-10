@@ -266,8 +266,8 @@
   height: 13px;
 }
 .status-pill.success {
-  background: #eaf5ef;
-  color: #367456;
+  background: var(--success-soft);
+  color: var(--success-text);
 }
 @media (max-width: 1100px) {
   .theme-options {

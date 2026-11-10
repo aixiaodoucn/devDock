@@ -187,11 +187,11 @@ html[data-view='quick'] #app {
   width: 26px;
   height: 26px;
   flex-shrink: 0;
-  color: #a45548;
+  color: var(--danger-text);
 }
 .quick-stop:hover:not(:disabled) {
-  color: #a45548;
-  background: #fff0eb;
+  color: var(--danger-text);
+  background: var(--danger-soft);
 }
 .quick-action {
   display: flex;
@@ -281,7 +281,7 @@ html[data-view='quick'] #app {
   overflow-wrap: anywhere;
 }
 .quick-empty.error p {
-  color: #a34237;
+  color: var(--danger);
 }
 .quick-footer {
   padding: 9px 14px;
@@ -307,7 +307,7 @@ html[data-view='quick'] #app {
   overflow: auto;
 }
 .quick-status.error {
-  color: #a34237;
+  color: var(--danger);
 }
 .quick-status .text-button {
   font-size: 9px;

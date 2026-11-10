@@ -7,6 +7,17 @@
   background: var(--bg);
   color-scheme: light;
   --mono: 'Menlo', 'SFMono-Regular', monospace;
+  /* 状态色与主题无关，保证成功/警告/危险语义在六套主题下一致。 */
+  --success-text: #367456;
+  --success-soft: #eaf5ef;
+  --warning-text: #967c38;
+  --warning-soft: #f3edda;
+  --danger: #a34237;
+  --danger-text: #a45548;
+  --danger-soft: #fff0eb;
+  --danger-surface: #fff8f5;
+  --danger-border: #e6c9c2;
+  --danger-border-strong: #d5a498;
   --control-height: 36px;
   --control-height-small: 32px;
   --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23707070' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
@@ -677,8 +688,8 @@ button {
   font-size: 11px;
 }
 .button.danger {
-  background: #a34237;
-  border-color: #a34237;
+  background: var(--danger);
+  border-color: var(--danger);
   color: white;
 }
 .icon-button {
@@ -1092,12 +1103,16 @@ button {
   white-space: nowrap;
 }
 .status-pill.running {
-  color: #967c38;
-  background: #f3edda;
+  color: var(--warning-text);
+  background: var(--warning-soft);
+}
+.status-pill.success {
+  color: var(--success-text);
+  background: var(--success-soft);
 }
 .status-pill.error {
-  background: #f7e4df;
-  color: #a45c4b;
+  background: var(--danger-soft);
+  color: var(--danger-text);
 }
 .status-pill.cancelled {
   color: var(--muted);
@@ -1111,8 +1126,8 @@ button {
   max-width: 200px;
 }
 .stop-button {
-  color: #ad6d54;
-  background: #fbf6ef;
+  color: var(--danger-text);
+  background: var(--danger-surface);
 }
 .artifact-list {
   border-top: 1px solid var(--line);
@@ -1188,13 +1203,13 @@ button {
   gap: 6px;
 }
 .button.stop-command {
-  color: #a45548;
-  border-color: #e6c9c2;
-  background: #fff8f5;
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+  background: var(--danger-surface);
 }
 .button.stop-command:hover:not(:disabled) {
-  background: #fff0eb;
-  border-color: #d5a498;
+  background: var(--danger-soft);
+  border-color: var(--danger-border-strong);
 }
 .command-row + .command-row {
   border-top: 1px solid var(--line);
@@ -1645,9 +1660,9 @@ button {
   overflow-wrap: anywhere;
 }
 .inline-message.error {
-  background: #fff0e9;
-  border-color: #f0d5c6;
-  color: #a3664a;
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
   margin-bottom: 16px;
 }
 .inline-message .button-row {
@@ -1785,9 +1800,9 @@ button {
   line-height: 1.7;
 }
 .notice.error {
-  background: #fff2ec;
-  border-color: #eacdbd;
-  color: #a4684d;
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
 }
 .notice > svg {
   margin-top: 3px;
