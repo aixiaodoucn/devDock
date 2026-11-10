@@ -25,12 +25,16 @@ on run argv
     delay 0.5
     if (count of windows) = 0 or frontmost is not true then error "无法确认终端新标签页上下文；未发送命令"
     -- 通过粘贴避免键盘布局破坏命令内容，完成后恢复原剪贴板。
+    -- 长命令（如包含大段环境变量）粘贴耗时明显，过早回车或恢复剪贴板会截断命令。
+    set pasteDelay to 0.5 + ((count of characters of commandText) / 400)
+    if pasteDelay > 12 then set pasteDelay to 12
     set oldClipboard to the clipboard
     try
      set the clipboard to commandText
      keystroke "v" using command down
-     delay 0.3
+     delay pasteDelay
      key code 36
+     delay 0.5
      set the clipboard to oldClipboard
     on error errText
      set the clipboard to oldClipboard
