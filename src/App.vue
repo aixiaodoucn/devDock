@@ -663,7 +663,7 @@ onUnmounted(() => {
             <span class="theme-toggle-dot"></span>
           </label>
           <span v-if="!desktop" class="preview-badge">预览模式 · 本地调用不可用</span
-          ><span class="platform-badge">macOS FIRST</span><span class="avatar">D.</span>
+          ><span class="platform-badge">macOS FIRST</span>
         </div>
       </header>
       <div v-if="notice" :class="['notice', { error: notice.error }]" role="status">
@@ -743,14 +743,14 @@ onUnmounted(() => {
       <section v-else class="project-page">
         <div class="page-heading">
           <div>
-            <div class="eyebrow">
-              PROJECT WORKSPACE <span>/ {{ TYPE_LABELS[project.type] }}</span>
+            <div class="project-heading-line">
+              <h1>{{ project.name }}<span class="heading-dot">.</span></h1>
+              <span class="project-type-tag">{{ TYPE_LABELS[project.type] }}</span>
+              <GitBranch :path="project.path" />
             </div>
-            <h1>{{ project.name }}<span class="heading-dot">.</span></h1>
             <button class="project-path" @click="openPath(project.path)">
               <FolderOpen :size="14" />{{ project.path }}<ArrowUpRight :size="13" />
             </button>
-            <GitBranch :path="project.path" />
           </div>
           <div class="heading-actions">
             <button class="button" :disabled="busy" @click="editProject">
@@ -825,10 +825,10 @@ onUnmounted(() => {
             <section class="panel build-panel">
               <div class="panel-heading">
                 <div>
-                  <div class="eyebrow">BUILD CONFIGURATION</div>
-                  <h2>准备你的下一次发布</h2>
+                  <h2>构建配置</h2>
+                  <p>选择目标与版本，在本机完成构建。</p>
                 </div>
-                <Package :size="24" class="muted-icon" />
+                <Package :size="22" class="muted-icon" />
               </div>
               <span class="field-label">构建目标</span>
               <div class="build-targets">
@@ -913,7 +913,6 @@ onUnmounted(() => {
             </section>
             <aside class="build-aside">
               <section class="context-card">
-                <div class="eyebrow">ENVIRONMENT</div>
                 <h3>构建环境</h3>
                 <dl>
                   <dt>构建工具</dt>
@@ -1089,7 +1088,7 @@ onUnmounted(() => {
                 @click="cancelTask"
               >
                 <Square :size="11" fill="currentColor" />取消</button
-              ><span v-if="!currentTask" class="mono log-caption">OUTPUT / LOCAL</span>
+              ><span v-if="!currentTask" class="mono log-caption">本地输出</span>
             </div>
           </header>
           <div

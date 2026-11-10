@@ -83,7 +83,7 @@ watch(
   <section class="settings-page">
     <div class="page-heading">
       <div>
-        <div class="eyebrow">PREFERENCES</div>
+        <div class="eyebrow">偏好设置</div>
         <h1>让工具适应你的习惯<span class="heading-dot">.</span></h1>
         <p>配置本机开发环境，备份你的工作台。</p>
       </div>
@@ -233,7 +233,7 @@ watch(
     <section class="appearance-section" aria-labelledby="appearance-title">
       <div class="section-heading">
         <div>
-          <div class="eyebrow">MAKE IT YOURS</div>
+          <div class="eyebrow">外观</div>
           <h2 id="appearance-title"><Palette :size="18" />外观主题</h2>
           <p>为你的工作空间，选一种舒服的颜色。切换即保存。</p>
         </div>

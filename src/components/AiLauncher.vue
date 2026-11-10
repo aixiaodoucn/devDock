@@ -104,8 +104,8 @@ function openDirectory() {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 8px 12px;
   margin-bottom: 18px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -131,7 +131,11 @@ function openDirectory() {
   display: block;
   color: var(--muted);
   font-size: 10px;
-  margin-top: 3px;
+  margin-top: 2px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ai-launcher-controls select,
 .ai-launcher-controls button {

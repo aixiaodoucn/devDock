@@ -565,18 +565,6 @@ button {
   letter-spacing: 1.5px;
   color: var(--muted);
 }
-.avatar {
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--line);
-  background: var(--accent-soft);
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--accent-text);
-}
 .preview-badge {
   font-size: 10px;
   color: #9b7e43;
@@ -613,6 +601,21 @@ button {
 .page-heading h1 {
   font-size: 26px;
   line-height: 1.2;
+}
+/* 项目名、类型与分支合并为一行，减少首屏元信息占用。 */
+.project-heading-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.project-type-tag {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
 }
 .heading-dot {
   color: var(--accent-text);
@@ -807,13 +810,13 @@ button {
   border-radius: 8px;
   background: var(--surface-subtle);
   text-align: left;
-  padding: 10px 12px;
+  padding: 8px 10px;
   position: relative;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
-  column-gap: 9px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: 8px;
   align-items: center;
-  min-height: 66px;
+  min-height: 52px;
 }
 .build-target.selected {
   border-color: var(--accent);
@@ -933,7 +936,7 @@ button {
   padding: 9px 16px !important;
 }
 .context-card {
-  padding: 16px;
+  padding: 14px;
   background: var(--accent-soft);
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -946,13 +949,13 @@ button {
   margin-bottom: 9px;
 }
 .context-card dl {
-  margin: 16px 0;
+  margin: 12px 0;
 }
 .context-card dt {
   font-size: 10px;
   color: var(--muted);
-  margin-top: 12px;
-  margin-bottom: 5px;
+  margin-top: 9px;
+  margin-bottom: 3px;
 }
 .context-card dd {
   font-size: 11px;

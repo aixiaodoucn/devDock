@@ -450,7 +450,7 @@ function submit() {
     >
       <header class="modal-header">
         <div>
-          <div class="eyebrow">PROJECT CONFIGURATION</div>
+          <div class="eyebrow">项目配置</div>
           <h2 id="project-dialog-title">
             <FolderGit2 :size="21" />{{
               existing.some((item) => item.id === project.id) ? '编辑项目' : '添加项目'
