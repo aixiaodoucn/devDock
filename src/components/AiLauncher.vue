@@ -73,9 +73,7 @@ function openDirectory() {
         :disabled="busy"
         @change="selectTool"
       >
-        <option value="">
-          跟随全局默认{{ defaultTool ? `（${defaultTool.name}）` : '（未配置）' }}
-        </option>
+        <option value="">默认{{ defaultTool ? `（${defaultTool.name}）` : '（未配置）' }}</option>
         <option v-if="unavailable" :value="projectToolId" disabled>
           项目命令不可用，请重新选择
         </option>

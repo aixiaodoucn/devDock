@@ -366,7 +366,7 @@ async function selectProjectAiTool(toolId: string) {
     if (!item) return;
     item.aiToolId = toolId;
     await persist(next);
-    notify(toolId ? '当前项目的专用命令已保存' : '当前项目已跟随全局默认命令');
+    notify(toolId ? '当前项目的专用命令已保存' : '当前项目已使用默认命令');
   } catch (error) {
     fail(error);
   } finally {

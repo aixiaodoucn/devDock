@@ -332,7 +332,7 @@ function submit() {
           /></label>
           <label v-if="draft.type !== 'backend'"
             >项目终端（可选）<select v-model="draft.terminal">
-              <option value="">跟随全局设置</option>
+              <option value="">默认</option>
               <option v-for="tool in tools.terminals" :key="tool.path" :value="tool.path">
                 {{ tool.name }}
               </option>
@@ -402,7 +402,7 @@ function submit() {
             <label for="project-jdk" class="field-label">JDK 版本</label>
             <div class="jdk-select-row">
               <select id="project-jdk" v-model="draft.jdkPath">
-                <option value="">跟随全局 JDK / 系统 JAVA_HOME</option>
+                <option value="">默认 JDK / 系统 JAVA_HOME</option>
                 <option v-for="tool in tools.jdks" :key="tool.path" :value="tool.path">
                   {{ tool.name }}
                 </option>
