@@ -101,6 +101,13 @@ describe('Node 项目版本选择', () => {
       const env = dialog.root.querySelector<HTMLTextAreaElement>(
         '[aria-label="命令 1 的环境变量"]',
       )!;
+      // 输入框下方给出普通值与 JSON 数组两种示例。
+      expect(dialog.root.textContent).toContain(
+        'ALERT_EMAIL_SMTP_HOST=smtp.qq.com;ALERT_EMAIL_SMTP_PORT=465',
+      );
+      expect(dialog.root.textContent).toContain(
+        'AI_CONFIG=\'[{"name":"weixin","model":"DeepSeek"}]\'',
+      );
       env.value =
         'AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com;';
       env.dispatchEvent(new Event('input', { bubbles: true }));

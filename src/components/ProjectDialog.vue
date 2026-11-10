@@ -834,9 +834,19 @@ function submit() {
                   placeholder="KEY=VALUE;KEY2=VALUE2"
                 />
               </label>
-              <p class="field-help env-help">
-                仅作用于当前命令：用分号或换行分隔，值可包含空格和符号，执行前导出到本次终端。
-              </p>
+              <div class="env-hint">
+                <p class="field-help env-help">
+                  仅作用于当前命令：用分号或换行分隔，值可包含空格和符号，执行前导出到本次终端。
+                </p>
+                <p class="env-example">
+                  <span>普通值</span
+                  ><code>ALERT_EMAIL_SMTP_HOST=smtp.qq.com;ALERT_EMAIL_SMTP_PORT=465</code>
+                </p>
+                <p class="env-example">
+                  <span>JSON 数组</span
+                  ><code>AI_CONFIG='[{"name":"weixin","model":"DeepSeek"}]'</code>
+                </p>
+              </div>
             </template>
             <template v-else
               ><label
@@ -895,3 +905,35 @@ function submit() {
     </section>
   </div>
 </template>
+
+<style scoped>
+.env-hint {
+  display: grid;
+  gap: 5px;
+}
+.env-hint .env-help {
+  margin: 0;
+}
+.env-example {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+.env-example span {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+.env-example code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 10px;
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 2px 5px;
+}
+</style>
