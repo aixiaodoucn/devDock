@@ -114,6 +114,22 @@ describe('Node 项目版本选择', () => {
           },
         ],
       });
+      // 引号包裹的 JSON 值可包含分号，引号未闭合才报错。
+      env.value = 'AI_CONFIG="[{\\"name\\":\\"weixin\\",\\"apiKey\\":\\"a;b\\"}]";OTHER=1';
+      env.dispatchEvent(new Event('input', { bubbles: true }));
+      await nextTick();
+      expect(await dialog.submit()).toMatchObject({
+        commands: [{ envVars: expect.stringContaining('AI_CONFIG=') }],
+      });
+      env.value = 'AI_CONFIG="unterminated';
+      env.dispatchEvent(new Event('input', { bubbles: true }));
+      await nextTick();
+      const closedCalls = dialog.save.mock.calls.length;
+      await dialog.submit();
+      expect(dialog.save).toHaveBeenCalledTimes(closedCalls);
+      expect(dialog.root.querySelector('[role="alert"]')?.textContent).toContain(
+        '环境变量引号未闭合',
+      );
       for (const [value, message] of [
         ['NO_EQUALS', '环境变量缺少名称或等号'],
         ['1BAD=x', '环境变量名称无效'],

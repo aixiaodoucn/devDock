@@ -330,9 +330,50 @@ function selectUniappAction(event: Event, existing?: Action) {
   action.command = '';
   if (!existing) draft.value.commands.push(action);
 }
+// 与后端一致：值以引号开头时，引号内的分号和换行不拆分。
+function splitEnvEntries(text: string): string[] | string {
+  const entries: string[] = [];
+  let current = '';
+  let afterEquals = false;
+  let valueStarted = false;
+  let quote = '';
+  let escaped = false;
+  for (const ch of text) {
+    if (quote) {
+      current += ch;
+      if (escaped) escaped = false;
+      else if (quote === '"' && ch === '\\') escaped = true;
+      else if (ch === quote) {
+        quote = '';
+        valueStarted = true;
+      }
+      continue;
+    }
+    if (ch === ';' || ch === '\n' || ch === '\r') {
+      entries.push(current);
+      current = '';
+      afterEquals = false;
+      valueStarted = false;
+      escaped = false;
+      continue;
+    }
+    current += ch;
+    if (!afterEquals) {
+      if (ch === '=') afterEquals = true;
+    } else if (!valueStarted) {
+      if (ch === '"' || ch === "'") quote = ch;
+      else if (ch !== ' ' && ch !== '\t') valueStarted = true;
+    }
+  }
+  if (quote) return '环境变量引号未闭合';
+  entries.push(current);
+  return entries;
+}
 function envVarsError(text: string) {
+  const entries = splitEnvEntries(text);
+  if (typeof entries === 'string') return entries;
   const seen = new Set<string>();
-  for (const entry of text.split(/[;\n\r]/)) {
+  for (const entry of entries) {
     const item = entry.trim();
     if (!item) continue;
     const index = item.indexOf('=');

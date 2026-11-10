@@ -154,10 +154,87 @@ fn scan(roots: Vec<PathBuf>) -> Vec<NodeVersion> {
     found.into_iter().map(|(_, version)| version).collect()
 }
 
-// 解析 KEY=VALUE;KEY2=VALUE2 或逐行输入；值保留空格和符号，仅去掉首尾空白。
+// 按分隔符切割，但值以引号开头时保留引号内的分号与换行。
+fn split_env_entries(text: &str) -> Result<Vec<String>> {
+    let mut entries = Vec::new();
+    let mut current = String::new();
+    let mut after_equals = false;
+    let mut value_started = false;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in text.chars() {
+        if let Some(active) = quote {
+            current.push(ch);
+            if escaped {
+                escaped = false;
+            } else if active == '"' && ch == '\\' {
+                escaped = true;
+            } else if ch == active {
+                quote = None;
+                value_started = true;
+            }
+            continue;
+        }
+        if ch == ';' || ch == '\n' || ch == '\r' {
+            entries.push(std::mem::take(&mut current));
+            after_equals = false;
+            value_started = false;
+            escaped = false;
+            continue;
+        }
+        current.push(ch);
+        if !after_equals {
+            if ch == '=' {
+                after_equals = true;
+            }
+        } else if !value_started {
+            // 仅值开头的引号表示包裹；值中间的引号按普通字符处理。
+            if ch == '"' || ch == '\'' {
+                quote = Some(ch);
+            } else if ch != ' ' && ch != '\t' {
+                value_started = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return Err("环境变量引号未闭合".into());
+    }
+    entries.push(current);
+    Ok(entries)
+}
+
+// 兼容 .env 风格外层引号：双引号内还原 \" 与 \\，单引号内容原样保留。
+fn unquote_env_value(raw: &str) -> Result<String> {
+    if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+        let mut out = String::new();
+        let mut chars = raw[1..raw.len() - 1].chars();
+        while let Some(ch) = chars.next() {
+            if ch != '\\' {
+                out.push(ch);
+                continue;
+            }
+            match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        }
+        Ok(out)
+    } else if raw.len() >= 2 && raw.starts_with('\'') && raw.ends_with('\'') {
+        Ok(raw[1..raw.len() - 1].to_owned())
+    } else {
+        Ok(raw.to_owned())
+    }
+}
+
+// 解析 KEY=VALUE;KEY2=VALUE2 或逐行输入；支持引号包裹的 JSON 等复杂值。
 pub fn parse_env_vars(text: &str) -> Result<Vec<(String, String)>> {
     let mut result: Vec<(String, String)> = vec![];
-    for entry in text.split([';', '\n', '\r']) {
+    for entry in split_env_entries(text)? {
         let entry = entry.trim();
         if entry.is_empty() {
             continue;
@@ -173,13 +250,14 @@ pub fn parse_env_vars(text: &str) -> Result<Vec<(String, String)>> {
         {
             return Err(format!("环境变量名称无效: {key}"));
         }
+        let value = unquote_env_value(value.trim())?;
         if value.contains('\0') {
             return Err(format!("环境变量 {key} 的值包含无效空字符"));
         }
         if result.iter().any(|(existing, _)| existing == key) {
             return Err(format!("环境变量重复: {key}"));
         }
-        result.push((key.to_owned(), value.trim().to_owned()));
+        result.push((key.to_owned(), value));
     }
     Ok(result)
 }
@@ -320,6 +398,31 @@ mod tests {
         for invalid in ["NO_EQUALS", "=value", "1BAD=x", "A=1;A=2", "A=bad\0"] {
             assert!(validate_env_vars(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn env_vars_support_quoted_json_values_with_semicolons() {
+        let text = r#"AI_CONFIG="[{\"name\":\"weixin\",\"apiKey\":\"a;b\"}]";OTHER=1"#;
+        let vars = parse_env_vars(text).unwrap();
+        assert_eq!(vars[0].0, "AI_CONFIG");
+        assert_eq!(vars[0].1, r#"[{"name":"weixin","apiKey":"a;b"}]"#);
+        assert_eq!(vars[1], ("OTHER".into(), "1".into()));
+        let vars = parse_env_vars(r#"CONFIG='[{"a":"b;c"}]'; X=2"#).unwrap();
+        assert_eq!(vars[0].1, r#"[{"a":"b;c"}]"#);
+        assert_eq!(vars[1], ("X".into(), "2".into()));
+        // 引号内的换行不拆分，未闭合引号明确报错。
+        assert_eq!(
+            parse_env_vars("A=\"line1\nline2\"").unwrap()[0].1,
+            "line1\nline2"
+        );
+        assert!(validate_env_vars(r#"A="unterminated"#).is_err());
+        assert!(validate_env_vars(r#"A='unterminated"#).is_err());
+        // 引号内的分号仍作为值的一部分，执行时单引号安全引用。
+        let mut action: Action = serde_json::from_value(serde_json::json!({"id":"dev","name":"Dev","platform":"web","kind":"shell","menuPath":[],"command":"node app.js"})).unwrap();
+        action.env_vars = text.into();
+        let project: Project = serde_json::from_value(serde_json::json!({"id":"p","name":"P","type":"backend","path":"/tmp/p","platforms":[],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[]})).unwrap();
+        let command = command_for(&project, &action).unwrap();
+        assert!(command.contains(r#"AI_CONFIG='[{"name":"weixin","apiKey":"a;b"}]'"#));
     }
 
     #[test]
