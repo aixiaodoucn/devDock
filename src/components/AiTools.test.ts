@@ -100,6 +100,63 @@ describe('项目 AI 工具', () => {
       panel.dispose();
     }
   });
+  it('缺少命令时使用中文提示并聚焦，导出包含未保存的完整 AI 草稿', async () => {
+    const settings = defaultConfig().settings;
+    settings.aiTools = [{ id: 'custom', name: '自定义助手', command: '', enabled: true }];
+    const save = vi.fn();
+    const error = vi.fn();
+    const exportSettings = vi.fn();
+    const panel = render({
+      render: () =>
+        h(SettingsPage, {
+          settings,
+          tools: { hbuilderxPath: '', terminals: [], jdks: [] },
+          detecting: false,
+          saving: false,
+          busy: false,
+          projectCount: 0,
+          onSave: save,
+          onError: error,
+          onExport: exportSettings,
+        }),
+    });
+    try {
+      const form = panel.root.querySelector('form')!;
+      expect(form.noValidate).toBe(true);
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      expect(save).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith('请为「自定义助手」填写启动命令，例如 claude 或 codex。');
+      const command = panel.root.querySelector<HTMLInputElement>(
+        '[aria-label="AI 工具 1 启动命令"]',
+      )!;
+      expect(document.activeElement).toBe(command);
+      const exportButton = Array.from(
+        panel.root.querySelectorAll<HTMLButtonElement>('button'),
+      ).find((button) => button.textContent?.includes('导出 JSON'))!;
+      exportButton.click();
+      expect(exportSettings).not.toHaveBeenCalled();
+      command.value = 'custom-ai --profile local';
+      command.dispatchEvent(new Event('input', { bubbles: true }));
+      await nextTick();
+      exportButton.click();
+      expect(exportSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          aiTools: [
+            {
+              id: 'custom',
+              name: '自定义助手',
+              command: 'custom-ai --profile local',
+              enabled: true,
+            },
+          ],
+        }),
+      );
+      expect(settings.aiTools[0].command).toBe('');
+      expect(save).not.toHaveBeenCalled();
+    } finally {
+      panel.dispose();
+    }
+  });
   it('AI 设置草稿不修改已保存配置，切换主题保留草稿，保存后可删除并禁用工具', async () => {
     const state = reactive({ settings: defaultConfig().settings });
     const save = vi.fn<(settings: Settings) => void>();

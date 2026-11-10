@@ -27,13 +27,38 @@ const emit = defineEmits<{
   save: [settings: Settings];
   theme: [theme: ThemeName];
   detect: [];
-  export: [];
+  export: [settings: Settings];
   import: [];
   error: [message: string];
 }>();
 // 设置草稿需深拷贝，编辑 AI 工具时不能提前修改已保存的配置。
 const cloneSettings = (settings: Settings): Settings => JSON.parse(JSON.stringify(settings));
 const draft = ref(cloneSettings(props.settings));
+const settingsForm = ref<HTMLFormElement>();
+function validateDraft() {
+  for (const [index, tool] of draft.value.aiTools.entries()) {
+    const field = !tool.name.trim() ? '名称' : !tool.command.trim() ? '启动命令' : '';
+    if (!field) continue;
+    emit(
+      'error',
+      field === '名称'
+        ? `请填写第 ${index + 1} 个 AI 工具的名称。`
+        : `请为「${tool.name.trim()}」填写启动命令，例如 claude 或 codex。`,
+    );
+    settingsForm.value
+      ?.querySelector<HTMLInputElement>(`[aria-label="AI 工具 ${index + 1} ${field}"]`)
+      ?.focus();
+    return false;
+  }
+  return true;
+}
+function saveDraft() {
+  if (!props.saving && !props.busy && validateDraft()) emit('save', cloneSettings(draft.value));
+}
+function exportDraft() {
+  // 导出当前表单快照，包含尚未保存的 AI 工具，不改动已保存设置。
+  if (!props.saving && !props.busy && validateDraft()) emit('export', cloneSettings(draft.value));
+}
 watch(
   () => props.settings,
   (value, previous) => {
@@ -63,7 +88,7 @@ watch(
       </div>
       <SlidersHorizontal :size="32" class="heading-icon" />
     </div>
-    <form class="settings-config" @submit.prevent="emit('save', cloneSettings(draft))">
+    <form ref="settingsForm" class="settings-config" novalidate @submit.prevent="saveDraft">
       <div class="settings-tools-grid">
         <section class="panel">
           <div class="panel-heading">
@@ -71,7 +96,12 @@ watch(
               <h2>开发工具</h2>
               <p>项目可以覆盖这里的默认配置。</p>
             </div>
-            <button class="button small" :disabled="detecting || !desktop" @click="emit('detect')">
+            <button
+              type="button"
+              class="button small"
+              :disabled="detecting || !desktop"
+              @click="emit('detect')"
+            >
               <RefreshCw :size="14" :class="{ spinning: detecting }" />{{
                 detecting ? '检测中' : '自动检测'
               }}
@@ -152,20 +182,27 @@ watch(
     </form>
     <div class="settings-support-grid">
       <section class="panel backup-panel">
-        <div class="backup-symbol"><ShieldCheck :size="26" /></div>
-        <h2>配置随你迁移</h2>
-        <p>导出项目、平台、操作命令和工具设置。重新安装或更换设备后，从 JSON 备份恢复。</p>
+        <div class="backup-header">
+          <div class="backup-symbol"><ShieldCheck :size="22" /></div>
+          <h2>配置随你迁移</h2>
+          <p>
+            导出项目、平台、操作命令、工具设置及 AI 工具配置。重新安装或更换设备后，从 JSON
+            备份恢复。
+          </p>
+        </div>
         <div class="backup-count">
           <span>{{ projectCount }}</span> 个项目配置
         </div>
         <div class="button-row">
-          <button class="button" @click="emit('export')"><Download :size="16" />导出 JSON</button
+          <button class="button" :disabled="busy || saving" @click="exportDraft">
+            <Download :size="16" />导出 JSON</button
           ><button class="button" :disabled="busy || saving" @click="emit('import')">
             <Upload :size="16" />导入 JSON
           </button>
         </div>
         <p class="field-help">
-          导入前会校验格式，并提供合并或替换选项。备份不包含源码、构建产物或
+          导出包含当前表单中的 AI
+          工具名称、启动命令和启用状态。导入前会校验格式，并提供合并或替换选项。备份不包含源码、构建产物或
           JDK；命令中的敏感值也会随配置导出，请妥善保存。
         </p>
       </section>
@@ -226,7 +263,7 @@ watch(
 
 <style scoped>
 .settings-config {
-  margin-bottom: 20px;
+  margin-bottom: 36px;
 }
 .settings-tools-grid {
   display: grid;
@@ -246,10 +283,32 @@ watch(
 }
 .settings-support-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.75fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
   margin-bottom: 24px;
+}
+.backup-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.backup-header .backup-symbol {
+  flex-shrink: 0;
+  margin-bottom: 0;
+}
+.backup-header h2 {
+  flex-shrink: 0;
+  margin: 0;
+  font-size: 16px;
+}
+.backup-header p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
 }
 .appearance-section {
   border-top: 1px solid var(--line);

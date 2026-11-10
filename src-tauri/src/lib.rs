@@ -325,6 +325,38 @@ async fn list_menus(app: AppHandle, hbuilderx_path: String) -> Result<Vec<Vec<St
 mod package_tests {
     use super::*;
     #[test]
+    fn ai_tools_are_exported_and_imported_with_commands_and_enabled_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ai-backup.json").to_str().unwrap().to_owned();
+        let mut config = AppConfig::default();
+        config.settings.ai_tools = vec![
+            config::AiTool {
+                id: "custom".into(),
+                name: "自定义助手".into(),
+                command: "custom-ai --profile 'local work'".into(),
+                enabled: true,
+            },
+            config::AiTool {
+                id: "disabled".into(),
+                name: "停用助手".into(),
+                command: "other-ai".into(),
+                enabled: false,
+            },
+        ];
+        write_backup(path.clone(), config.clone()).unwrap();
+        let exported: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            exported["settings"]["aiTools"],
+            serde_json::to_value(&config.settings.ai_tools).unwrap()
+        );
+        let restored = read_backup(path).unwrap();
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::to_value(config).unwrap()
+        );
+    }
+    #[test]
     fn node_backup_import_defaults_and_selection_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir

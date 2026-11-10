@@ -384,9 +384,10 @@ async function openPath(path: string) {
     fail(error);
   }
 }
-async function exportBackup() {
+async function exportBackup(settings: Settings) {
   try {
-    if (await api.exportBackup(JSON.parse(JSON.stringify(config.value)))) notify('配置备份已导出');
+    const backup = JSON.parse(JSON.stringify({ ...config.value, settings }));
+    if (await api.exportBackup(backup)) notify('配置备份已导出');
   } catch (error) {
     fail(error);
   }
