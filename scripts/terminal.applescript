@@ -1,3 +1,17 @@
+-- 按字符切分长命令，分块粘贴避免终端异步读取剪贴板时截断。
+on chunkText(theText, chunkSize)
+ set parts to {}
+ set totalLength to count of characters of theText
+ set chunkStart to 1
+ repeat while chunkStart <= totalLength
+  set chunkEnd to chunkStart + chunkSize - 1
+  if chunkEnd > totalLength then set chunkEnd to totalLength
+  set end of parts to text chunkStart thru chunkEnd of theText
+  set chunkStart to chunkEnd + 1
+ end repeat
+ return parts
+end chunkText
+
 -- 授权命令作为参数传入，工作目录通过 shell 安全引用。
 on run argv
  set terminalPath to item 1 of argv
@@ -25,14 +39,15 @@ on run argv
     delay 0.5
     if (count of windows) = 0 or frontmost is not true then error "无法确认终端新标签页上下文；未发送命令"
     -- 通过粘贴避免键盘布局破坏命令内容，完成后恢复原剪贴板。
-    -- 长命令（如包含大段环境变量）粘贴耗时明显，过早回车或恢复剪贴板会截断命令。
-    set pasteDelay to 0.5 + ((count of characters of commandText) / 400)
-    if pasteDelay > 12 then set pasteDelay to 12
+    -- 分块粘贴：长命令一次粘贴可能被终端异步读取剪贴板截断，块间留出处理时间。
+    set commandChunks to my chunkText(commandText, 400)
     set oldClipboard to the clipboard
     try
-     set the clipboard to commandText
-     keystroke "v" using command down
-     delay pasteDelay
+     repeat with piece in commandChunks
+      set the clipboard to contents of piece
+      keystroke "v" using command down
+      delay 0.35
+     end repeat
      key code 36
      delay 0.5
      set the clipboard to oldClipboard

@@ -19,6 +19,7 @@ pnpm test                        # 配置合并测试
 cargo test --manifest-path src-tauri/Cargo.toml
 bash scripts/test-hbuilderx.sh    # macOS：WGT 匹配和菜单占位项，不触发打包
 bash scripts/test-hbuilderx.sh --live-menus # 只读检查当前 HBuilderX 菜单，不点击运行/发行
+bash scripts/test-terminal.sh     # macOS：长命令分块切分，不打开终端
 bash scripts/test-build.sh        # macOS：伪 JDK/Gradle 验证兼容参数与资源复制
 pnpm tauri build                 # 构建本机架构的 macOS 应用与 DMG
 ```
@@ -125,7 +126,7 @@ WGT 确认框必须能通过辅助功能识别，具备 WGT 标识、目标项�
 支持检测 Terminal、Ghostty、iTerm 以及手动设置应用路径。项目终端可以覆盖全局选择。
 
 - Terminal 通过 AppleScript 打开终端执行。
-- Ghostty / iTerm 使用前台自动化创建标签页并粘贴命令；需要默认的新标签页快捷键和辅助功能权限。包含大量环境变量的长命令会按长度等待粘贴完成后再回车并恢复剪贴板，避免命令被截断。
+- Ghostty / iTerm 使用前台自动化创建标签页并粘贴命令；需要默认的新标签页快捷键和辅助功能权限。包含大量环境变量的长命令会按 400 字符分块粘贴，块间留出终端处理时间，全部粘贴完成后再回车并恢复剪贴板，避免命令被截断。
 - 工作目录安全引用，用户自定义命令按原意执行。终端任务只显示「已触发」，运行日志与服务停止在对应终端中处理。
 - 取消 DevDock 构建可以停止它管理的子进程，无法保证撤回 HBuilderX 已开始的内部发行或终端已收到的命令；请在对应工具中确认。
 
