@@ -365,6 +365,17 @@ pub fn action(
     action: Action,
     settings: Settings,
 ) -> Result<String> {
+    action_with_title(app, project, action, settings, None)
+}
+
+// 仅项目自己的终端命令传标题；打开 AI 或仅打开目录时保持终端默认标题。
+pub fn action_with_title(
+    app: AppHandle,
+    project: Project,
+    action: Action,
+    settings: Settings,
+    title: Option<String>,
+) -> Result<String> {
     if !Path::new(&project.path).is_dir() {
         return Err("项目目录不存在".into());
     }
@@ -458,11 +469,13 @@ pub fn action(
             let command = nvm::command_for(&project, &action)?;
             // 非激活面板可能仍持有键盘焦点；先收起再让终端接收新标签和粘贴按键。
             crate::tray::hide_quick_panel(task.app.clone())?;
+            let terminal_title = title.clone().unwrap_or_default();
             let mut c = Command::new("/usr/bin/osascript");
             c.arg(scripts.join("terminal.applescript"))
                 .arg(terminal)
                 .arg(&project.path)
-                .arg(command);
+                .arg(command)
+                .arg(terminal_title);
             task.command(c, 30)?;
             task.emit(
                 "log",

@@ -22,5 +22,11 @@ on run argv
   set mixedJoined to mixedJoined & (contents of piece)
  end repeat
  if mixedJoined is not mixedText then error "多字节字符分块后必须保持原文"
- return "分块粘贴（4 项）测试通过"
+ set titleCommand to automation's oscTitleCommand("项目 · 开发")
+ if titleCommand does not contain "]0;%s" then error "OSC 标题命令必须包含标题占位符"
+ if titleCommand does not contain "'项目 · 开发'" then error "标题必须使用单引号安全引用"
+ if titleCommand does not start with "printf '" then error "OSC 标题命令格式不正确"
+ set quotedTitle to automation's oscTitleCommand("a'b")
+ if quotedTitle does not contain "'a'\\''b'" then error "标题中的单引号必须正确转义"
+ return "分块粘贴（4 项）、终端标题（2 项）测试通过"
 end run

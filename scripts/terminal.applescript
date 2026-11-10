@@ -12,22 +12,37 @@ on chunkText(theText, chunkSize)
  return parts
 end chunkText
 
+-- OSC 0 设置终端标签标题，兼容 iTerm 与 Ghostty。
+on oscTitleCommand(theTitle)
+ return "printf '\\033]0;%s\\007' " & quoted form of theTitle & " && "
+end oscTitleCommand
+
 -- 授权命令作为参数传入，工作目录通过 shell 安全引用。
 on run argv
  set terminalPath to item 1 of argv
  set workingDirectory to item 2 of argv
  set userCommand to item 3 of argv
+ set windowTitle to ""
+ if (count of argv) >= 4 then set windowTitle to item 4 of argv
  -- 未选择 AI 工具时只切换目录，不拼接空命令。
  set commandText to "cd -- " & quoted form of workingDirectory
  if userCommand is not "" then set commandText to commandText & " && " & userCommand
  if terminalPath is "Terminal" or terminalPath ends with "/Terminal.app" then
   tell application "Terminal"
    activate
-   do script commandText
+   set newTab to do script commandText
+   -- Terminal 的自定义标题不会被 shell 提示符覆盖。
+   if windowTitle is not "" then
+    try
+     set custom title of newTab to windowTitle
+    end try
+   end if
   end tell
  else if terminalPath ends with "/iTerm.app" or terminalPath ends with "/iTerm2.app" or terminalPath ends with "/Ghostty.app" then
   set processName to "iTerm2"
   if terminalPath ends with "/Ghostty.app" then set processName to "Ghostty"
+  -- iTerm 与 Ghostty 通过 OSC 0 设置当前标签标题。
+  if windowTitle is not "" then set commandText to (my oscTitleCommand(windowTitle)) & commandText
   do shell script "/usr/bin/open -a " & quoted form of terminalPath
   delay 1
   tell application "System Events"

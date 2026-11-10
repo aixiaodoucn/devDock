@@ -224,7 +224,12 @@ fn run_action(
     action: Action,
     settings: Settings,
 ) -> Result<String> {
-    tasks::action(app, project, action, settings)
+    // 不把环境变量和激活前缀写进标题；过滤控制字符，避免干扰终端标题序列。
+    let title = format!("{} · {}", project.name, action.command.trim())
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    tasks::action_with_title(app, project, action, settings, Some(title))
 }
 #[tauri::command]
 fn open_project_terminal(
