@@ -293,12 +293,19 @@ watch(
 }
 .settings-terminal-fields {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: var(--terminal-columns);
   align-items: start;
-  gap: 14px;
+  column-gap: var(--terminal-column-gap);
+  row-gap: 14px;
   padding-bottom: 16px;
   margin-bottom: 16px;
   border-bottom: 1px solid var(--line);
+}
+.settings-terminal-fields > label:first-child {
+  grid-column: 2;
+}
+.settings-terminal-fields > label:last-child {
+  grid-column: 3 / -1;
 }
 .settings-save {
   margin-top: 14px;
@@ -338,9 +345,12 @@ watch(
 }
 @media (max-width: 1100px) {
   .settings-tools-grid,
-  .settings-terminal-fields,
   .settings-support-grid {
     grid-template-columns: 1fr;
+  }
+  .settings-terminal-fields > label:last-child {
+    grid-column: 2 / -1;
+    grid-row: 2;
   }
 }
 </style>

@@ -107,6 +107,9 @@ function remove(id: string) {
 
 <style scoped>
 .ai-tools-editor {
+  /* 顶部终端选择与命令行共享列宽，保持名称列对齐。 */
+  --terminal-columns: 20px minmax(90px, 0.8fr) minmax(120px, 1.2fr) 92px 28px;
+  --terminal-column-gap: 7px;
   border-top: 1px solid var(--line);
   padding-top: 18px;
 }
@@ -124,9 +127,9 @@ function remove(id: string) {
 }
 .ai-tool-row {
   display: grid;
-  grid-template-columns: 20px minmax(90px, 0.8fr) minmax(120px, 1.2fr) 92px 28px;
+  grid-template-columns: var(--terminal-columns);
   align-items: center;
-  gap: 7px;
+  gap: var(--terminal-column-gap);
   border: 0;
   padding: 0;
   margin: 0 0 9px;
@@ -153,8 +156,8 @@ function remove(id: string) {
   align-items: center;
 }
 @media (max-width: 1100px) {
-  .ai-tool-row {
-    grid-template-columns: 20px minmax(0, 1fr) 92px 28px;
+  .ai-tools-editor {
+    --terminal-columns: 20px minmax(0, 1fr) 92px 28px;
   }
   .ai-tool-command {
     grid-column: 2 / 4;
