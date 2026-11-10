@@ -8,6 +8,19 @@ on run argv
   if automation's isWgtConfirmName(contents of labelText) then error "不应识别此按钮: " & labelText
  end repeat
  if automation's isWgtConfirmName(missing value) then error "不应识别空名称"
+ repeat with labelText in {"发行", "发行(E)", "发行（E）", "发布", "打包(P)"}
+  if not (automation's isReleaseButtonName(contents of labelText)) then error "应当识别发行确认按钮: " & labelText
+ end repeat
+ repeat with labelText in {"取消(C)", "确定(O)", "发行到微信", "发行并上传", "发布页面", "运行", "发行(Other)", "发行()"}
+  if automation's isReleaseButtonName(contents of labelText) then error "不应识别发行确认按钮: " & labelText
+ end repeat
+ if automation's isReleaseButtonName(missing value) then error "发行按钮不应识别空名称"
+ repeat with dialogText in {"微信小程序发行", "HBuilderX - 发行", "自定义发行", "App 打包"}
+  if not (automation's isReleaseDialogText(contents of dialogText)) then error "应识别发行弹框文本: " & dialogText
+ end repeat
+ repeat with dialogText in {"", "运行", "选择运行平台", "设置", missing value}
+  if automation's isReleaseDialogText(contents of dialogText) then error "不应把其他弹框当作发行弹框: " & dialogText
+ end repeat
  if not (automation's isProjectWgtPath("/项目/门店/unpackage/release/__UNI__A.wgt", "/项目/门店")) then error "应识别目标项目路径"
  if not (automation's isProjectWgtPath("/项目/门店/unpackage/release/__UNI__A.wgt", "/项目/门店/")) then error "应支持项目路径末尾斜杠"
  repeat with outputPath in {"/项目/门店2/unpackage/release/__UNI__A.wgt", "/项目/门店/unpackage/release/old.apk", "/另一个项目/unpackage/release/__UNI__A.wgt"}
@@ -38,7 +51,7 @@ on run argv
  repeat with labelText in {"微信开发者工具 - [other]", "停止微信开发者工具 - [shop] 指定页面", "微信开发者工具"}
   if automation's isProjectWeixinMenu(contents of labelText, "shop") then error "不能匹配其他项目或指定页面微信菜单"
  end repeat
- set resultText to "WGT 匹配（17 项）、菜单占位项（10 项）、重复运行及停止命令（12 项）、微信别名（7 项）测试通过"
+ set resultText to "WGT 匹配（17 项）、菜单占位项（10 项）、重复运行及停止命令（12 项）、微信别名（7 项）、发行弹框识别（19 项）测试通过"
  if (count of argv) > 1 and item 2 of argv is "--live-menus" then
   tell application "System Events" to set originalFrontApp to unix id of first application process whose frontmost is true
   set menuText to run script automation with parameters {"list"}

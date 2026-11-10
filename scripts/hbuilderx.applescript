@@ -120,8 +120,7 @@ on walkMenu(theMenu, prefix)
  return menuPaths
 end walkMenu
 -- Qt 在辅助功能名称中附带快捷键，例如界面显示“确定”，AX 名称为“确定(O)”。
-on isWgtConfirmName(labelText)
- if labelText is missing value then return false
+on baseButtonName(labelText)
  set baseName to labelText as text
  if (count of characters of baseName) > 3 then
   set openingMark to character -3 of baseName
@@ -131,8 +130,26 @@ on isWgtConfirmName(labelText)
    set baseName to text 1 thru -4 of baseName
   end if
  end if
- return baseName is in {"确定", "生成", "制作"}
+ return baseName
+end baseButtonName
+
+on isWgtConfirmName(labelText)
+ if labelText is missing value then return false
+ return (my baseButtonName(labelText)) is in {"确定", "生成", "制作"}
 end isWgtConfirmName
+
+-- 发行弹框标题或说明包含发行类关键词时才允许确认，避免误按其他弹框的默认按钮。
+on isReleaseDialogText(dialogText)
+ if dialogText is missing value then return false
+ if dialogText is "" then return false
+ return (dialogText contains "发行") or (dialogText contains "发布") or (dialogText contains "打包")
+end isReleaseDialogText
+
+-- 自定义发行弹框的主按钮；只接受完整名称，避免误匹配“发行到微信”等菜单项。
+on isReleaseButtonName(labelText)
+ if labelText is missing value then return false
+ return (my baseButtonName(labelText)) is in {"发行", "发布", "打包"}
+end isReleaseButtonName
 
 on isProjectWgtPath(outputPath, projectPath)
  if outputPath is missing value then return false
@@ -164,6 +181,24 @@ on findWgtConfirmation(dialogWindow, projectPath)
  return missing value
 end findWgtConfirmation
 
+-- 自定义发行弹框没有项目路径可校验，只按唯一启用的发行类按钮确认。
+on findReleaseConfirmation(dialogWindow)
+ tell application "System Events"
+  set matchedButtons to {}
+  set dialogElements to entire contents of dialogWindow
+  repeat with elementItem in dialogElements
+   try
+    if (role of elementItem) is "AXButton" then
+     if my isReleaseButtonName(name of elementItem) and (enabled of elementItem) then set end of matchedButtons to contents of elementItem
+    end if
+   end try
+  end repeat
+  if (count of matchedButtons) is 1 then return item 1 of matchedButtons
+  if (count of matchedButtons) > 1 then error "发行确认按钮不唯一，未点击"
+ end tell
+ return missing value
+end findReleaseConfirmation
+
 on run argv
  -- rows 是 System Events 的控件术语，必须使用不冲突的局部变量。
  local menuPaths, runningLabel
@@ -194,6 +229,47 @@ on run argv
    delay 1
    if frontmost is not true then error "HBuilderX 不在前台"
    if (count of windows) = 0 then error "HBuilderX 无项目窗口"
+   -- 确认弹框可能成为前台窗口，此时项目窗口校验由调用方点击菜单前完成。
+   if operation is "confirm-release" or operation is "inspect-release" then
+    repeat 30 times
+     set candidates to (every window whose subrole is "AXDialog")
+     repeat with windowItem in (every window)
+      try
+       if (count of sheets of windowItem) > 0 then set candidates to candidates & (sheets of windowItem)
+      end try
+     end repeat
+     repeat with dialogWindow in candidates
+      set dialogText to ""
+      try
+       set dialogText to (name of dialogWindow) as text
+      end try
+      try
+       repeat with labelItem in (static texts of dialogWindow)
+        set dialogText to dialogText & " " & (value of labelItem as text)
+       end repeat
+      end try
+      if my isReleaseDialogText(dialogText) then
+       set targetButton to my findReleaseConfirmation(dialogWindow)
+       if targetButton is not missing value then
+        set buttonLabel to name of targetButton
+        if operation is "inspect-release" then return "已识别发行按钮: " & buttonLabel & "；未点击"
+        click targetButton
+        return "发行确认对话框已触发: " & buttonLabel
+       end if
+       if operation is "inspect-release" then return "已识别发行弹框: " & dialogText & "；未按回车"
+       -- 与手动操作一致：聚焦发行弹框后回车触发默认“发行”按钮。
+       try
+        perform action "AXRaise" of dialogWindow
+       end try
+       delay 0.3
+       key code 36
+       return "发行弹框已按回车确认"
+      end if
+     end repeat
+     delay 0.5
+    end repeat
+    error "未发现可识别的发行确认对话框；未发送回车"
+   end if
    set windowTitle to name of front window
    -- 同时确认项目上下文和调用方要求打开的文件。
    if operation is not "confirm-wgt" and operation is not "inspect-wgt" then

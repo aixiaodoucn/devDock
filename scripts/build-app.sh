@@ -15,6 +15,12 @@ case "$mode" in
     /usr/bin/osascript "$script_dir/hbuilderx.applescript" click "$project" "$(basename -- "$project")" '发行' 'App-制作应用wgt包'
     /usr/bin/osascript "$script_dir/hbuilderx.applescript" confirm-wgt "$project" "$(basename -- "$project")"
     ;;
-  menu) /usr/bin/osascript "$script_dir/hbuilderx.applescript" click "$project" "$(basename -- "$project")" "$@" ;;
+  menu)
+    /usr/bin/osascript "$script_dir/hbuilderx.applescript" click "$project" "$(basename -- "$project")" "$@"
+    # 自定义发行点击菜单后还会弹出发行确认框，需要再触发其中的发行按钮。
+    case "$*" in
+      *自定义发行*) /usr/bin/osascript "$script_dir/hbuilderx.applescript" confirm-release "$project" "$(basename -- "$project")" ;;
+    esac
+    ;;
   *) printf '%s\n' '未知构建模式' >&2; exit 2 ;;
 esac
