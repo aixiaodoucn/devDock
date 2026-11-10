@@ -31,14 +31,14 @@ const node: Project = {
   name: '管理后台',
   type: 'nodejs',
   path: '/tmp/admin',
-  platforms: ['pc'],
+  platforms: ['web'],
   nodeVersion: 'v16.20.2',
   nvmDir: '/tmp/nvm',
   commands: [
     {
       id: 'dev',
       name: '开发服务',
-      platform: 'pc',
+      platform: 'web',
       kind: 'shell',
       menuPath: [],
       command: 'npm run dev',
@@ -50,12 +50,12 @@ const uni: Project = {
   id: 'uni',
   name: '门店小程序',
   path: '/tmp/shop',
-  platforms: ['weixin'],
+  platforms: ['miniapp'],
   commands: [
     {
       id: 'weixin',
       name: '微信开发',
-      platform: 'weixin',
+      platform: 'miniapp',
       kind: 'menu',
       menuPath: ['运行', '运行到小程序模拟器', '微信开发者工具'],
       command: '',

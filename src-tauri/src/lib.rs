@@ -41,11 +41,8 @@ fn load_config(app: AppHandle) -> Result<AppConfig> {
 }
 #[tauri::command]
 fn save_config(app: AppHandle, config: AppConfig) -> Result<()> {
-    config.validate()?;
-    config::atomic_write(
-        &tasks::config_path(&app)?,
-        &serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?,
-    )?;
+    let text = config::serialize(&config)?;
+    config::atomic_write(&tasks::config_path(&app)?, &text)?;
     // 文件已保存，通知失败不能将成功写入误报为保存失败。
     let _ = app.emit("config-updated", ());
     Ok(())
@@ -112,14 +109,11 @@ fn read_backup(path: String) -> Result<AppConfig> {
 }
 #[tauri::command]
 fn write_backup(path: String, config: AppConfig) -> Result<()> {
-    config.validate()?;
+    let text = config::serialize(&config)?;
     if !Path::new(&path).is_absolute() {
         return Err("备份需使用绝对路径".into());
     }
-    config::atomic_write(
-        Path::new(&path),
-        &serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?,
-    )
+    config::atomic_write(Path::new(&path), &text)
 }
 fn path_open_command(path: &Path) -> Result<Command> {
     let resolved = fs::canonicalize(path)
@@ -373,6 +367,50 @@ mod package_tests {
             serde_json::to_value(config).unwrap()
         );
     }
+    #[test]
+    fn legacy_backup_roundtrip_merges_platforms_and_preserves_every_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("backup.json").to_str().unwrap().to_owned();
+        let legacy = serde_json::json!({"schemaVersion":1,"projects":[{
+            "id":"uni","name":"旧项目","type":"uniapp","path":"/tmp/backup-platform",
+            "platforms":["weixin","dingtalk"],"manifestPath":"","androidAppId":"","iosAppId":"",
+            "androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"",
+            "syncMainVersion":false,"terminal":"Terminal","commands":[
+                {"id":"wx","name":"微信原名","platform":"weixin","kind":"menu","menuPath":["运行","微信/开发"],"command":"kept"},
+                {"id":"ding","name":"钉钉原名","platform":"dingtalk","kind":"menu","menuPath":["发行","自定义发行","钉钉生产"],"command":""}
+            ]}],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}});
+        fs::write(&path, legacy.to_string()).unwrap();
+        let imported = read_backup(path.clone()).unwrap();
+        assert_eq!(imported.projects[0].platforms, ["miniapp"]);
+        // 直接传入旧对象，覆盖绕过 parse 的保存/导出调用。
+        write_backup(
+            path.clone(),
+            serde_json::from_value(legacy.clone()).unwrap(),
+        )
+        .unwrap();
+        let exported: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(exported["schemaVersion"], 1);
+        assert_eq!(
+            exported["projects"][0]["platforms"],
+            serde_json::json!(["miniapp"])
+        );
+        let mut expected = legacy["projects"][0]["commands"].clone();
+        for action in expected.as_array_mut().unwrap() {
+            action["platform"] = "miniapp".into();
+        }
+        assert_eq!(exported["projects"][0]["commands"], expected);
+        assert_eq!(
+            serde_json::to_value(read_backup(path.clone()).unwrap()).unwrap(),
+            exported
+        );
+        let before = fs::read(&path).unwrap();
+        let mut invalid = imported;
+        invalid.projects[0].platforms = vec!["miniapp".into(), "miniapp".into()];
+        assert!(write_backup(path.clone(), invalid).is_err());
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+
     #[test]
     fn node_backup_import_defaults_and_selection_roundtrip() {
         let dir = tempfile::tempdir().unwrap();

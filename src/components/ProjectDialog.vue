@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { X, Plus, Trash2, FolderGit2, RefreshCw } from 'lucide-vue-next';
 import type { Project, Tools, Action, NodeVersion, UniappScript } from '../types';
-import { PLATFORM_LABELS } from '../types';
+import { PLATFORM_LABELS, normalizeProjectPlatforms } from '../types';
 import { api, desktop } from '../api';
 import PathInput from './PathInput.vue';
 const props = defineProps<{
@@ -14,7 +14,7 @@ const props = defineProps<{
   detecting: boolean;
 }>();
 const emit = defineEmits<{ close: []; save: [project: Project]; detect: [] }>();
-const draft = ref<Project>(JSON.parse(JSON.stringify(props.project)));
+const draft = ref<Project>(normalizeProjectPlatforms(JSON.parse(JSON.stringify(props.project))));
 const tab = ref('general');
 const error = ref('');
 const hbuilderMenus = ref<string[][]>([]);
@@ -110,7 +110,7 @@ function addScript(script: { name: string; command: string }) {
   draft.value.commands.push({
     id: crypto.randomUUID(),
     name: script.name,
-    platform: draft.value.platforms[0] || 'pc',
+    platform: draft.value.platforms[0] || 'web',
     kind: 'shell',
     menuPath: [],
     command: script.command,
@@ -119,16 +119,16 @@ function addScript(script: { name: string; command: string }) {
 const manifestAppId = ref('');
 const availablePlatforms = computed(() =>
   draft.value.type === 'uniapp'
-    ? ['app', 'weixin', 'dingtalk']
+    ? ['app', 'web', 'miniapp']
     : draft.value.type === 'nodejs'
-      ? ['pc', 'weixin']
+      ? ['web', 'miniapp']
       : [],
 );
 function changeType() {
   tab.value = 'general';
   error.value = '';
   draft.value.platforms =
-    draft.value.type === 'uniapp' ? ['app'] : draft.value.type === 'nodejs' ? ['pc'] : [];
+    draft.value.type === 'uniapp' ? ['app'] : draft.value.type === 'nodejs' ? ['web'] : [];
   draft.value.commands = [];
 }
 function togglePlatform(platform: string) {
@@ -152,7 +152,7 @@ function addAction() {
   draft.value.commands.push({
     id: crypto.randomUUID(),
     name: '',
-    platform: draft.value.platforms[0] || 'pc',
+    platform: draft.value.platforms[0] || 'web',
     kind: draft.value.type === 'uniapp' ? 'menu' : 'shell',
     menuPath: [],
     command: '',
@@ -162,7 +162,7 @@ function applyPreset(kind: string) {
   const action: Action = {
     id: crypto.randomUUID(),
     name: '',
-    platform: 'dingtalk',
+    platform: 'miniapp',
     kind: 'menu',
     menuPath: [],
     command: '',
@@ -177,13 +177,13 @@ function applyPreset(kind: string) {
   if (kind === 'weixin-run')
     Object.assign(action, {
       name: '微信 · 运行',
-      platform: 'weixin',
+      platform: 'miniapp',
       menuPath: ['运行', '运行到小程序模拟器', '微信开发者工具'],
     });
   if (kind === 'weixin-publish')
     Object.assign(action, {
       name: '微信 · 发行',
-      platform: 'weixin',
+      platform: 'miniapp',
       menuPath: ['发行', '小程序-微信'],
     });
   if (!draft.value.platforms.includes(action.platform)) draft.value.platforms.push(action.platform);
@@ -240,9 +240,12 @@ function selectHbuilderMenu(event: Event, existing?: Action) {
     hbuilderMenusNotice.value = '该菜单操作已存在，未重复添加。';
     return;
   }
-  const platform = path.some((part) => part.includes('微信'))
-    ? 'weixin'
-    : existing?.platform || draft.value.platforms[0] || 'app';
+  const menu = path.join(' ');
+  const platform = /小程序|微信|钉钉|支付宝|百度|抖音|字节|QQ|飞书|快手|小红书|京东/.test(menu)
+    ? 'miniapp'
+    : /浏览器|H5|网站|web/i.test(menu)
+      ? 'web'
+      : existing?.platform || draft.value.platforms[0] || 'app';
   if (!draft.value.platforms.includes(platform)) draft.value.platforms.push(platform);
   const action: Action = existing ?? {
     id: crypto.randomUUID(),

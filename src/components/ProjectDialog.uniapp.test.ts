@@ -12,7 +12,7 @@ vi.mock('../api', () => ({
 function script(
   id: string,
   title: string,
-  platform = 'weixin',
+  platform = 'miniapp',
   uniPlatform = 'mp-weixin',
 ): UniappScript {
   return {
@@ -79,7 +79,8 @@ describe('从目标项目读取 uni-app.scripts', () => {
   it('读取目标目录，为同一脚本导入运行和发行，自动启用平台并保留完整标题', async () => {
     vi.mocked(api.uniappScripts).mockResolvedValue([
       script('wx-test', '微信 / 测试环境'),
-      script('h5-test', 'H5 测试', '', 'h5'),
+      script('h5-test', 'H5 测试', 'web', 'h5'),
+      script('native', '原生测试', '', 'app-plus'),
     ]);
     const dialog = mount();
     try {
@@ -90,26 +91,29 @@ describe('从目标项目读取 uni-app.scripts', () => {
       expect(dialog.root.textContent).not.toContain('读取当前 HBuilderX 菜单');
       expect(
         dialog.root.querySelector<HTMLOptionElement>(
-          '[aria-label="从 uni-app.scripts 添加操作"] option[value="2"]',
+          '[aria-label="从 uni-app.scripts 添加操作"] option[value="4"]',
         )!.disabled,
       ).toBe(true);
-      expect(dialog.root.textContent).toContain('暂不支持导入的平台：h5');
+      expect(dialog.root.textContent).toContain('暂不支持导入的平台：app-plus');
       await dialog.select('0');
       await dialog.select('1');
+      await dialog.select('2');
       await dialog.select('0');
       dialog.root
         .querySelector('form')!
         .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       expect(dialog.save).toHaveBeenCalledOnce();
       const saved: Project = dialog.save.mock.calls[0][0];
-      expect(saved.platforms).toEqual(['app', 'weixin']);
+      expect(saved.platforms).toEqual(['app', 'miniapp', 'web']);
       expect(saved.commands.map((action) => action.menuPath)).toEqual([
         ['运行', '微信 / 测试环境'],
         ['发行', '自定义发行', '微信 / 测试环境'],
+        ['运行', 'H5 测试'],
       ]);
       expect(saved.commands.map((action) => action.name)).toEqual([
         '微信 / 测试环境 · 运行',
         '微信 / 测试环境 · 发行',
+        'H5 测试 · 运行',
       ]);
       expect(dialog.project.commands).toEqual([]);
       expect(dialog.root.textContent).toContain('未重复添加');
@@ -122,6 +126,7 @@ describe('从目标项目读取 uni-app.scripts', () => {
     vi.mocked(api.menus).mockResolvedValue([
       ['运行', '运行到小程序模拟器', '微信开发者工具 - 其他项目'],
       ['发行', '小程序-微信'],
+      ['发行', '网站-H5电脑版'],
     ]);
     const dialog = mount();
     try {
@@ -148,7 +153,7 @@ describe('从目标项目读取 uni-app.scripts', () => {
         .querySelector('form')!
         .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       expect(dialog.save.mock.calls[0][0].commands[0]).toMatchObject({
-        platform: 'weixin',
+        platform: 'miniapp',
         menuPath: ['运行', '运行到小程序模拟器', '微信开发者工具'],
       });
     } finally {

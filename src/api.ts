@@ -11,7 +11,7 @@ import type {
   NodeVersion,
   UniappScript,
 } from './types';
-import { defaultConfig } from './types';
+import { defaultConfig, normalizeProjectPlatforms } from './types';
 
 export const desktop = isTauri();
 // 浏览器预览使用独立本地存储；构建和外部程序调用始终只在桌面应用中执行。
@@ -27,12 +27,14 @@ export const api = {
     }
     // 旧版浏览器预览配置没有主题和目录开关，补默认值而不改动项目或工具路径。
     config.settings = { ...defaultConfig().settings, ...config.settings };
-    config.projects = config.projects.map((project: Project) => ({
-      ...project,
-      nodeVersion: project.nodeVersion ?? '',
-      nvmDir: project.nvmDir ?? '',
-      aiToolId: project.aiToolId ?? '',
-    }));
+    config.projects = config.projects.map((project: Project) =>
+      normalizeProjectPlatforms({
+        ...project,
+        nodeVersion: project.nodeVersion ?? '',
+        nvmDir: project.nvmDir ?? '',
+        aiToolId: project.aiToolId ?? '',
+      }),
+    );
     return config;
   },
   async persist(config: AppConfig) {

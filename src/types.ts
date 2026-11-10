@@ -1,5 +1,5 @@
 export type ProjectType = 'uniapp' | 'nodejs' | 'backend';
-export type Platform = 'app' | 'weixin' | 'dingtalk' | 'pc';
+export type Platform = 'app' | 'web' | 'miniapp';
 export type BuildMode = 'apk' | 'wgt-android' | 'wgt-ios';
 export interface Action {
   id: string;
@@ -141,9 +141,8 @@ export interface Task {
 }
 export const PLATFORM_LABELS: Record<string, string> = {
   app: 'App 构建',
-  weixin: '微信小程序',
-  dingtalk: '钉钉小程序',
-  pc: 'PC / Web',
+  web: 'Web',
+  miniapp: '小程序',
 };
 export const TYPE_LABELS: Record<ProjectType, string> = {
   uniapp: 'uni-app',
@@ -189,11 +188,29 @@ export function newProject(): Project {
   };
 }
 
+export function normalizePlatform(platform: string): string {
+  if (platform === 'pc') return 'web';
+  if (platform === 'weixin' || platform === 'dingtalk') return 'miniapp';
+  return platform;
+}
+export function normalizeProjectPlatforms(project: Project): Project {
+  // 仅合并用途分类，具体菜单、命令和操作 ID 均保留。
+  return {
+    ...project,
+    platforms: [...new Set(project.platforms.map(normalizePlatform))],
+    commands: project.commands.map((action) => ({
+      ...action,
+      platform: normalizePlatform(action.platform),
+      menuPath: [...action.menuPath],
+    })),
+  };
+}
+
 // 合并按 ID 和标准化路径去重，保留当前设备设置，避免导入覆盖本机工具路径。
 export function mergeConfig(current: AppConfig, incoming: AppConfig): AppConfig {
   const canonicalPath = (path: string) => path.replace(/[\\/]+$/, '').replaceAll('\\', '/');
-  const projects = structuredClone(current.projects);
-  for (const project of incoming.projects) {
+  const projects = structuredClone(current.projects).map(normalizeProjectPlatforms);
+  for (const project of incoming.projects.map(normalizeProjectPlatforms)) {
     const idIndex = projects.findIndex((item) => item.id === project.id);
     const pathIndex = projects.findIndex(
       (item) => canonicalPath(item.path) === canonicalPath(project.path),

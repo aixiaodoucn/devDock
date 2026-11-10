@@ -76,6 +76,33 @@ describe('Node 项目版本选择', () => {
     vi.clearAllMocks();
     vi.mocked(api.nodeVersions).mockResolvedValue(versions);
   });
+  it('Node 显示 Web 和小程序，uni-app 额外提供 App 并可启用 Web', async () => {
+    const dialog = await mountDialog(nodeProject());
+    try {
+      expect(
+        Array.from(dialog.root.querySelectorAll('.platform-option')).map((button) =>
+          button.textContent?.replace('✓', '').trim(),
+        ),
+      ).toEqual(['Web', '小程序']);
+      const type = dialog.root.querySelector<HTMLSelectElement>('#project-type')!;
+      type.value = 'uniapp';
+      type.dispatchEvent(new Event('change', { bubbles: true }));
+      await nextTick();
+      const buttons = Array.from(
+        dialog.root.querySelectorAll<HTMLButtonElement>('.platform-option'),
+      );
+      expect(buttons.map((button) => button.textContent?.replace('✓', '').trim())).toEqual([
+        'App 构建',
+        'Web',
+        '小程序',
+      ]);
+      buttons[1].click();
+      await nextTick();
+      expect(await dialog.submit()).toMatchObject({ type: 'uniapp', platforms: ['app', 'web'] });
+    } finally {
+      dialog.dispose();
+    }
+  });
   it('自动读取本地版本，保存所选版本及对应 nvm 目录', async () => {
     const dialog = await mountDialog(nodeProject());
     try {

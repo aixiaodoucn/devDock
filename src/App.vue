@@ -738,7 +738,7 @@ onUnmounted(() => {
             @click="selectedPlatform = platform"
           >
             <Smartphone v-if="platform === 'app'" :size="16" /><Terminal
-              v-else-if="platform === 'pc'"
+              v-else-if="platform === 'web'"
               :size="16"
             /><Layers v-else :size="16" />{{ PLATFORM_LABELS[platform] || platform }}
           </button>

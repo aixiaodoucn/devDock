@@ -133,8 +133,45 @@ fn terminal(t: &str) -> Result<()> {
     }
     Ok(())
 }
+fn canonical_platform(platform: &str) -> &str {
+    match platform {
+        "pc" => "web",
+        "weixin" | "dingtalk" => "miniapp",
+        _ => platform,
+    }
+}
 impl AppConfig {
-    pub fn validate(&self) -> Result<()> {
+    // 返回通过校验的规范化副本，兼容旧对象且不修改调用方数据。
+    pub fn validate(&self) -> Result<Self> {
+        let mut normalized = self.clone();
+        for project in &mut normalized.projects {
+            // 先拒绝重复原始选项，再合并旧分类；不能用去重掩盖无效输入。
+            let mut originals = HashSet::new();
+            if project
+                .platforms
+                .iter()
+                .any(|platform| !originals.insert(platform))
+            {
+                return Err("项目平台为空、重复或不适用于当前项目类型".into());
+            }
+            let mut platforms = Vec::new();
+            for platform in &project.platforms {
+                let canonical = canonical_platform(platform).to_owned();
+                if !platforms.contains(&canonical) {
+                    platforms.push(canonical);
+                }
+            }
+            project.platforms = platforms;
+            // 动作只映射所属分类，不合并动作，也不改写名称、命令或菜单。
+            for action in &mut project.commands {
+                action.platform = canonical_platform(&action.platform).to_owned();
+            }
+        }
+        normalized.validate_canonical()?;
+        Ok(normalized)
+    }
+
+    fn validate_canonical(&self) -> Result<()> {
         if self.schema_version != 1 {
             return Err("不支持的 schemaVersion".into());
         }
@@ -165,8 +202,8 @@ impl AppConfig {
                 return Err("项目目录重复".into());
             }
             let allowed: &[&str] = match p.project_type.as_str() {
-                "uniapp" => &["app", "weixin", "dingtalk"],
-                "nodejs" => &["pc", "weixin"],
+                "uniapp" => &["app", "web", "miniapp"],
+                "nodejs" => &["web", "miniapp"],
                 _ => &[],
             };
             let mut platforms = HashSet::new();
@@ -205,8 +242,12 @@ impl AppConfig {
 }
 pub fn parse(text: &str) -> Result<AppConfig> {
     let c: AppConfig = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    c.validate()?;
-    Ok(c)
+    c.validate()
+}
+// 保存和备份导出共用此入口，避免 validate 的兼容副本被误当作持久化结果。
+pub fn serialize(config: &AppConfig) -> Result<String> {
+    let normalized = config.validate()?;
+    serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())
 }
 pub fn atomic_write(path: &Path, data: &str) -> Result<()> {
     let parent = path.parent().ok_or("路径无父目录")?;
@@ -254,7 +295,8 @@ pub fn migrate_legacy(old_dir: &Path, new_dir: &Path) -> Result<Option<std::fs::
         return Ok(Some(lock));
     }
     let text = fs::read_to_string(&old_config).map_err(|e| format!("读取旧版配置失败: {e}"))?;
-    parse(&text).map_err(|e| format!("旧版配置无效，未迁移: {e}"))?;
+    let config = parse(&text).map_err(|e| format!("旧版配置无效，未迁移: {e}"))?;
+    let text = serde_json::to_string(&config).map_err(|e| e.to_string())?;
     let pending = old_dir.join("pending");
     let mut records = vec![];
     if pending.try_exists().map_err(|e| e.to_string())? {
@@ -307,6 +349,157 @@ pub fn manifest_path(p: &Project) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn platform_fixture() -> serde_json::Value {
+        serde_json::json!({"schemaVersion":1,"projects":[{
+            "id":"uni","name":"旧项目","type":"uniapp","path":"/tmp/platform-fixture",
+            "platforms":["weixin","dingtalk"],"manifestPath":"","androidAppId":"","iosAppId":"",
+            "androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"",
+            "outputDir":"","syncMainVersion":false,"terminal":"Terminal",
+            "commands":[
+                {"id":"weixin-dev","name":"微信开发","platform":"weixin","kind":"menu","menuPath":["运行","微信/自定义环境"],"command":"retained"},
+                {"id":"ding-release","name":"钉钉发行","platform":"dingtalk","kind":"menu","menuPath":["发行","自定义发行","钉钉生产"],"command":""},
+                {"id":"shell","name":"脚本","platform":"dingtalk","kind":"shell","menuPath":[],"command":"custom --flag 'a b'"}
+            ]
+        }],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}})
+    }
+
+    #[test]
+    fn legacy_platforms_merge_without_changing_actions() {
+        let original = platform_fixture();
+        let raw: AppConfig = serde_json::from_value(original.clone()).unwrap();
+        let normalized = raw.validate().unwrap();
+        assert_eq!(normalized.projects[0].platforms, ["miniapp"]);
+        assert_eq!(raw.projects[0].platforms, ["weixin", "dingtalk"]);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&serialize(&raw).unwrap()).unwrap(),
+            serde_json::to_value(&normalized).unwrap()
+        );
+        let parsed = parse(&original.to_string()).unwrap();
+        let value = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(
+            value["projects"][0]["platforms"],
+            serde_json::json!(["miniapp"])
+        );
+        let mut expected = original["projects"][0]["commands"].clone();
+        for action in expected.as_array_mut().unwrap() {
+            action["platform"] = "miniapp".into();
+        }
+        assert_eq!(value["projects"][0]["commands"], expected);
+        assert_eq!(
+            serde_json::to_value(parse(&value.to_string()).unwrap()).unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn canonical_and_legacy_json_platforms_can_coexist() {
+        for (kind, platforms, expected) in [
+            (
+                "nodejs",
+                serde_json::json!(["pc", "web", "weixin", "miniapp"]),
+                serde_json::json!(["web", "miniapp"]),
+            ),
+            (
+                "uniapp",
+                serde_json::json!(["app", "web", "weixin", "dingtalk", "miniapp"]),
+                serde_json::json!(["app", "web", "miniapp"]),
+            ),
+            ("backend", serde_json::json!([]), serde_json::json!([])),
+        ] {
+            let mut value = platform_fixture();
+            value["projects"][0]["type"] = kind.into();
+            value["projects"][0]["commands"] = platforms.as_array().unwrap().iter().enumerate().map(|(index, platform)| {
+                serde_json::json!({"id":format!("action-{index}"),"name":"原始动作","platform":platform,
+                    "kind":"shell","menuPath":[],"command":"original command"})
+            }).collect::<Vec<_>>().into();
+            value["projects"][0]["platforms"] = platforms;
+            let parsed = parse(&value.to_string()).unwrap();
+            let serialized = serde_json::to_value(parsed).unwrap();
+            assert_eq!(serialized["projects"][0]["platforms"], expected);
+            for (original, mapped) in value["projects"][0]["commands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(serialized["projects"][0]["commands"].as_array().unwrap())
+            {
+                let mut expected = original.clone();
+                expected["platform"] = match original["platform"].as_str().unwrap() {
+                    "pc" => "web",
+                    "weixin" | "dingtalk" => "miniapp",
+                    platform => platform,
+                }
+                .into();
+                assert_eq!(*mapped, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn normalization_preserves_strict_platform_and_action_validation() {
+        for platforms in [
+            serde_json::json!(["web", "web"]),
+            serde_json::json!(["miniapp", "miniapp"]),
+            serde_json::json!(["weixin", "weixin"]),
+            serde_json::json!(["dingtalk", "dingtalk"]),
+            serde_json::json!(["weixin", "miniapp", "weixin"]),
+            serde_json::json!(["unknown"]),
+        ] {
+            let mut value = platform_fixture();
+            value["projects"][0]["platforms"] = platforms;
+            assert!(parse(&value.to_string()).is_err(), "{value}");
+        }
+        for (kind, platforms) in [
+            ("nodejs", serde_json::json!(["app"])),
+            ("backend", serde_json::json!(["miniapp"])),
+        ] {
+            let mut value = platform_fixture();
+            value["projects"][0]["type"] = kind.into();
+            value["projects"][0]["platforms"] = platforms;
+            value["projects"][0]["commands"] = serde_json::json!([]);
+            assert!(parse(&value.to_string()).is_err());
+        }
+        for platform in ["app", "web", "unknown"] {
+            let mut value = platform_fixture();
+            value["projects"][0]["commands"][0]["platform"] = platform.into();
+            assert!(parse(&value.to_string()).is_err());
+        }
+        let mut value = platform_fixture();
+        value["projects"][0]["commands"][1]["id"] = "weixin-dev".into();
+        assert!(parse(&value.to_string()).is_err());
+        for invalid in [serde_json::json!(null), serde_json::json!(42)] {
+            let mut value = platform_fixture();
+            value["projects"][0]["platforms"][0] = invalid;
+            assert!(parse(&value.to_string()).is_err());
+        }
+        let mut value = platform_fixture();
+        value["projects"][0]["commands"][0]["extra"] = true.into();
+        assert!(parse(&value.to_string())
+            .unwrap_err()
+            .contains("unknown field"));
+    }
+
+    #[test]
+    fn legacy_file_load_and_migration_persist_canonical_platforms() {
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        let text = platform_fixture().to_string();
+        let path = old.path().join("config.json");
+        atomic_write(&path, &text).unwrap();
+        let loaded = parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.projects[0].platforms, ["miniapp"]);
+        let _lock = migrate_legacy(old.path(), new.path()).unwrap();
+        let migrated: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(new.path().join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            migrated["projects"][0]["platforms"],
+            serde_json::json!(["miniapp"])
+        );
+        assert_eq!(migrated, serde_json::to_value(loaded).unwrap());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), text);
+    }
+
     #[test]
     fn ai_preferences_default_roundtrip_and_validate() {
         let legacy = serde_json::json!({"schemaVersion":1,"projects":[{"id":"p","name":"Project","type":"backend","path":"/tmp/project","platforms":[],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[]}],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}});
@@ -561,7 +754,10 @@ mod tests {
         atomic_write(&old.path().join("config.json"), legacy).unwrap();
         let _lock = migrate_legacy(old.path(), new.path()).unwrap();
         let text = std::fs::read_to_string(new.path().join("config.json")).unwrap();
-        assert_eq!(text, legacy);
+        assert_eq!(
+            serde_json::to_value(parse(&text).unwrap()).unwrap(),
+            serde_json::to_value(parse(legacy).unwrap()).unwrap()
+        );
         assert_eq!(parse(&text).unwrap().settings.theme, "lavender");
     }
     #[test]
@@ -579,7 +775,7 @@ mod tests {
         invalid["projects"][0]["platforms"] = serde_json::json!(["app", "app"]);
         assert!(parse(&invalid.to_string()).is_err());
         let mut invalid = base.clone();
-        invalid["projects"][0]["commands"][0]["platform"] = "weixin".into();
+        invalid["projects"][0]["commands"][0]["platform"] = "web".into();
         assert!(parse(&invalid.to_string()).is_err());
         for menu in [
             serde_json::json!(["发行"]),

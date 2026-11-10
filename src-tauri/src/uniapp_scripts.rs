@@ -72,18 +72,10 @@ pub fn read(root: &Path) -> Result<Vec<UniappScript>> {
             .and_then(|env| env.get("UNI_PLATFORM"))
             .and_then(Value::as_str)
             .ok_or_else(|| format!("{context} env.UNI_PLATFORM 必须存在且为字符串"))?;
-        // mp-alipay 本身不代表钉钉，必须同时具备项目明确标记。
-        let dingtalk = script
-            .get("define")
-            .and_then(|define| define.get("MP-DINGTALK"))
-            .and_then(Value::as_bool)
-            == Some(true)
-            || id.to_ascii_lowercase().contains("dingtalk")
-            || title.contains("钉钉")
-            || title.to_ascii_lowercase().contains("dingtalk");
+        // 未知 mp-* 也可选用通用小程序菜单；分类不保证各版本自动化兼容。
         let platform = match uni_platform {
-            "mp-weixin" => "weixin",
-            "mp-alipay" if dingtalk => "dingtalk",
+            "h5" | "web" => "web",
+            platform if platform.starts_with("mp-") && platform.len() > 3 => "miniapp",
             _ => "",
         };
         // title 整体是一个菜单段；环境名和脚本 key 不决定运行/发行能力。
@@ -143,14 +135,7 @@ mod tests {
                 script.publish_menu_path,
                 ["发行", "自定义发行", &script.title]
             );
-            assert_eq!(
-                script.platform,
-                if script.uni_platform == "mp-weixin" {
-                    "weixin"
-                } else {
-                    "dingtalk"
-                }
-            );
+            assert_eq!(script.platform, "miniapp");
             let value = serde_json::to_value(&script).unwrap();
             assert_eq!(
                 value,
@@ -162,62 +147,41 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_platforms_are_retained_and_dingtalk_requires_evidence() {
+    fn web_and_all_nonempty_mp_platforms_are_classified_without_dingtalk_inference() {
         let temp = tempfile::tempdir().unwrap();
-        for (id, title, uni_platform, define, expected) in [
-            ("h5-dev", "h5-开发环境", "h5", json!({}), ""),
-            ("h5-prod", "h5-生产环境", "h5", json!({}), ""),
-            ("alipay", "支付宝小程序", "mp-alipay", json!({}), ""),
-            (
-                "alipay",
-                "支付宝小程序",
-                "mp-alipay",
-                json!({"MP-DINGTALK":false}),
-                "",
-            ),
-            (
-                "alipay",
-                "支付宝小程序",
-                "mp-alipay",
-                json!({"MP-DINGTALK":"true"}),
-                "",
-            ),
-            (
-                "custom",
-                "企业小程序",
-                "mp-alipay",
-                json!({"MP-DINGTALK":true}),
-                "dingtalk",
-            ),
-            (
-                "custom-DingTalk-dev",
-                "企业小程序",
-                "mp-alipay",
-                json!({}),
-                "dingtalk",
-            ),
-            ("custom", "钉钉开发", "mp-alipay", json!({}), "dingtalk"),
-            (
-                "custom",
-                "企业小程序",
-                "h5",
-                json!({"MP-DINGTALK":true}),
-                "",
-            ),
+        for (uni_platform, expected) in [
+            ("h5", "web"),
+            ("web", "web"),
+            ("mp-weixin", "miniapp"),
+            ("mp-alipay", "miniapp"),
+            ("mp-dingtalk", "miniapp"),
+            ("mp-baidu", "miniapp"),
+            ("mp-toutiao", "miniapp"),
+            ("mp-qq", "miniapp"),
+            ("mp-xhs", "miniapp"),
+            ("mp-future-vendor", "miniapp"),
+            ("mp-", ""),
+            ("", ""),
+            ("app-plus", ""),
+            ("unknown", ""),
         ] {
-            let scripts = read_value(
-                temp.path(),
-                json!({"uni-app":{"scripts":{
-                    id:{"title":title,"env":{"UNI_PLATFORM":uni_platform},"define":define}
-                }}}),
-            )
-            .unwrap();
-            assert_eq!(scripts.len(), 1);
-            assert_eq!(scripts[0].id, id);
-            assert_eq!(scripts[0].uni_platform, uni_platform);
-            assert_eq!(scripts[0].platform, expected, "{id}: {title}");
-            assert_eq!(scripts[0].run_menu_path, ["运行", title]);
-            assert_eq!(scripts[0].publish_menu_path, ["发行", "自定义发行", title]);
+            for define in [
+                json!({}),
+                json!({"MP-DINGTALK":true}),
+                json!({"MP-DINGTALK":"true"}),
+            ] {
+                let title = "  钉钉/自定义环境  ";
+                let scripts = read_value(temp.path(), json!({"uni-app":{"scripts":{
+                    "custom-DingTalk-dev":{"title":title,"env":{"UNI_PLATFORM":uni_platform},"define":define}
+                }}})).unwrap();
+                assert_eq!(scripts.len(), 1);
+                assert_eq!(scripts[0].id, "custom-DingTalk-dev");
+                assert_eq!(scripts[0].title, title);
+                assert_eq!(scripts[0].uni_platform, uni_platform);
+                assert_eq!(scripts[0].platform, expected, "{uni_platform}");
+                assert_eq!(scripts[0].run_menu_path, ["运行", title]);
+                assert_eq!(scripts[0].publish_menu_path, ["发行", "自定义发行", title]);
+            }
         }
     }
 

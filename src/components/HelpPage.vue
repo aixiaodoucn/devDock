@@ -25,7 +25,7 @@ const features = [
   {
     icon: Layers,
     title: '集中管理本地项目',
-    text: '添加、编辑和移除 uni-app、Node.js 与后端项目记录，按项目配置平台、路径和常用命令。移除记录不会删除源码。',
+    text: 'uni-app 支持 App、Web、小程序，Node.js 支持 Web、小程序。微信、钉钉等统一归入小程序，具体目标由操作名称和命令区分。移除项目记录不会删除源码。',
   },
   {
     icon: Package,
@@ -139,7 +139,7 @@ const faqs = [
   {
     question: '为什么脚本读取、HBuilderX 菜单读取或执行失败？',
     answer:
-      '读取 uni-app.scripts 时，检查正在配置的项目目录中是否有合法的 package.json，脚本是否包含 title 和 env.UNI_PLATFORM。H5、普通支付宝等未支持的平台会注明不能导入。读取 HBuilderX 菜单需确认应用已启动及辅助功能权限，结果来自 HBuilderX 当前激活项目，不一定是正在配置的项目。实际执行时还需能识别目标项目的 App.vue 和窗口上下文，不同 HBuilderX 版本可能需要适配。',
+      '读取 uni-app.scripts 时，检查正在配置的项目目录中是否有合法的 package.json，脚本是否包含 title 和 env.UNI_PLATFORM。H5/Web 脚本归入 Web，微信、支付宝、钉钉、百度、抖音等 mp-* 脚本归入小程序；其他不支持的平台会注明不能导入。读取 HBuilderX 菜单需确认应用已启动及辅助功能权限，结果来自 HBuilderX 当前激活项目，不一定是正在配置的项目。实际执行时还需能识别目标项目的 App.vue 和窗口上下文，不同 HBuilderX 版本可能需要适配。',
   },
   {
     question: '为什么提示其他项目已经在运行，或不允许停止？',

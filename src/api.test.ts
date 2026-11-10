@@ -67,6 +67,7 @@ describe('DevDock 预览配置迁移', () => {
       nodeVersion: '',
       nvmDir: '',
       aiToolId: '',
+      platforms: ['web'],
       path: '/local/node-app',
       commands: [],
     });
