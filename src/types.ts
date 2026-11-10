@@ -72,10 +72,10 @@ export const THEME_OPTIONS = [
   },
   {
     id: 'slate',
-    name: '纯黑',
-    english: 'BLACK',
-    description: '纯黑侧栏与白色卡片，简洁而有力。',
-    color: '#000000',
+    name: '柔雅黑',
+    english: 'CHARCOAL',
+    description: '柔和炭黑与白色卡片，清晰而不生硬。',
+    color: '#303030',
   },
 ] as const;
 export type ThemeName = (typeof THEME_OPTIONS)[number]['id'];

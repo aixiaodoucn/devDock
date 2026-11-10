@@ -121,10 +121,10 @@
   --preview-line: #efcba0;
 }
 .theme-preview.slate {
-  --preview-accent: #000000;
-  --preview-sidebar: #000000;
+  --preview-accent: #303030;
+  --preview-sidebar: #202020;
   --preview-surface: #f7f7f7;
-  --preview-line: #c8c8c8;
+  --preview-line: #cecece;
 }
 .theme-preview-sidebar {
   display: flex;
