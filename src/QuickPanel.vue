@@ -16,6 +16,7 @@ import {
 import { api, desktop } from './api';
 import { applyTheme } from './theme';
 import { stopMenuAction } from './actions';
+import { resolveAiTool } from './ai';
 import {
   defaultConfig,
   TYPE_LABELS,
@@ -153,19 +154,15 @@ function handleTask(event: TaskEvent) {
   }
   if (event.taskId === activeTaskId) applyTask(event);
 }
-async function run(project: Project, action: Action) {
+async function launchTask(project: Project, title: string, start: () => Promise<string>) {
   if (launching.value || loading.value || !eventsReady.value) return;
   launching.value = true;
   statusError.value = false;
-  status.value = `正在启动「${action.name}」…`;
+  status.value = `正在启动「${title}」…`;
   activeProjectId.value = project.id;
   activeTaskId = '';
   try {
-    activeTaskId = await api.runAction(
-      JSON.parse(JSON.stringify(project)),
-      JSON.parse(JSON.stringify(action)),
-      JSON.parse(JSON.stringify(config.value.settings)),
-    );
+    activeTaskId = await start();
     const event = taskStates.get(activeTaskId);
     if (event) applyTask(event);
   } catch (error) {
@@ -173,6 +170,28 @@ async function run(project: Project, action: Action) {
     status.value = message(error);
     statusError.value = true;
   }
+}
+async function run(project: Project, action: Action) {
+  await launchTask(project, action.name, () =>
+    api.runAction(
+      JSON.parse(JSON.stringify(project)),
+      JSON.parse(JSON.stringify(action)),
+      JSON.parse(JSON.stringify(config.value.settings)),
+    ),
+  );
+}
+function commandTitle(project: Project) {
+  const settings = config.value.settings;
+  const command = resolveAiTool(settings.aiTools, project.aiToolId, settings.defaultAiToolId);
+  return command
+    ? `进入目录并执行：${command.name} · ${command.command}`
+    : '仅打开项目目录（未选择可用命令）';
+}
+async function openTerminal(project: Project, withCommand: boolean) {
+  await launchTask(project, withCommand ? commandTitle(project) : '项目终端', () => {
+    const snapshot = JSON.parse(JSON.stringify(project));
+    return withCommand ? api.openProjectCommand(snapshot) : api.openProjectTerminal(snapshot);
+  });
 }
 async function runStop(project: Project, action: Action) {
   const stop = stopMenuAction(action);
@@ -287,6 +306,24 @@ onUnmounted(() => {
               ></span
             >
             <ChevronDown :size="14" :class="{ expanded: isExpanded(project.id) }" />
+          </button>
+          <button
+            class="icon-button quick-open-terminal"
+            :disabled="launching || loading || !desktop || !eventsReady"
+            :aria-label="`仅打开目录 ${project.name}`"
+            title="在终端中仅打开项目目录"
+            @click="openTerminal(project, false)"
+          >
+            <Terminal :size="14" />
+          </button>
+          <button
+            class="icon-button quick-run-command"
+            :disabled="launching || loading || !desktop || !eventsReady"
+            :aria-label="`打开并执行命令 ${project.name}`"
+            :title="commandTitle(project)"
+            @click="openTerminal(project, true)"
+          >
+            <Play :size="14" />
           </button>
           <button
             class="icon-button quick-open-project"

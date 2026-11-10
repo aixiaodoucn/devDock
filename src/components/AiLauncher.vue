@@ -1,41 +1,38 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed } from 'vue';
 import { Terminal, Settings2, FolderOpen } from 'lucide-vue-next';
 import type { AiTool } from '../types';
 import { desktop } from '../api';
+import { resolveAiTool } from '../ai';
 
-const props = defineProps<{ tools: AiTool[]; busy: boolean }>();
-const emit = defineEmits<{ launch: [tool: AiTool | undefined]; configure: [] }>();
+const props = defineProps<{
+  tools: AiTool[];
+  busy: boolean;
+  projectToolId: string;
+  defaultToolId: string;
+}>();
+const emit = defineEmits<{
+  launch: [tool: AiTool | undefined];
+  configure: [];
+  select: [toolId: string];
+}>();
 const available = computed(() => props.tools.filter((tool) => tool.enabled));
-const preferenceKey = 'dev-dock-preferred-ai-tool';
-function preferredTool() {
-  try {
-    return localStorage.getItem(preferenceKey) ?? '';
-  } catch {
-    return '';
-  }
-}
-const selectedId = ref(preferredTool());
-function rememberTool() {
-  try {
-    localStorage.setItem(preferenceKey, selectedId.value);
-  } catch {
-    // 本地存储不可用时仍可选择并启动工具。
-  }
-}
-watch(
-  available,
-  (tools) => {
-    if (!tools.some((tool) => tool.id === selectedId.value)) selectedId.value = '';
-  },
-  { immediate: true },
+const defaultTool = computed(() => resolveAiTool(props.tools, '', props.defaultToolId));
+const selected = computed(() =>
+  resolveAiTool(props.tools, props.projectToolId, props.defaultToolId),
 );
-const selected = computed(() => available.value.find((tool) => tool.id === selectedId.value));
-const selectionHint = computed(() =>
-  available.value.length
-    ? '请选择 AI 工具，或前往偏好设置配置'
-    : '请先在偏好设置配置并启用 AI 工具',
+const unavailable = computed(
+  () => !!props.projectToolId && !available.value.some((tool) => tool.id === props.projectToolId),
 );
+const selectionHint = computed(() => {
+  if (unavailable.value) return '当前项目的终端命令已移除或禁用，请重新选择';
+  return available.value.length
+    ? '请设置全局默认命令，或为当前项目单独选择'
+    : '请先在偏好设置配置并启用终端命令';
+});
+function selectTool(event: Event) {
+  emit('select', (event.target as HTMLSelectElement).value);
+}
 function launch() {
   if (props.busy || !desktop) return;
   if (!selected.value) {
@@ -45,7 +42,7 @@ function launch() {
   emit('launch', selected.value);
 }
 function openDirectory() {
-  // 目录入口始终不传工具，保留用户当前选择的常用 AI。
+  // 目录入口始终不传工具，保留用户当前选择的常用命令。
   if (!props.busy && desktop) emit('launch', undefined);
 }
 </script>
@@ -55,27 +52,34 @@ function openDirectory() {
     <div class="ai-launcher-copy">
       <Terminal :size="16" />
       <div>
-        <strong>在终端中打开</strong>
-        <small>{{ selected ? '进入项目目录，启动所选 AI 工具' : selectionHint }}</small>
+        <strong>打开并执行命令</strong>
+        <small>{{
+          selected
+            ? `${projectToolId ? '当前项目专用' : '跟随全局默认'} · ${selected.name}`
+            : selectionHint
+        }}</small>
       </div>
     </div>
     <div class="ai-launcher-controls">
       <button
         class="icon-button"
-        aria-label="配置 AI 工具"
-        title="配置 AI 工具"
+        aria-label="配置终端命令"
+        title="配置终端命令"
         @click="emit('configure')"
       >
         <Settings2 :size="15" />
       </button>
       <select
-        v-model="selectedId"
-        aria-label="选择 AI 工具（可选）"
+        :value="projectToolId"
+        aria-label="项目专用命令"
         :disabled="busy"
-        @change="rememberTool"
+        @change="selectTool"
       >
-        <option v-if="!selected" value="" disabled>
-          {{ available.length ? '请选择 AI 工具' : '请配置 AI 工具' }}
+        <option value="">
+          跟随全局默认{{ defaultTool ? `（${defaultTool.name}）` : '（未配置）' }}
+        </option>
+        <option v-if="unavailable" :value="projectToolId" disabled>
+          项目命令不可用，请重新选择
         </option>
         <option v-for="tool in available" :key="tool.id" :value="tool.id">{{ tool.name }}</option>
       </select>
@@ -85,7 +89,7 @@ function openDirectory() {
         :disabled="busy || !desktop"
         @click="launch"
       >
-        <Terminal :size="14" />打开 AI
+        <Terminal :size="14" />打开并执行
       </button>
       <button
         class="button small directory-only"

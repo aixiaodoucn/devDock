@@ -27,6 +27,7 @@ export interface Project {
   terminal: string;
   nodeVersion: string;
   nvmDir: string;
+  aiToolId: string;
   commands: Action[];
 }
 export interface NodeVersion {
@@ -92,6 +93,7 @@ export interface Settings {
   theme: ThemeName;
   openOutputAfterBuild: boolean;
   aiTools: AiTool[];
+  defaultAiToolId: string;
 }
 export interface AppConfig {
   schemaVersion: 1;
@@ -151,6 +153,7 @@ export function defaultConfig(): AppConfig {
       theme: 'lavender',
       openOutputAfterBuild: true,
       aiTools: [],
+      defaultAiToolId: '',
     },
   };
 }
@@ -173,6 +176,7 @@ export function newProject(): Project {
     terminal: '',
     nodeVersion: '',
     nvmDir: '',
+    aiToolId: '',
     commands: [],
   };
 }

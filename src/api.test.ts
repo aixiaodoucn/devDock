@@ -44,6 +44,7 @@ describe('DevDock 预览配置迁移', () => {
       theme: 'lavender',
       openOutputAfterBuild: true,
       aiTools: [],
+      defaultAiToolId: '',
       jdkPath: '/local/jdk8',
       hbuilderxPath: '/local/HBuilderX.app',
     });
@@ -60,10 +61,12 @@ describe('DevDock 预览配置迁移', () => {
     const config = JSON.parse(JSON.stringify({ ...defaultConfig(), projects: [project] }));
     delete config.projects[0].nodeVersion;
     delete config.projects[0].nvmDir;
+    delete config.projects[0].aiToolId;
     localStorage.setItem('dev-dock-preview-v1', JSON.stringify(config));
     expect((await api.load()).projects[0]).toMatchObject({
       nodeVersion: '',
       nvmDir: '',
+      aiToolId: '',
       path: '/local/node-app',
       commands: [],
     });

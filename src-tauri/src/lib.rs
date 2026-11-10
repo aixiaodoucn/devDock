@@ -239,6 +239,13 @@ fn open_project_terminal(
     tasks::action(app, project, action, settings)
 }
 #[tauri::command]
+fn open_project_command(app: AppHandle, project: Project) -> Result<String> {
+    // 仅使用快照中的 ID，偏好和项目路径均以当前持久化配置为准。
+    let config = tasks::load(&app)?;
+    let (project, action) = ai::prepare_saved_action(&config, &project.id)?;
+    tasks::action(app, project, action, config.settings)
+}
+#[tauri::command]
 fn cancel_task(app: AppHandle, task_id: String) -> Result<()> {
     tasks::cancel(&app, &task_id)
 }
@@ -327,7 +334,12 @@ mod package_tests {
     #[test]
     fn ai_tools_are_exported_and_imported_with_commands_and_enabled_state() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ai-backup.json").to_str().unwrap().to_owned();
+        let path = dir
+            .path()
+            .join("ai-backup.json")
+            .to_str()
+            .unwrap()
+            .to_owned();
         let mut config = AppConfig::default();
         config.settings.ai_tools = vec![
             config::AiTool {
@@ -370,10 +382,17 @@ mod package_tests {
         let mut config = read_backup(path.clone()).unwrap();
         assert!(config.projects[0].node_version.is_empty());
         assert!(config.projects[0].nvm_dir.is_empty());
+        assert!(config.settings.default_ai_tool_id.is_empty());
+        assert!(config.projects[0].ai_tool_id.is_empty());
+        // 备份保留已删除或停用工具的引用，不强制其存在。
+        config.settings.default_ai_tool_id = "removed-global".into();
+        config.projects[0].ai_tool_id = "removed-project".into();
         config.projects[0].node_version = "v22.10.0".into();
         config.projects[0].nvm_dir = "/portable backup/nvm's data".into();
         write_backup(path.clone(), config).unwrap();
         let imported = read_backup(path.clone()).unwrap();
+        assert_eq!(imported.settings.default_ai_tool_id, "removed-global");
+        assert_eq!(imported.projects[0].ai_tool_id, "removed-project");
         assert_eq!(imported.projects[0].node_version, "v22.10.0");
         assert_eq!(imported.projects[0].nvm_dir, "/portable backup/nvm's data");
         let original = fs::read_to_string(&path).unwrap();
@@ -523,6 +542,7 @@ pub fn run() {
             start_build,
             run_action,
             open_project_terminal,
+            open_project_command,
             cancel_task,
             list_menus,
             recover_pending,

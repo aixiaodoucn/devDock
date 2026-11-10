@@ -357,10 +357,26 @@ async function runAction(action: Action) {
       ),
     );
 }
+async function selectProjectAiTool(toolId: string) {
+  if (!project.value || saving.value || busy.value) return;
+  saving.value = true;
+  try {
+    const next = JSON.parse(JSON.stringify(config.value)) as AppConfig;
+    const item = next.projects.find((item) => item.id === selectedId.value);
+    if (!item) return;
+    item.aiToolId = toolId;
+    await persist(next);
+    notify(toolId ? '当前项目的专用命令已保存' : '当前项目已跟随全局默认命令');
+  } catch (error) {
+    fail(error);
+  } finally {
+    saving.value = false;
+  }
+}
 async function openProjectTerminal(tool?: AiTool) {
   const item = project.value;
   if (!item) return;
-  await execute(tool ? `打开 AI · ${tool.name}` : '打开项目终端', () =>
+  await execute(tool ? `执行命令 · ${tool.name}` : '打开项目终端', () =>
     api.openProjectTerminal(JSON.parse(JSON.stringify(item)), tool?.id),
   );
 }
@@ -707,7 +723,10 @@ onUnmounted(() => {
         </div>
         <AiLauncher
           :tools="config.settings.aiTools"
-          :busy="busy || submitting"
+          :default-tool-id="config.settings.defaultAiToolId"
+          :project-tool-id="project.aiToolId"
+          :busy="busy || submitting || saving"
+          @select="selectProjectAiTool"
           @launch="openProjectTerminal"
           @configure="page = 'settings'"
         />

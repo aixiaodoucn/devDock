@@ -172,7 +172,9 @@ html[data-view='quick'] #app {
 .quick-project-toggle > svg.expanded {
   transform: rotate(0);
 }
-.quick-open-project {
+.quick-open-project,
+.quick-open-terminal,
+.quick-run-command {
   width: 26px;
   height: 26px;
   flex-shrink: 0;

@@ -30,6 +30,7 @@ export const api = {
       ...project,
       nodeVersion: project.nodeVersion ?? '',
       nvmDir: project.nvmDir ?? '',
+      aiToolId: project.aiToolId ?? '',
     }));
     return config;
   },
@@ -60,6 +61,9 @@ export const api = {
   },
   openProjectTerminal(project: Project, toolId?: string) {
     return native<string>('open_project_terminal', { project, toolId: toolId ?? null });
+  },
+  openProjectCommand(project: Project) {
+    return native<string>('open_project_command', { project });
   },
   cancel(taskId: string) {
     return native<void>('cancel_task', { taskId });

@@ -8,7 +8,14 @@ import { defaultConfig, newProject, type Project } from './types';
 const handlers = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
 vi.mock('./api', () => ({
   desktop: true,
-  api: { load: vi.fn(), runAction: vi.fn(), showMain: vi.fn(), hideQuickPanel: vi.fn() },
+  api: {
+    load: vi.fn(),
+    runAction: vi.fn(),
+    showMain: vi.fn(),
+    hideQuickPanel: vi.fn(),
+    openProjectTerminal: vi.fn(),
+    openProjectCommand: vi.fn(),
+  },
 }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
@@ -80,6 +87,8 @@ describe('菜单栏快捷弹框', () => {
     handlers.clear();
     vi.mocked(api.load).mockResolvedValue(config);
     vi.mocked(api.runAction).mockResolvedValue('task-1');
+    vi.mocked(api.openProjectTerminal).mockResolvedValue('task-1');
+    vi.mocked(api.openProjectCommand).mockResolvedValue('task-2');
     vi.mocked(api.showMain).mockResolvedValue();
     vi.mocked(api.hideQuickPanel).mockResolvedValue();
   });
@@ -96,6 +105,69 @@ describe('菜单栏快捷弹框', () => {
       expect(panel.root.querySelector('.quick-action')?.getAttribute('title')).toBe(
         '运行 → 运行到小程序模拟器 → 微信开发者工具',
       );
+    } finally {
+      panel.dispose();
+    }
+  });
+  it('折叠箭头右侧提供目录与执行两个入口，项目命令优先于全局默认', async () => {
+    const privateProject = { ...node, aiToolId: 'claude' };
+    vi.mocked(api.load).mockResolvedValue({
+      ...config,
+      projects: [privateProject, uni],
+      settings: {
+        ...config.settings,
+        defaultAiToolId: 'git',
+        aiTools: [
+          { id: 'git', name: '拉取代码', command: 'git pull', enabled: true },
+          { id: 'claude', name: 'Claude Code', command: 'claude', enabled: true },
+        ],
+      },
+    });
+    const panel = await mount();
+    try {
+      const rows = panel.root.querySelectorAll('.quick-project-header');
+      expect(
+        rows[0]
+          .querySelector('.quick-project-toggle')
+          ?.nextElementSibling?.classList.contains('quick-open-terminal'),
+      ).toBe(true);
+      expect(rows[0].querySelector('.quick-run-command')?.getAttribute('title')).toContain(
+        'claude',
+      );
+      expect(rows[1].querySelector('.quick-run-command')?.getAttribute('title')).toContain(
+        'git pull',
+      );
+      rows[0].querySelector<HTMLButtonElement>('.quick-open-terminal')!.click();
+      await flush();
+      expect(api.openProjectTerminal).toHaveBeenCalledWith(privateProject);
+      expect(api.openProjectCommand).not.toHaveBeenCalled();
+      handlers.get('task-event')?.({
+        payload: {
+          taskId: 'task-1',
+          projectId: node.id,
+          kind: 'status',
+          status: 'triggered',
+          message: '已触发',
+        },
+      });
+      await flush();
+      rows[0].querySelector<HTMLButtonElement>('.quick-run-command')!.click();
+      await flush();
+      expect(api.openProjectCommand).toHaveBeenCalledWith(privateProject);
+    } finally {
+      panel.dispose();
+    }
+  });
+  it('未选择可用命令时，快捷执行入口明确提示仅打开目录', async () => {
+    const panel = await mount();
+    try {
+      expect(panel.root.querySelector('.quick-run-command')?.getAttribute('title')).toContain(
+        '仅打开项目目录',
+      );
+      panel.root.querySelector<HTMLButtonElement>('.quick-run-command')!.click();
+      await flush();
+      expect(api.openProjectCommand).toHaveBeenCalledWith(node);
+      expect(api.runAction).not.toHaveBeenCalled();
     } finally {
       panel.dispose();
     }

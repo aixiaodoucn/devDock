@@ -31,22 +31,22 @@ const emit = defineEmits<{
   import: [];
   error: [message: string];
 }>();
-// 设置草稿需深拷贝，编辑 AI 工具时不能提前修改已保存的配置。
+// 设置草稿需深拷贝，编辑终端命令时不能提前修改已保存的配置。
 const cloneSettings = (settings: Settings): Settings => JSON.parse(JSON.stringify(settings));
 const draft = ref(cloneSettings(props.settings));
 const settingsForm = ref<HTMLFormElement>();
 function validateDraft() {
   for (const [index, tool] of draft.value.aiTools.entries()) {
-    const field = !tool.name.trim() ? '名称' : !tool.command.trim() ? '启动命令' : '';
+    const field = !tool.name.trim() ? '名称' : !tool.command.trim() ? '执行命令' : '';
     if (!field) continue;
     emit(
       'error',
       field === '名称'
-        ? `请填写第 ${index + 1} 个 AI 工具的名称。`
-        : `请为「${tool.name.trim()}」填写启动命令，例如 claude 或 codex。`,
+        ? `请填写第 ${index + 1} 个终端命令的名称。`
+        : `请为「${tool.name.trim()}」填写执行命令，例如 claude、codex 或 git pull。`,
     );
     settingsForm.value
-      ?.querySelector<HTMLInputElement>(`[aria-label="AI 工具 ${index + 1} ${field}"]`)
+      ?.querySelector<HTMLInputElement>(`[aria-label="终端命令 ${index + 1} ${field}"]`)
       ?.focus();
     return false;
   }
@@ -56,7 +56,7 @@ function saveDraft() {
   if (!props.saving && !props.busy && validateDraft()) emit('save', cloneSettings(draft.value));
 }
 function exportDraft() {
-  // 导出当前表单快照，包含尚未保存的 AI 工具，不改动已保存设置。
+  // 导出当前表单快照，包含尚未保存的终端命令，不改动已保存设置。
   if (!props.saving && !props.busy && validateDraft()) emit('export', cloneSettings(draft.value));
 }
 watch(
@@ -67,6 +67,7 @@ watch(
       value.hbuilderxPath !== previous.hbuilderxPath ||
       value.terminal !== previous.terminal ||
       value.jdkPath !== previous.jdkPath ||
+      value.defaultAiToolId !== previous.defaultAiToolId ||
       JSON.stringify(value.aiTools) !== JSON.stringify(previous.aiTools)
     ) {
       draft.value = cloneSettings(value);
@@ -171,7 +172,11 @@ watch(
           </div>
         </section>
         <section class="panel settings-ai-panel">
-          <AiToolsEditor v-model="draft.aiTools" :disabled="saving || busy" />
+          <AiToolsEditor
+            v-model="draft.aiTools"
+            v-model:default-tool-id="draft.defaultAiToolId"
+            :disabled="saving || busy"
+          />
         </section>
       </div>
       <div class="form-end settings-save">
@@ -186,7 +191,7 @@ watch(
           <div class="backup-symbol"><ShieldCheck :size="22" /></div>
           <h2>配置随你迁移</h2>
           <p>
-            导出项目、平台、操作命令、工具设置及 AI 工具配置。重新安装或更换设备后，从 JSON
+            导出项目、平台、操作命令、工具设置及终端命令配置。重新安装或更换设备后，从 JSON
             备份恢复。
           </p>
         </div>
@@ -201,8 +206,8 @@ watch(
           </button>
         </div>
         <p class="field-help">
-          导出包含当前表单中的 AI
-          工具名称、启动命令和启用状态。导入前会校验格式，并提供合并或替换选项。备份不包含源码、构建产物或
+          导出包含当前表单中的
+          终端命令名称、执行内容和启用状态。导入前会校验格式，并提供合并或替换选项。备份不包含源码、构建产物或
           JDK；命令中的敏感值也会随配置导出，请妥善保存。
         </p>
       </section>

@@ -15,8 +15,11 @@ pub struct Settings {
     pub theme: String,
     #[serde(default = "default_open_output_after_build")]
     pub open_output_after_build: bool,
+    // 保留 aiTools/defaultAiToolId 字段兼容旧配置，现承载通用终端命令。
     #[serde(default)]
     pub ai_tools: Vec<AiTool>,
+    #[serde(default)]
+    pub default_ai_tool_id: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -32,7 +35,7 @@ impl AiTool {
             .iter()
             .any(|value| value.trim().is_empty() || value.contains('\0'))
         {
-            return Err("AI 工具 id/name/command 不能为空或含 NUL".into());
+            return Err("终端命令 id/name/command 不能为空或含 NUL".into());
         }
         Ok(())
     }
@@ -42,7 +45,7 @@ pub fn validate_ai_tools(tools: &[AiTool]) -> Result<()> {
     for tool in tools {
         tool.validate()?;
         if !ids.insert(&tool.id) {
-            return Err("AI 工具 id 重复".into());
+            return Err("终端命令 id 重复".into());
         }
     }
     Ok(())
@@ -62,6 +65,7 @@ impl Default for Settings {
             theme: default_theme(),
             open_output_after_build: default_open_output_after_build(),
             ai_tools: vec![],
+            default_ai_tool_id: String::new(),
         }
     }
 }
@@ -94,6 +98,9 @@ pub struct Project {
     pub output_dir: String,
     pub sync_main_version: bool,
     pub terminal: String,
+    // 保留 aiToolId 兼容字段，选择通用终端命令；空值跟随全局默认，允许悬空引用。
+    #[serde(default)]
+    pub ai_tool_id: String,
     // 老配置和备份缺少选择时，继续使用终端自己的默认 Node。
     #[serde(default)]
     pub node_version: String,
@@ -138,6 +145,9 @@ impl AppConfig {
         }
         terminal(&self.settings.terminal)?;
         validate_ai_tools(&self.settings.ai_tools)?;
+        if self.settings.default_ai_tool_id.contains('\0') {
+            return Err("defaultAiToolId 不能含 NUL".into());
+        }
         let mut ids = HashSet::new();
         let mut paths = HashSet::new();
         for p in &self.projects {
@@ -168,6 +178,9 @@ impl AppConfig {
                 return Err("项目平台为空、重复或不适用于当前项目类型".into());
             }
             terminal(&p.terminal)?;
+            if p.ai_tool_id.contains('\0') {
+                return Err("aiToolId 不能含 NUL".into());
+            }
             crate::nvm::validate_selection(&p.node_version, &p.nvm_dir)?;
             let mut actions = HashSet::new();
             for a in &p.commands {
@@ -294,6 +307,43 @@ pub fn manifest_path(p: &Project) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ai_preferences_default_roundtrip_and_validate() {
+        let legacy = serde_json::json!({"schemaVersion":1,"projects":[{"id":"p","name":"Project","type":"backend","path":"/tmp/project","platforms":[],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[]}],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}});
+        let config = parse(&legacy.to_string()).unwrap();
+        let mut value = serde_json::to_value(config).unwrap();
+        assert_eq!(value["settings"]["defaultAiToolId"], "");
+        assert_eq!(value["projects"][0]["aiToolId"], "");
+        assert_eq!(
+            serde_json::to_value(Settings::default()).unwrap()["defaultAiToolId"],
+            ""
+        );
+        // 悬空引用可保存，工具删除或禁用不应阻止配置读写。
+        value["settings"]["defaultAiToolId"] = "removed-global".into();
+        value["projects"][0]["aiToolId"] = "removed-project".into();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let parsed = parse(&value.to_string()).unwrap();
+        atomic_write(&path, &serde_json::to_string(&parsed).unwrap()).unwrap();
+        let restored = parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), value);
+        for invalid in [
+            serde_json::json!("bad\0id"),
+            serde_json::json!(null),
+            serde_json::json!(42),
+            serde_json::json!(false),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let mut invalid_global = value.clone();
+            invalid_global["settings"]["defaultAiToolId"] = invalid.clone();
+            assert!(parse(&invalid_global.to_string()).is_err());
+            let mut invalid_project = value.clone();
+            invalid_project["projects"][0]["aiToolId"] = invalid;
+            assert!(parse(&invalid_project.to_string()).is_err());
+        }
+    }
+
     #[test]
     fn ai_tools_default_and_custom_disabled_roundtrip() {
         let legacy = r#"{"schemaVersion":1,"projects":[],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}}"#;
