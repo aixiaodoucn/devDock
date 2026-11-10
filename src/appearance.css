@@ -82,50 +82,49 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .theme-preview {
-  --preview-accent: #8c73dd;
-  --preview-sidebar: #2b2b45;
-  --preview-surface: #f4f1fc;
-  --preview-line: #d9d0ef;
+  --preview-accent: #6941c6;
+  --preview-sidebar: #211a36;
+  --preview-surface: #f8f7fb;
+  --preview-line: #d6c7f2;
   position: relative;
   display: flex;
   gap: 6px;
   height: 76px;
   overflow: hidden;
   padding: 7px;
-  border: 1px solid #e7e4f1;
+  border: 1px solid var(--preview-line);
   border-radius: 7px;
   background: var(--preview-surface);
 }
 .theme-preview.blue {
-  --preview-accent: #4d7dbd;
-  --preview-sidebar: #1d314b;
-  --preview-surface: #eff4fc;
-  --preview-line: #c8d8ed;
-  border-color: #e0e7f1;
+  --preview-accent: #2563eb;
+  --preview-sidebar: #101d36;
+  --preview-surface: #f6f8fc;
+  --preview-line: #c4d6fc;
 }
 .theme-preview.cyan {
-  --preview-accent: #268b9a;
-  --preview-sidebar: #1a303a;
-  --preview-surface: #edf7f9;
-  --preview-line: #bddce4;
+  --preview-accent: #0f766e;
+  --preview-sidebar: #102e2a;
+  --preview-surface: #f5f9f8;
+  --preview-line: #b6dfd1;
 }
 .theme-preview.rose {
-  --preview-accent: #bb6c8d;
-  --preview-sidebar: #342735;
-  --preview-surface: #fcf1f6;
-  --preview-line: #e7c9d8;
+  --preview-accent: #be185d;
+  --preview-sidebar: #321c29;
+  --preview-surface: #fcf7f9;
+  --preview-line: #f2bfd4;
 }
 .theme-preview.amber {
-  --preview-accent: #b18b48;
-  --preview-sidebar: #332d29;
-  --preview-surface: #faf5e9;
-  --preview-line: #e3d6b9;
+  --preview-accent: #b45309;
+  --preview-sidebar: #30231c;
+  --preview-surface: #fbf8f4;
+  --preview-line: #efcba0;
 }
 .theme-preview.slate {
-  --preview-accent: #73839b;
-  --preview-sidebar: #252c38;
-  --preview-surface: #f0f3f8;
-  --preview-line: #cdd6e4;
+  --preview-accent: #000000;
+  --preview-sidebar: #000000;
+  --preview-surface: #f7f7f7;
+  --preview-line: #c8c8c8;
 }
 .theme-preview-sidebar {
   display: flex;
@@ -143,6 +142,9 @@
   border-radius: 3px;
   margin-bottom: 2px;
   background: var(--preview-accent);
+}
+.theme-preview.slate .theme-preview-sidebar span {
+  background: #ffffff;
 }
 .theme-preview-sidebar i {
   height: 3px;
