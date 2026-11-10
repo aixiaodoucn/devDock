@@ -115,25 +115,6 @@ watch(
                 placeholder="/Applications/HBuilderX.app"
                 @error="emit('error', $event)"
             /></label>
-            <label
-              >默认终端<select v-model="draft.terminal">
-                <option v-for="tool in tools.terminals" :key="tool.path" :value="tool.path">
-                  {{ tool.name }}
-                </option>
-                <option
-                  v-if="!tools.terminals.some((t) => t.path === draft.terminal)"
-                  :value="draft.terminal"
-                >
-                  {{ draft.terminal || '请选择终端' }}
-                </option>
-              </select></label
-            >
-            <PathInput
-              v-model="draft.terminal"
-              placeholder="手动指定终端应用路径"
-              label="默认终端路径"
-              @error="emit('error', $event)"
-            />
             <div>
               <label for="default-jdk" class="field-label">默认 JDK 版本</label>
               <div class="jdk-select-row">
@@ -176,7 +157,34 @@ watch(
             v-model="draft.aiTools"
             v-model:default-tool-id="draft.defaultAiToolId"
             :disabled="saving || busy"
-          />
+          >
+            <template #terminal>
+              <div class="settings-terminal-fields">
+                <label
+                  >默认终端<select v-model="draft.terminal">
+                    <option v-for="tool in tools.terminals" :key="tool.path" :value="tool.path">
+                      {{ tool.name }}
+                    </option>
+                    <option
+                      v-if="!tools.terminals.some((t) => t.path === draft.terminal)"
+                      :value="draft.terminal"
+                    >
+                      {{ draft.terminal || '请选择终端' }}
+                    </option>
+                  </select></label
+                >
+                <label
+                  >默认终端路径
+                  <PathInput
+                    v-model="draft.terminal"
+                    placeholder="手动指定终端应用路径"
+                    label="默认终端路径"
+                    @error="emit('error', $event)"
+                  />
+                </label>
+              </div>
+            </template>
+          </AiToolsEditor>
         </section>
       </div>
       <div class="form-end settings-save">
@@ -283,6 +291,15 @@ watch(
   border-top: 0;
   padding-top: 0;
 }
+.settings-terminal-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px;
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
 .settings-save {
   margin-top: 14px;
 }
@@ -321,6 +338,7 @@ watch(
 }
 @media (max-width: 1100px) {
   .settings-tools-grid,
+  .settings-terminal-fields,
   .settings-support-grid {
     grid-template-columns: 1fr;
   }

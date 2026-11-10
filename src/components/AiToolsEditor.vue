@@ -34,27 +34,10 @@ function remove(id: string) {
         <p>配置常用命令，保存后可在任意项目目录中执行。</p>
       </div>
     </div>
-    <label class="ai-default-tool"
-      >全局默认命令
-      <select v-model="defaultToolId" :disabled="disabled" aria-label="全局默认命令">
-        <option value="">不自动执行命令（仅打开目录）</option>
-        <option
-          v-for="tool in tools.filter((tool) => tool.enabled)"
-          :key="tool.id"
-          :value="tool.id"
-        >
-          {{ tool.name || '未命名命令' }}
-        </option>
-        <option
-          v-if="defaultToolId && !tools.some((tool) => tool.id === defaultToolId && tool.enabled)"
-          :value="defaultToolId"
-          disabled
-        >
-          原默认命令不可用，请重新选择
-        </option>
-      </select>
-    </label>
-    <p class="field-help">未单独选择命令的项目使用全局默认，可在项目详情中设置专用命令。</p>
+    <slot name="terminal" />
+    <p class="field-help">
+      点击命令右侧「设为默认」，未单独选择命令的项目会共用它；再次点击默认按钮可取消。
+    </p>
     <div class="ai-presets">
       <button
         v-for="preset in presets"
@@ -97,6 +80,17 @@ function remove(id: string) {
       />
       <button
         type="button"
+        :class="['button small ai-default-button', { 'is-default': defaultToolId === tool.id }]"
+        :disabled="disabled || !tool.enabled"
+        :aria-pressed="defaultToolId === tool.id"
+        :aria-label="`${defaultToolId === tool.id ? '取消默认' : '设为默认'}终端命令 ${index + 1}`"
+        :title="defaultToolId === tool.id ? '点击取消默认命令' : '未单独配置的项目将使用此命令'"
+        @click="defaultToolId = defaultToolId === tool.id ? '' : tool.id"
+      >
+        {{ defaultToolId === tool.id ? '默认命令' : '设为默认' }}
+      </button>
+      <button
+        type="button"
         class="icon-button danger-text"
         :aria-label="`移除终端命令 ${index + 1}`"
         @click="remove(tool.id)"
@@ -121,9 +115,6 @@ function remove(id: string) {
   align-items: center;
   gap: 7px;
 }
-.ai-default-tool {
-  margin-bottom: 7px;
-}
 .ai-presets {
   display: flex;
   align-items: center;
@@ -133,7 +124,7 @@ function remove(id: string) {
 }
 .ai-tool-row {
   display: grid;
-  grid-template-columns: 20px minmax(90px, 0.8fr) minmax(120px, 1.2fr) 28px;
+  grid-template-columns: 20px minmax(90px, 0.8fr) minmax(120px, 1.2fr) 92px 28px;
   align-items: center;
   gap: 7px;
   border: 0;
@@ -148,6 +139,11 @@ function remove(id: string) {
 .ai-tool-row input[type='checkbox'] {
   padding: 0;
 }
+.ai-default-button.is-default {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
 .ai-tool-command {
   font-family: var(--mono);
 }
@@ -158,14 +154,18 @@ function remove(id: string) {
 }
 @media (max-width: 1100px) {
   .ai-tool-row {
-    grid-template-columns: 20px minmax(0, 1fr) 28px;
+    grid-template-columns: 20px minmax(0, 1fr) 92px 28px;
   }
   .ai-tool-command {
-    grid-column: 2;
+    grid-column: 2 / 4;
     grid-row: 2;
   }
-  .ai-tool-row button {
+  .ai-default-button {
     grid-column: 3;
+    grid-row: 1;
+  }
+  .ai-tool-row .icon-button {
+    grid-column: 4;
     grid-row: 1;
   }
 }

@@ -113,7 +113,49 @@ describe('项目终端命令', () => {
       panel.dispose();
     }
   });
-  it('缺少命令时使用中文提示并聚焦，导出包含未保存的完整 命令草稿', async () => {
+  it('默认终端归入命令模块，行内按钮切换或取消唯一默认命令', async () => {
+    const settings = { ...defaultConfig().settings, aiTools: tools.map((tool) => ({ ...tool })) };
+    const save = vi.fn();
+    const panel = render({
+      render: () =>
+        h(SettingsPage, {
+          settings,
+          tools: { hbuilderxPath: '', terminals: [], jdks: [] },
+          detecting: false,
+          saving: false,
+          busy: false,
+          projectCount: 0,
+          onSave: save,
+        }),
+    });
+    try {
+      const cards = panel.root.querySelectorAll('.settings-tools-grid > .panel');
+      expect(cards[0].textContent).not.toContain('默认终端');
+      expect(cards[1].textContent).toContain('默认终端');
+      expect(panel.root.querySelector('[aria-label="全局默认命令"]')).toBeNull();
+      panel.root.querySelector<HTMLButtonElement>('[aria-label="设为默认终端命令 1"]')!.click();
+      await nextTick();
+      panel.root.querySelector<HTMLButtonElement>('[aria-label="设为默认终端命令 2"]')!.click();
+      await nextTick();
+      expect(panel.root.querySelectorAll('.ai-default-button.is-default')).toHaveLength(1);
+      panel.root
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      expect(save.mock.calls[0][0].defaultAiToolId).toBe('codex');
+      expect(
+        panel.root.querySelector<HTMLButtonElement>('[aria-label="设为默认终端命令 3"]')!.disabled,
+      ).toBe(true);
+      panel.root.querySelector<HTMLButtonElement>('[aria-label="取消默认终端命令 2"]')!.click();
+      await nextTick();
+      panel.root
+        .querySelector('form')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      expect(save.mock.calls[1][0].defaultAiToolId).toBe('');
+    } finally {
+      panel.dispose();
+    }
+  });
+  it('缺少命令时使用中文提示并聚焦，导出包含未保存的完整命令草稿', async () => {
     const settings = defaultConfig().settings;
     settings.aiTools = [{ id: 'custom', name: '自定义助手', command: '', enabled: true }];
     const save = vi.fn();
@@ -200,19 +242,16 @@ describe('项目终端命令', () => {
       command.dispatchEvent(new Event('input', { bubbles: true }));
       await nextTick();
       expect(state.settings.aiTools).toEqual([]);
-      const defaultSelect =
-        panel.root.querySelector<HTMLSelectElement>('[aria-label="全局默认命令"]')!;
-      defaultSelect.value = defaultSelect.options[1].value;
-      defaultSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      panel.root.querySelector<HTMLButtonElement>('[aria-label="设为默认终端命令 1"]')!.click();
       await nextTick();
-      const defaultId = defaultSelect.value;
+      expect(panel.root.querySelector('.ai-default-button')?.textContent).toBe('默认命令');
       state.settings = { ...state.settings, theme: 'blue' };
       await nextTick();
       expect(command.value).toBe('claude --profile example');
       panel.root
         .querySelector('form')!
         .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-      expect(save.mock.calls[0][0].defaultAiToolId).toBe(defaultId);
+      expect(save.mock.calls[0][0].defaultAiToolId).toBe(save.mock.calls[0][0].aiTools[0].id);
       expect(save.mock.calls[0][0].aiTools[0]).toMatchObject({
         name: 'Claude Code',
         command: 'claude --profile example',
