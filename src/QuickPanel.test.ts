@@ -42,6 +42,7 @@ const node: Project = {
       kind: 'shell',
       menuPath: [],
       command: 'npm run dev',
+      envVars: '',
     },
   ],
 };
@@ -59,6 +60,7 @@ const uni: Project = {
       kind: 'menu',
       menuPath: ['运行', '运行到小程序模拟器', '微信开发者工具'],
       command: '',
+      envVars: '',
     },
   ],
 };

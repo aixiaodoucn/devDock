@@ -8,9 +8,9 @@ mod nvm;
 mod tasks;
 mod tray;
 mod tray_geometry;
-mod uniapp_scripts;
 #[cfg(target_os = "macos")]
 mod tray_panel;
+mod uniapp_scripts;
 use config::{Action, AppConfig, Project, Result, Settings};
 use serde::Serialize;
 use std::{
@@ -398,6 +398,7 @@ mod package_tests {
         let mut expected = legacy["projects"][0]["commands"].clone();
         for action in expected.as_array_mut().unwrap() {
             action["platform"] = "miniapp".into();
+            action["envVars"] = "".into();
         }
         assert_eq!(exported["projects"][0]["commands"], expected);
         assert_eq!(

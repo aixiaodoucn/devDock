@@ -78,6 +78,9 @@ pub struct Action {
     pub kind: String,
     pub menu_path: Vec<String>,
     pub command: String,
+    // 每条终端命令可独立配置环境变量；旧配置默认为空。
+    #[serde(default)]
+    pub env_vars: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -165,6 +168,18 @@ impl AppConfig {
                 }
             }
             project.platforms = platforms;
+            // 旧版项目级环境变量迁移到该项目每条终端命令，避免升级后丢失。
+            let legacy_env = project.env_vars.trim().to_owned();
+            if !legacy_env.is_empty()
+                && project.commands.iter().any(|action| action.kind == "shell")
+            {
+                for action in &mut project.commands {
+                    if action.kind == "shell" && action.env_vars.is_empty() {
+                        action.env_vars = legacy_env.clone();
+                    }
+                }
+                project.env_vars.clear();
+            }
             // 动作只映射所属分类，不合并动作，也不改写名称、命令或菜单。
             for action in &mut project.commands {
                 action.platform = canonical_platform(&action.platform).to_owned();
@@ -222,7 +237,6 @@ impl AppConfig {
                 return Err("aiToolId 不能含 NUL".into());
             }
             crate::nvm::validate_selection(&p.node_version, &p.nvm_dir)?;
-            crate::nvm::validate_env_vars(&p.env_vars)?;
             let mut actions = HashSet::new();
             for a in &p.commands {
                 if a.id.is_empty()
@@ -239,6 +253,7 @@ impl AppConfig {
                 {
                     return Err("无效的动作字段".into());
                 }
+                crate::nvm::validate_env_vars(&a.env_vars)?;
             }
         }
         Ok(())
@@ -393,6 +408,7 @@ mod tests {
         let mut expected = original["projects"][0]["commands"].clone();
         for action in expected.as_array_mut().unwrap() {
             action["platform"] = "miniapp".into();
+            action["envVars"] = "".into();
         }
         assert_eq!(value["projects"][0]["commands"], expected);
         assert_eq!(
@@ -439,6 +455,7 @@ mod tests {
                     platform => platform,
                 }
                 .into();
+                expected["envVars"] = "".into();
                 assert_eq!(*mapped, expected);
             }
         }
@@ -510,25 +527,37 @@ mod tests {
     }
 
     #[test]
-    fn project_env_vars_default_roundtrip_and_validate() {
-        let mut value = serde_json::json!({"schemaVersion":1,"projects":[{"id":"p","name":"Project","type":"nodejs","path":"/tmp/project","platforms":["web"],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[]}],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}});
-        // 旧配置没有 envVars 时默认为空。
+    fn command_env_vars_default_roundtrip_and_legacy_migration() {
+        let mut value = serde_json::json!({"schemaVersion":1,"projects":[{"id":"p","name":"Project","type":"nodejs","path":"/tmp/project","platforms":["web"],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[{"id":"dev","name":"Dev","platform":"web","kind":"shell","menuPath":[],"command":"npm run dev"},{"id":"test","name":"Test","platform":"web","kind":"shell","menuPath":[],"command":"npm test","envVars":"NODE_ENV=test"}]}],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}});
+        // 旧配置没有动作级 envVars 时默认为空，已有值保持。
         let parsed = parse(&value.to_string()).unwrap();
-        assert!(parsed.projects[0].env_vars.is_empty());
+        assert!(parsed.projects[0].commands[0].env_vars.is_empty());
+        assert_eq!(parsed.projects[0].commands[1].env_vars, "NODE_ENV=test");
+        // 旧版项目级环境变量迁移到尚未配置的终端命令，不覆盖命令自身配置。
         value["projects"][0]["envVars"] =
             "ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com".into();
         let parsed = parse(&value.to_string()).unwrap();
-        assert_eq!(parsed.projects[0].env_vars, value["projects"][0]["envVars"]);
-        let serialized = serde_json::to_value(parsed).unwrap();
+        assert!(parsed.projects[0].env_vars.is_empty());
         assert_eq!(
-            serialized["projects"][0]["envVars"],
-            value["projects"][0]["envVars"]
+            parsed.projects[0].commands[0].env_vars,
+            "ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com"
         );
+        assert_eq!(parsed.projects[0].commands[1].env_vars, "NODE_ENV=test");
+        let serialized = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(
+            serde_json::to_value(parse(&serialized.to_string()).unwrap()).unwrap(),
+            serialized
+        );
+        // 没有终端命令时保留旧值，避免迁移过程中丢数据。
+        value["projects"][0]["commands"] = serde_json::json!([]);
+        let parsed = parse(&value.to_string()).unwrap();
+        assert_eq!(parsed.projects[0].env_vars, value["projects"][0]["envVars"]);
         for invalid in ["NO_EQUALS", "=x", "A=1;A=2", "A=bad\0"] {
-            value["projects"][0]["envVars"] = invalid.into();
+            value["projects"][0]["envVars"] = serde_json::Value::Null;
+            value["projects"][0]["commands"] = serde_json::json!([{"id":"dev","name":"Dev","platform":"web","kind":"shell","menuPath":[],"command":"npm run dev","envVars":invalid}]);
             assert!(parse(&value.to_string()).is_err(), "{invalid}");
         }
-        value["projects"][0]["envVars"] = 42.into();
+        value["projects"][0]["commands"] = serde_json::json!([{"id":"dev","name":"Dev","platform":"web","kind":"shell","menuPath":[],"command":"npm run dev","envVars":42}]);
         assert!(parse(&value.to_string()).is_err());
     }
 

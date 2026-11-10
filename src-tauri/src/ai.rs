@@ -35,6 +35,8 @@ pub fn prepare_action(
         kind: "shell".into(),
         menu_path: vec![],
         command: String::new(),
+        // 全局终端命令不绑定项目环境变量。
+        env_vars: String::new(),
     };
     if let Some(tool_id) = tool_id {
         validate_ai_tools(&settings.ai_tools)?;

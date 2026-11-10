@@ -8,6 +8,7 @@ export interface Action {
   kind: 'menu' | 'shell';
   menuPath: string[];
   command: string;
+  envVars: string;
 }
 export interface Project {
   id: string;
@@ -204,6 +205,8 @@ export function normalizeProjectPlatforms(project: Project): Project {
       ...action,
       platform: normalizePlatform(action.platform),
       menuPath: [...action.menuPath],
+      // 旧预览或备份缺少命令级环境变量时补空值。
+      envVars: action.envVars || '',
     })),
   };
 }

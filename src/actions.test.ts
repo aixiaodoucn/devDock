@@ -8,6 +8,7 @@ const run: Action = {
   kind: 'menu',
   platform: 'dingtalk',
   command: '',
+  envVars: '',
   menuPath: ['运行', '钉钉小程序-开发'],
 };
 describe('HBuilderX 停止动作', () => {

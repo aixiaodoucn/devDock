@@ -13,6 +13,7 @@ describe('配置备份合并', () => {
           platform: 'weixin',
           kind: 'menu' as const,
           command: '',
+          envVars: '',
           menuPath: ['运行', '微信开发者工具'],
         },
         {
@@ -21,6 +22,7 @@ describe('配置备份合并', () => {
           platform: 'dingtalk',
           kind: 'menu' as const,
           command: '',
+          envVars: '',
           menuPath: ['运行', '钉钉小程序-开发'],
         },
         {
@@ -29,6 +31,7 @@ describe('配置备份合并', () => {
           platform: 'pc',
           kind: 'shell' as const,
           command: 'pnpm dev',
+          envVars: '',
           menuPath: [],
         },
       ],
@@ -97,6 +100,7 @@ describe('配置备份合并', () => {
       kind: 'shell',
       platform: 'pc',
       command: 'pnpm dev',
+      envVars: '',
       menuPath: [],
     });
     expect(incoming.projects[0].commands).toEqual([]);

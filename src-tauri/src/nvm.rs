@@ -201,7 +201,7 @@ pub fn command_for(project: &Project, action: &Action) -> Result<String> {
     if action.kind != "shell" {
         return Ok(action.command.clone());
     }
-    let env = env_prefix(&project.env_vars)?;
+    let env = env_prefix(&action.env_vars)?;
     let base = if project.project_type == "nodejs" && !project.node_version.is_empty() {
         activation(
             &project.nvm_dir,
@@ -332,23 +332,34 @@ mod tests {
         let mut action: Action = serde_json::from_value(serde_json::json!({"id":"dev","name":"Dev","platform":"web","kind":"shell","menuPath":[],"command":"npm run dev"})).unwrap();
         project.node_version = "v22.10.0".into();
         project.nvm_dir = root.to_string_lossy().into();
-        project.env_vars = "ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;TOKEN=a'b".into();
+        action.env_vars = "ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;TOKEN=a'b".into();
         let command = command_for(&project, &action).unwrap();
         assert!(command.starts_with(
             "export ALERT_EMAIL_FROM='艾小逗 <1144755431@qq.com>'; export TOKEN='a'\\''b' && test -x "
         ));
         assert!(command.contains("nvm use --silent 'v22.10.0' && eval 'npm run dev'"));
         // 未配置环境变量时保持原命令；菜单动作不注入环境变量。
-        project.env_vars.clear();
+        action.env_vars.clear();
         assert!(command_for(&project, &action)
             .unwrap()
             .starts_with("test -x "));
-        project.env_vars = "A=1".into();
+        action.env_vars = "A=1".into();
         action.kind = "menu".into();
         assert_eq!(command_for(&project, &action).unwrap(), "npm run dev");
-        // 非 Node 项目的 shell 命令同样使用项目环境变量。
+        // 不同命令各自使用自己的环境变量，非 Node 项目的 shell 命令同样生效。
         project.project_type = "backend".into();
         action.kind = "shell".into();
+        assert_eq!(
+            command_for(&project, &action).unwrap(),
+            "export A='1' && npm run dev"
+        );
+        let mut other = action.clone();
+        other.command = "npm test".into();
+        other.env_vars = "NODE_ENV=test".into();
+        assert_eq!(
+            command_for(&project, &other).unwrap(),
+            "export NODE_ENV='test' && npm test"
+        );
         assert_eq!(
             command_for(&project, &action).unwrap(),
             "export A='1' && npm run dev"

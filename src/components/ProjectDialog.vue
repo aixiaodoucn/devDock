@@ -114,6 +114,7 @@ function addScript(script: { name: string; command: string }) {
     kind: 'shell',
     menuPath: [],
     command: script.command,
+    envVars: '',
   });
 }
 const manifestAppId = ref('');
@@ -156,6 +157,7 @@ function addAction() {
     kind: draft.value.type === 'uniapp' ? 'menu' : 'shell',
     menuPath: [],
     command: '',
+    envVars: '',
   });
 }
 function applyPreset(kind: string) {
@@ -166,6 +168,7 @@ function applyPreset(kind: string) {
     kind: 'menu',
     menuPath: [],
     command: '',
+    envVars: '',
   };
   if (kind === 'dingtalk-run')
     Object.assign(action, { name: '开发环境 · 运行', menuPath: ['运行', '钉钉小程序-开发'] });
@@ -254,6 +257,7 @@ function selectHbuilderMenu(event: Event, existing?: Action) {
     kind: 'menu',
     menuPath: [],
     command: '',
+    envVars: '',
   };
   action.name = action.name.trim() || `${path.at(-1)} · ${path[0]}`;
   action.platform = platform;
@@ -317,6 +321,7 @@ function selectUniappAction(event: Event, existing?: Action) {
     kind: 'menu' as const,
     menuPath: [],
     command: '',
+    envVars: '',
   };
   action.name = action.name.trim() || candidate.name;
   action.platform = candidate.platform;
@@ -363,11 +368,13 @@ function submit() {
     tab.value = 'general';
     return;
   }
-  if (item.type === 'nodejs') {
-    const envError = envVarsError(item.envVars);
+  // 环境变量属于单条终端命令，逐项校验并定位到运行与发行。
+  for (const action of item.commands) {
+    if (action.kind !== 'shell') continue;
+    const envError = envVarsError(action.envVars);
     if (envError) {
-      error.value = envError;
-      tab.value = 'general';
+      error.value = `「${action.name.trim() || '未命名命令'}」${envError}`;
+      tab.value = 'actions';
       return;
     }
   }
@@ -505,20 +512,6 @@ function submit() {
             </p>
             <p v-if="nodesLoaded && !nodeVersions.length" class="field-help">
               未发现已安装的 nvm Node.js 版本，可先使用终端默认版本。
-            </p>
-          </div>
-          <div v-if="draft.type === 'nodejs'" class="node-env-setting">
-            <label for="project-env-vars" class="field-label">环境变量（可选）</label>
-            <textarea
-              id="project-env-vars"
-              v-model="draft.envVars"
-              rows="3"
-              spellcheck="false"
-              placeholder="KEY=VALUE;KEY2=VALUE2&#10;AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_SMTP_HOST=smtp.qq.com"
-            />
-            <p class="field-help">
-              用分号或换行分隔，值可包含空格和符号。执行终端命令前导出，仅作用于本次会话，同样适用于
-              AI 或自定义命令。
             </p>
           </div>
           <label v-if="draft.type === 'uniapp'"
@@ -782,14 +775,28 @@ function submit() {
                 <option v-if="draft.type === 'uniapp'" value="menu">HBuilderX 菜单</option>
               </select></label
             >
-            <label v-if="action.kind === 'shell'"
-              >命令<textarea
-                v-model="action.command"
-                rows="2"
-                placeholder="pnpm run dev"
-                spellcheck="false"
-              />
-            </label>
+            <template v-if="action.kind === 'shell'">
+              <label
+                >命令<textarea
+                  v-model="action.command"
+                  rows="2"
+                  placeholder="pnpm run dev"
+                  spellcheck="false"
+                />
+              </label>
+              <label
+                >环境变量（可选）<textarea
+                  v-model="action.envVars"
+                  rows="2"
+                  spellcheck="false"
+                  :aria-label="`命令 ${index + 1} 的环境变量`"
+                  placeholder="KEY=VALUE;KEY2=VALUE2"
+                />
+              </label>
+              <p class="field-help env-help">
+                仅作用于当前命令：用分号或换行分隔，值可包含空格和符号，执行前导出到本次终端。
+              </p>
+            </template>
             <template v-else
               ><label
                 >菜单路径<input

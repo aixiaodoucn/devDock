@@ -78,31 +78,56 @@ describe('Node 项目版本选择', () => {
     vi.clearAllMocks();
     vi.mocked(api.nodeVersions).mockResolvedValue(versions);
   });
-  it('Node 项目保存环境变量，并拦截缺少等号或重复的格式', async () => {
+  it('每条终端命令单独保存环境变量，并拦截缺少等号或重复的格式', async () => {
     const dialog = await mountDialog(nodeProject());
     try {
-      const textarea = dialog.root.querySelector<HTMLTextAreaElement>('#project-env-vars')!;
-      expect(textarea).not.toBeNull();
-      textarea.value =
+      // 项目级不再提供环境变量输入。
+      expect(dialog.root.querySelector('#project-env-vars')).toBeNull();
+      const actionsTab = Array.from(dialog.root.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.trim() === '运行与发行',
+      )!;
+      actionsTab.click();
+      await nextTick();
+      Array.from(dialog.root.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('添加'))!
+        .click();
+      await nextTick();
+      const name = dialog.root.querySelector<HTMLInputElement>('.action-editor input')!;
+      name.value = '开发服务';
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+      const command = dialog.root.querySelector<HTMLTextAreaElement>('.action-editor textarea')!;
+      command.value = 'npm run dev';
+      command.dispatchEvent(new Event('input', { bubbles: true }));
+      const env = dialog.root.querySelector<HTMLTextAreaElement>(
+        '[aria-label="命令 1 的环境变量"]',
+      )!;
+      env.value =
         'AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com;';
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      env.dispatchEvent(new Event('input', { bubbles: true }));
       await nextTick();
       expect(await dialog.submit()).toMatchObject({
-        envVars:
-          'AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com;',
+        commands: [
+          {
+            command: 'npm run dev',
+            envVars:
+              'AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com;',
+          },
+        ],
       });
       for (const [value, message] of [
         ['NO_EQUALS', '环境变量缺少名称或等号'],
         ['1BAD=x', '环境变量名称无效'],
         ['A=1;A=2', '环境变量重复'],
       ]) {
-        textarea.value = value;
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        env.value = value;
+        env.dispatchEvent(new Event('input', { bubbles: true }));
         await nextTick();
         const calls = dialog.save.mock.calls.length;
         await dialog.submit();
         expect(dialog.save).toHaveBeenCalledTimes(calls);
-        expect(dialog.root.querySelector('[role="alert"]')?.textContent).toContain(message);
+        expect(dialog.root.querySelector('[role="alert"]')?.textContent).toContain(
+          `「开发服务」${message}`,
+        );
       }
     } finally {
       dialog.dispose();
