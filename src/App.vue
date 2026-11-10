@@ -516,6 +516,8 @@ watch(
   },
 );
 onMounted(async () => {
+  document.addEventListener('click', closeProjectMenuOutside);
+  document.addEventListener('keydown', closeProjectMenuOnEscape);
   if (desktop) {
     try {
       unlisten = await listen<TaskEvent>('task-event', (event) => handleEvent(event.payload));
@@ -541,7 +543,19 @@ onUnmounted(() => {
   unlisten?.();
   projectSelectionUnlisten?.();
   if (noticeTimer) clearTimeout(noticeTimer);
+  document.removeEventListener('click', closeProjectMenuOutside);
+  document.removeEventListener('keydown', closeProjectMenuOnEscape);
 });
+// 点击下拉菜单之外的任意位置或按 Esc 时收起，避免遮挡页面。
+function closeProjectMenuOutside(event: MouseEvent) {
+  if (!showProjectMenu.value) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest('.dropdown-wrap')) return;
+  showProjectMenu.value = false;
+}
+function closeProjectMenuOnEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape' && showProjectMenu.value) showProjectMenu.value = false;
+}
 </script>
 
 <template>
