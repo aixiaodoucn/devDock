@@ -32,6 +32,7 @@ import ProjectDialog from './components/ProjectDialog.vue';
 import GitBranch from './components/GitBranch.vue';
 import SettingsPage from './components/SettingsPage.vue';
 import HelpPage from './components/HelpPage.vue';
+import AiLauncher from './components/AiLauncher.vue';
 import { api, desktop } from './api';
 import { applyTheme } from './theme';
 import { stopMenuAction } from './actions';
@@ -56,6 +57,7 @@ import type {
   ManifestInfo,
   TaskStatus,
   Action,
+  AiTool,
 } from './types';
 const sidebar = useSidebarResize();
 const config = ref<AppConfig>(defaultConfig());
@@ -348,10 +350,19 @@ async function runAction(action: Action) {
   const item = project.value;
   if (item)
     await execute(action.name, () =>
-      api.runAction(JSON.parse(JSON.stringify(item)), JSON.parse(JSON.stringify(action)), {
-        ...config.value.settings,
-      }),
+      api.runAction(
+        JSON.parse(JSON.stringify(item)),
+        JSON.parse(JSON.stringify(action)),
+        JSON.parse(JSON.stringify(config.value.settings)),
+      ),
     );
+}
+async function openProjectTerminal(tool?: AiTool) {
+  const item = project.value;
+  if (!item) return;
+  await execute(tool ? `打开 AI · ${tool.name}` : '打开项目终端', () =>
+    api.openProjectTerminal(JSON.parse(JSON.stringify(item)), tool?.id),
+  );
 }
 async function runStopAction(action: Action) {
   const stop = stopMenuAction(action);
@@ -693,6 +704,12 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+        <AiLauncher
+          :tools="config.settings.aiTools"
+          :busy="busy || submitting"
+          @launch="openProjectTerminal"
+          @configure="page = 'settings'"
+        />
         <nav v-if="project.platforms.length" class="tabs platform-tabs" aria-label="项目平台">
           <button
             v-for="platform in project.platforms"

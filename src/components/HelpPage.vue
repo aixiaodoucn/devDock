@@ -38,6 +38,11 @@ const features = [
     text: '读取 package.json 脚本，使用 Ghostty、Terminal 或 iTerm 执行。Node.js 项目可选择本地 nvm 已安装版本。',
   },
   {
+    icon: Terminal,
+    title: '在终端中打开项目',
+    text: '从任意项目详情打开项目终端，可选启动 Claude Code、Codex、CodeBuddy 等 AI 工具；不选择工具时仅进入项目目录。AI 工具与启动命令在偏好设置中维护。',
+  },
+  {
     icon: Boxes,
     title: '小程序运行与发行',
     text: '配置 HBuilderX 运行、发行菜单。识别正在运行的项目，提示命令占用，并提供同项目运行任务的停止入口。',
@@ -96,6 +101,15 @@ const guides = [
     ],
   },
   {
+    title: '在终端中打开项目与 AI 工具',
+    steps: [
+      '进入「偏好设置 → 开发工具 → AI 工具」，快捷添加常用工具，或自定义名称和启动命令。快捷添加只提供命令示例，请先确认本机已安装且能在终端正常启动。',
+      '勾选需要使用的工具，点击「保存设置」。命令可包含参数或带引号的可执行文件路径；安装和登录在对应工具中完成。',
+      '返回任意项目详情，在「在终端中打开」中选择 AI 工具并点击「打开」，先进入目录再启动工具。也可点击「仅打开目录」，不执行 AI 命令且不改变常用工具选择。工具选择会在本机记忆，未选择工具时「打开」也只进入目录。使用项目终端，未配置时使用默认终端。',
+      'AI 工具使用终端默认环境，不强制启用项目为 npm 选择的 Node 版本。交接后的日志、会话和退出在终端中处理，DevDock 不确认 AI 会话是否启动成功。',
+    ],
+  },
+  {
     title: '备份与迁移配置',
     steps: [
       '进入「偏好设置」导出 JSON，保存项目配置和全局工具设置。命令里填写的敏感值也会包含在备份中，请妥善保管。',
@@ -108,7 +122,7 @@ const faqs = [
   {
     question: '支持哪些系统？后端项目可以运行吗？',
     answer:
-      '当前外部工具自动化优先支持 macOS。Windows 自动化尚未实现；后端项目目前仅保存项目记录，运行和发布功能待后续支持。',
+      '当前外部工具自动化优先支持 macOS。Windows 自动化尚未实现；后端项目支持管理记录、打开项目终端及可选的 AI 工具，后端业务运行和发布流程待后续支持。',
   },
   {
     question: 'iOS 可以直接生成安装包吗？',
@@ -205,7 +219,7 @@ const filteredFaqs = computed(() => {
     </nav>
     <div v-if="tab === 'features'">
       <div class="help-scope">
-        <span class="local-dot"></span>当前优先支持 macOS · 后端仅管理记录 · iOS 仅支持 WGT
+        <span class="local-dot"></span>当前优先支持 macOS · 后端业务运行待支持 · iOS 仅支持 WGT
       </div>
       <div class="help-features">
         <article v-for="feature in features" :key="feature.title" class="panel help-feature">

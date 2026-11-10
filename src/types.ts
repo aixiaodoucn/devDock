@@ -79,12 +79,19 @@ export const THEME_OPTIONS = [
   },
 ] as const;
 export type ThemeName = (typeof THEME_OPTIONS)[number]['id'];
+export interface AiTool {
+  id: string;
+  name: string;
+  command: string;
+  enabled: boolean;
+}
 export interface Settings {
   hbuilderxPath: string;
   terminal: string;
   jdkPath: string;
   theme: ThemeName;
   openOutputAfterBuild: boolean;
+  aiTools: AiTool[];
 }
 export interface AppConfig {
   schemaVersion: 1;
@@ -143,6 +150,7 @@ export function defaultConfig(): AppConfig {
       jdkPath: '',
       theme: 'lavender',
       openOutputAfterBuild: true,
+      aiTools: [],
     },
   };
 }

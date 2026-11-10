@@ -1,4 +1,5 @@
 mod accessibility;
+mod ai;
 mod config;
 mod git;
 mod hbuilder_owner;
@@ -224,6 +225,17 @@ fn run_action(
     action: Action,
     settings: Settings,
 ) -> Result<String> {
+    tasks::action(app, project, action, settings)
+}
+#[tauri::command]
+fn open_project_terminal(
+    app: AppHandle,
+    project: Project,
+    tool_id: Option<String>,
+) -> Result<String> {
+    // 从持久化配置选择工具；未选择工具时仅打开项目终端。
+    let settings = tasks::load(&app)?.settings;
+    let (project, action) = ai::prepare_action(&project, &settings, tool_id.as_deref())?;
     tasks::action(app, project, action, settings)
 }
 #[tauri::command]
@@ -478,6 +490,7 @@ pub fn run() {
             open_path,
             start_build,
             run_action,
+            open_project_terminal,
             cancel_task,
             list_menus,
             recover_pending,

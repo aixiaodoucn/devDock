@@ -14,6 +14,7 @@ import type { Settings, Tools, ThemeName } from '../types';
 import { THEME_OPTIONS } from '../types';
 import { desktop } from '../api';
 import PathInput from './PathInput.vue';
+import AiToolsEditor from './AiToolsEditor.vue';
 const props = defineProps<{
   settings: Settings;
   tools: Tools;
@@ -30,7 +31,9 @@ const emit = defineEmits<{
   import: [];
   error: [message: string];
 }>();
-const draft = ref({ ...props.settings });
+// 设置草稿需深拷贝，编辑 AI 工具时不能提前修改已保存的配置。
+const cloneSettings = (settings: Settings): Settings => JSON.parse(JSON.stringify(settings));
+const draft = ref(cloneSettings(props.settings));
 watch(
   () => props.settings,
   (value, previous) => {
@@ -38,9 +41,10 @@ watch(
     if (
       value.hbuilderxPath !== previous.hbuilderxPath ||
       value.terminal !== previous.terminal ||
-      value.jdkPath !== previous.jdkPath
+      value.jdkPath !== previous.jdkPath ||
+      JSON.stringify(value.aiTools) !== JSON.stringify(previous.aiTools)
     ) {
-      draft.value = { ...value };
+      draft.value = cloneSettings(value);
     } else {
       draft.value.theme = value.theme;
       draft.value.openOutputAfterBuild = value.openOutputAfterBuild;
@@ -113,7 +117,7 @@ watch(
             }}
           </button>
         </div>
-        <form class="form-stack" @submit.prevent="emit('save', { ...draft })">
+        <form class="form-stack" @submit.prevent="emit('save', cloneSettings(draft))">
           <label
             >HBuilderX 应用路径<PathInput
               v-model="draft.hbuilderxPath"
@@ -174,6 +178,7 @@ watch(
             label="默认 JDK 路径"
             @error="emit('error', $event)"
           />
+          <AiToolsEditor v-model="draft.aiTools" :disabled="saving || busy" />
           <div class="form-end">
             <button class="button primary" :disabled="saving || busy">
               {{ saving ? '保存中…' : '保存设置' }}

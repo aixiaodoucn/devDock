@@ -43,6 +43,7 @@ describe('DevDock 预览配置迁移', () => {
     expect(config.settings).toMatchObject({
       theme: 'lavender',
       openOutputAfterBuild: true,
+      aiTools: [],
       jdkPath: '/local/jdk8',
       hbuilderxPath: '/local/HBuilderX.app',
     });

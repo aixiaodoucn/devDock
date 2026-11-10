@@ -58,6 +58,9 @@ export const api = {
   runAction(project: Project, action: Action, settings: Settings) {
     return native<string>('run_action', { project, action, settings });
   },
+  openProjectTerminal(project: Project, toolId?: string) {
+    return native<string>('open_project_terminal', { project, toolId: toolId ?? null });
+  },
   cancel(taskId: string) {
     return native<void>('cancel_task', { taskId });
   },

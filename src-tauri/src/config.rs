@@ -15,6 +15,37 @@ pub struct Settings {
     pub theme: String,
     #[serde(default = "default_open_output_after_build")]
     pub open_output_after_build: bool,
+    #[serde(default)]
+    pub ai_tools: Vec<AiTool>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AiTool {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    pub enabled: bool,
+}
+impl AiTool {
+    pub fn validate(&self) -> Result<()> {
+        if [&self.id, &self.name, &self.command]
+            .iter()
+            .any(|value| value.trim().is_empty() || value.contains('\0'))
+        {
+            return Err("AI 工具 id/name/command 不能为空或含 NUL".into());
+        }
+        Ok(())
+    }
+}
+pub fn validate_ai_tools(tools: &[AiTool]) -> Result<()> {
+    let mut ids = HashSet::new();
+    for tool in tools {
+        tool.validate()?;
+        if !ids.insert(&tool.id) {
+            return Err("AI 工具 id 重复".into());
+        }
+    }
+    Ok(())
 }
 fn default_theme() -> String {
     "lavender".into()
@@ -30,6 +61,7 @@ impl Default for Settings {
             jdk_path: String::new(),
             theme: default_theme(),
             open_output_after_build: default_open_output_after_build(),
+            ai_tools: vec![],
         }
     }
 }
@@ -105,6 +137,7 @@ impl AppConfig {
             return Err("无效的 theme：仅支持 lavender、blue、cyan、rose、amber 或 slate".into());
         }
         terminal(&self.settings.terminal)?;
+        validate_ai_tools(&self.settings.ai_tools)?;
         let mut ids = HashSet::new();
         let mut paths = HashSet::new();
         for p in &self.projects {
@@ -261,6 +294,90 @@ pub fn manifest_path(p: &Project) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ai_tools_default_and_custom_disabled_roundtrip() {
+        let legacy = r#"{"schemaVersion":1,"projects":[],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}}"#;
+        assert!(Settings::default().ai_tools.is_empty());
+        assert!(parse(legacy).unwrap().settings.ai_tools.is_empty());
+        let mut config = AppConfig::default();
+        config.settings.ai_tools = vec![
+            AiTool {
+                id: "custom".into(),
+                name: "自定义 CLI".into(),
+                command: "  custom --arg 'a b';\necho done  ".into(),
+                enabled: true,
+            },
+            AiTool {
+                id: "disabled".into(),
+                name: "停用工具".into(),
+                command: "other-cli".into(),
+                enabled: false,
+            },
+        ];
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            value["settings"]["aiTools"][0]["command"],
+            config.settings.ai_tools[0].command
+        );
+        let parsed = parse(&value.to_string()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+    }
+
+    #[test]
+    fn ai_tools_reject_invalid_fields_and_duplicate_ids() {
+        let valid = serde_json::json!({"id":"custom","name":"Custom","command":"custom-cli","enabled":true});
+        let mut config = serde_json::to_value(AppConfig::default()).unwrap();
+        config["settings"]["aiTools"] = serde_json::json!([valid.clone(), valid.clone()]);
+        assert!(parse(&config.to_string()).is_err());
+        for field in ["id", "name", "command"] {
+            for invalid in [
+                serde_json::json!(""),
+                serde_json::json!(" \t\n"),
+                serde_json::json!("a\0b"),
+                serde_json::json!(null),
+                serde_json::json!(42),
+                serde_json::json!(false),
+            ] {
+                let mut tool = valid.clone();
+                tool[field] = invalid;
+                config["settings"]["aiTools"] = serde_json::json!([tool]);
+                assert!(parse(&config.to_string()).is_err(), "{field}: {config}");
+            }
+        }
+        for invalid in [
+            serde_json::json!("true"),
+            serde_json::json!(1),
+            serde_json::json!(null),
+        ] {
+            let mut tool = valid.clone();
+            tool["enabled"] = invalid;
+            config["settings"]["aiTools"] = serde_json::json!([tool]);
+            assert!(parse(&config.to_string()).is_err());
+        }
+        for field in ["id", "name", "command", "enabled"] {
+            let mut tool = valid.clone();
+            tool.as_object_mut().unwrap().remove(field);
+            config["settings"]["aiTools"] = serde_json::json!([tool]);
+            assert!(parse(&config.to_string())
+                .unwrap_err()
+                .contains("missing field"));
+        }
+        let mut tool = valid;
+        tool["extra"] = true.into();
+        config["settings"]["aiTools"] = serde_json::json!([tool]);
+        assert!(parse(&config.to_string())
+            .unwrap_err()
+            .contains("unknown field"));
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!({}),
+            serde_json::json!("cli"),
+        ] {
+            config["settings"]["aiTools"] = invalid;
+            assert!(parse(&config.to_string()).is_err());
+        }
+    }
+
     #[test]
     fn node_selection_defaults_roundtrips_and_remains_strict() {
         let project = serde_json::json!({"id":"node","name":"Node","type":"nodejs","path":"/tmp/node-project","platforms":["pc"],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[]});

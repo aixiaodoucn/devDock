@@ -3,7 +3,9 @@ on run argv
  set terminalPath to item 1 of argv
  set workingDirectory to item 2 of argv
  set userCommand to item 3 of argv
- set commandText to "cd -- " & quoted form of workingDirectory & " && " & userCommand
+ -- 未选择 AI 工具时只切换目录，不拼接空命令。
+ set commandText to "cd -- " & quoted form of workingDirectory
+ if userCommand is not "" then set commandText to commandText & " && " & userCommand
  if terminalPath is "Terminal" or terminalPath ends with "/Terminal.app" then
   tell application "Terminal"
    activate
