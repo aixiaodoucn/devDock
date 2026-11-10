@@ -164,14 +164,6 @@ html[data-view='quick'] #app {
   margin-top: 3px;
   color: var(--muted);
 }
-.quick-project-toggle > svg {
-  color: var(--muted);
-  transform: rotate(-90deg);
-  flex-shrink: 0;
-}
-.quick-project-toggle > svg.expanded {
-  transform: rotate(0);
-}
 .quick-open-project,
 .quick-open-terminal,
 .quick-run-command {

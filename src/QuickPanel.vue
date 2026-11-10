@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   ArrowUpRight,
-  ChevronDown,
   Search,
   RefreshCw,
   Terminal,
@@ -305,7 +304,6 @@ onUnmounted(() => {
                 ></small
               ></span
             >
-            <ChevronDown :size="14" :class="{ expanded: isExpanded(project.id) }" />
           </button>
           <button
             class="icon-button quick-open-terminal"
