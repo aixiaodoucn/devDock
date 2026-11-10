@@ -54,9 +54,7 @@ function openDirectory() {
       <div>
         <strong>打开并执行命令</strong>
         <small>{{
-          selected
-            ? `${projectToolId ? '当前项目专用' : '跟随全局默认'} · ${selected.name}`
-            : selectionHint
+          selected ? `${projectToolId ? '当前项目专用' : '默认'} · ${selected.name}` : selectionHint
         }}</small>
       </div>
     </div>
