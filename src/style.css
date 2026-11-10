@@ -408,6 +408,9 @@ button {
 }
 .project-item[draggable='true'] {
   cursor: grab;
+  /* WKWebView 需要显式声明可拖动元素，普通 button 才会触发 HTML5 拖拽。 */
+  -webkit-user-drag: element;
+  user-select: none;
 }
 .project-item.dragging {
   opacity: 0.45;
