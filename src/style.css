@@ -7,6 +7,9 @@
   background: var(--bg);
   color-scheme: light;
   --mono: 'Menlo', 'SFMono-Regular', monospace;
+  --control-height: 36px;
+  --control-height-small: 32px;
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23707070' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --bg: #f8f7fb;
   --paper: #ffffff;
   --ink: #242033;
@@ -246,7 +249,17 @@ textarea {
   resize: vertical;
 }
 select {
-  min-height: 34px;
+  /* 使用统一盒模型，避免 macOS 原生下拉外观压缩控件的视觉高度。 */
+  appearance: none;
+  -webkit-appearance: none;
+  height: var(--control-height);
+  min-height: var(--control-height);
+  padding: 0 32px 0 12px;
+  line-height: 1.3;
+  background-image: var(--select-arrow);
+  background-repeat: no-repeat;
+  background-size: 12px;
+  background-position: right 10px center;
 }
 input[type='checkbox'],
 input[type='radio'] {
@@ -618,6 +631,7 @@ button {
   gap: 8px;
 }
 .button {
+  height: var(--control-height);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -645,6 +659,7 @@ button {
   background: var(--accent-strong);
 }
 .button.small {
+  height: var(--control-height-small);
   padding: 7px 10px;
   font-size: 11px;
 }
@@ -1076,9 +1091,10 @@ button {
   background: var(--accent-soft);
 }
 .task-select {
-  padding: 4px 7px;
+  height: var(--control-height-small);
+  min-height: var(--control-height-small);
+  padding: 0 28px 0 8px;
   font-size: 10px;
-  min-height: 27px;
   max-width: 200px;
 }
 .stop-button {

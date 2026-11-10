@@ -139,8 +139,8 @@ function openDirectory() {
 }
 .ai-launcher-controls select,
 .ai-launcher-controls button {
-  height: 32px;
-  min-height: 32px;
+  height: var(--control-height-small);
+  min-height: var(--control-height-small);
   padding-top: 0;
   padding-bottom: 0;
 }

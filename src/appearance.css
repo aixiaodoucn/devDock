@@ -4,7 +4,8 @@
   flex-direction: row;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
+  height: var(--control-height-small);
+  padding: 0 10px;
   border: 1px solid var(--accent-border);
   border-radius: 20px;
   background: var(--paper);
@@ -21,10 +22,12 @@
 }
 .theme-toggle select {
   width: auto;
+  height: 100%;
   min-height: 0;
-  padding: 0 12px 0 0;
+  padding: 0 18px 0 0;
   border: 0;
-  background: transparent;
+  background-color: transparent;
+  background-position: right center;
   color: inherit;
   font: inherit;
   box-shadow: none;
