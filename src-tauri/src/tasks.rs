@@ -617,6 +617,7 @@ fn build_inner(
         path: path.to_string_lossy().into(),
         original: original_id,
         temporary: appid.clone(),
+        line_ending: manifest::line_ending(&original).into(),
     };
     let journal = pending.join(format!("{}.json", task.id));
     config::atomic_write(

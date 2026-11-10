@@ -253,6 +253,8 @@ pub fn atomic_write(path: &Path, data: &str) -> Result<()> {
     let parent = path.parent().ok_or("路径无父目录")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let temp = parent.join(format!(".dev-dock-{}.tmp", uuid::Uuid::new_v4()));
+    // 保留被替换文件的权限，避免临时文件默认权限改变源码或配置文件属性。
+    let permissions = std::fs::metadata(path).ok().map(|m| m.permissions());
     use std::io::Write;
     let result = (|| {
         let mut f = std::fs::OpenOptions::new()
@@ -262,6 +264,9 @@ pub fn atomic_write(path: &Path, data: &str) -> Result<()> {
             .map_err(|e| e.to_string())?;
         f.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
         f.sync_all().map_err(|e| e.to_string())?;
+        if let Some(permissions) = permissions {
+            std::fs::set_permissions(&temp, permissions).map_err(|e| e.to_string())?;
+        }
         std::fs::rename(&temp, path).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         std::fs::File::open(parent)
@@ -694,6 +699,24 @@ mod tests {
         assert!(parse(&value.to_string())
             .unwrap_err()
             .contains("missing field"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_existing_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        atomic_write(&path, "{\"appid\":\"new\"}").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        // 目标不存在时仍创建新文件。
+        let created = dir.path().join("new.json");
+        atomic_write(&created, "{}").unwrap();
+        assert!(created.is_file());
     }
     #[test]
     fn output_preference_defaults_and_roundtrips() {

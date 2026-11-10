@@ -207,6 +207,25 @@ pub struct Recovery {
     pub path: String,
     pub original: String,
     pub temporary: String,
+    // 旧恢复记录没有换行风格；空值表示不调整现有换行。
+    #[serde(default)]
+    pub line_ending: String,
+}
+// 记录构建前的换行风格，恢复时写回，避免构建工具重写后留下不同格式。
+pub fn line_ending(text: &str) -> &'static str {
+    if text.contains("\r\n") {
+        "crlf"
+    } else {
+        "lf"
+    }
+}
+fn apply_line_ending(text: &str, style: &str) -> String {
+    let lf = text.replace("\r\n", "\n");
+    match style {
+        "crlf" => lf.replace('\n', "\r\n"),
+        "lf" => lf,
+        _ => text.to_owned(),
+    }
 }
 pub fn restore(record: &Recovery) -> Result<String> {
     let path = Path::new(&record.path);
@@ -221,10 +240,8 @@ pub fn restore(record: &Recovery) -> Result<String> {
             record.path
         ));
     }
-    atomic_write(
-        path,
-        &replace(&text, "appid", &record.original.clone().into())?,
-    )?;
+    let restored = replace(&text, "appid", &record.original.clone().into())?;
+    atomic_write(path, &apply_line_ending(&restored, &record.line_ending))?;
     Ok(format!("{} AppID 已恢复，保留新版本号", record.path))
 }
 #[cfg(test)]
@@ -248,6 +265,7 @@ mod tests {
             path: p.to_string_lossy().into(),
             original: "old".into(),
             temporary: "temp".into(),
+            line_ending: "lf".into(),
         };
         std::fs::write(
             &p,
@@ -281,6 +299,49 @@ mod tests {
         let numeric = replace(&updated, "versionCode", &serde_json::json!(234)).unwrap();
         assert_eq!(field(&numeric, "versionCode").unwrap(), 234);
         assert!(info("{ /* unclosed").is_err());
+    }
+    #[test]
+    fn restore_keeps_original_line_endings() {
+        let d = tempfile::tempdir().unwrap();
+        for (original_text, temporary_text, expected) in [
+            (
+                "{\n \"appid\": \"old\",\n \"versionName\": \"1.0.0\",\n \"versionCode\": \"10\"\n}\n",
+                "{\r\n \"appid\": \"temp\",\r\n \"versionName\": \"2.0.0\",\r\n \"versionCode\": \"20\"\r\n}\r\n",
+                "lf",
+            ),
+            (
+                "{\r\n \"appid\": \"old\",\r\n \"versionName\": \"1.0.0\",\r\n \"versionCode\": \"10\"\r\n}\r\n",
+                "{\n \"appid\": \"temp\",\n \"versionName\": \"2.0.0\",\n \"versionCode\": \"20\"\n}\n",
+                "crlf",
+            ),
+        ] {
+            let p = d.path().join("manifest.json");
+            std::fs::write(&p, temporary_text).unwrap();
+            let record = Recovery {
+                path: p.to_string_lossy().into(),
+                original: "old".into(),
+                temporary: "temp".into(),
+                line_ending: line_ending(original_text).into(),
+            };
+            restore(&record).unwrap();
+            let text = std::fs::read_to_string(&p).unwrap();
+            assert_eq!(line_ending(&text), expected);
+            assert_eq!(info(&text).unwrap().appid, "old");
+            // 版本号属于本次构建结果，恢复换行时不能回退。
+            assert_eq!(info(&text).unwrap().version_name, "2.0.0");
+            assert!(!text.contains("\r\n\r\n"));
+        }
+        // 旧记录没有换行风格时保持文件当前格式。
+        let p = d.path().join("legacy.json");
+        std::fs::write(&p, "{\r\n \"appid\": \"temp\"\r\n}\r\n").unwrap();
+        let legacy: Recovery = serde_json::from_str(&format!(
+            r#"{{"path":"{}","original":"old","temporary":"temp"}}"#,
+            p.display()
+        ))
+        .unwrap();
+        assert!(legacy.line_ending.is_empty());
+        restore(&legacy).unwrap();
+        assert!(std::fs::read_to_string(&p).unwrap().contains("\r\n"));
     }
     #[test]
     fn validation() {
