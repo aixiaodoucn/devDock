@@ -37,6 +37,7 @@ import { api, desktop } from './api';
 import { applyTheme } from './theme';
 import { stopMenuAction } from './actions';
 import { useSidebarResize } from './sidebar';
+import { isWindows } from './platform';
 import { moveProject, dropIndex } from './sort';
 import {
   defaultConfig,
@@ -692,7 +693,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
             class="preview-badge"
             title="本地构建、终端和菜单操作需在桌面应用中执行"
             >预览模式</span
-          ><span class="platform-badge">macOS FIRST</span>
+          ><span class="platform-badge">{{ isWindows ? 'WINDOWS' : 'macOS FIRST' }}</span>
         </div>
       </header>
       <div v-if="notice" :class="['notice', { error: notice.error }]" role="status">
@@ -850,6 +851,9 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
           </button>
         </div>
         <template v-if="project.type === 'uniapp' && selectedPlatform === 'app'">
+          <p v-if="isWindows" class="inline-message">
+            Windows 当前支持项目管理和终端执行，App 构建及 HBuilderX 菜单自动化将在后续阶段提供。
+          </p>
           <div class="build-layout">
             <section class="panel build-panel">
               <div class="panel-heading">
@@ -930,7 +934,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
                   >
                   <button
                     class="button primary build-button"
-                    :disabled="busy || saving || refreshing || !desktop"
+                    :disabled="busy || saving || refreshing || !desktop || isWindows"
                     @click="build"
                   >
                     <Play :size="16" fill="currentColor" />{{
@@ -1047,7 +1051,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
               <div class="command-row-actions">
                 <button
                   class="button small"
-                  :disabled="busy || !desktop"
+                  :disabled="busy || !desktop || (isWindows && action.kind === 'menu')"
                   :aria-label="`执行 ${action.name}`"
                   @click="runAction(action)"
                 >
@@ -1056,7 +1060,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
                 <button
                   v-if="stopMenuAction(action)"
                   class="button small stop-command"
-                  :disabled="busy || !desktop"
+                  :disabled="busy || !desktop || (isWindows && action.kind === 'menu')"
                   :aria-label="`停止 ${action.name}`"
                   title="停止当前项目的运行任务"
                   @click="runStopAction(action)"
@@ -1079,7 +1083,11 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
               <code>{{
                 action.kind === 'shell' ? action.command : action.menuPath.join(' → ')
               }}</code
-              ><button class="button" :disabled="busy || !desktop" @click="runAction(action)">
+              ><button
+                class="button"
+                :disabled="busy || !desktop || (isWindows && action.kind === 'menu')"
+                @click="runAction(action)"
+              >
                 <Play :size="14" />执行操作 <ArrowUpRight :size="14" />
               </button>
             </article>

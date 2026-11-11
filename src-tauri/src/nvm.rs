@@ -39,7 +39,7 @@ fn semver(version: &str) -> Option<[u64; 3]> {
 }
 
 pub fn validate_selection(version: &str, dir: &str) -> Result<()> {
-    if !dir.is_empty() && (!Path::new(dir).is_absolute() || dir.contains('\0')) {
+    if !dir.is_empty() && !crate::paths::is_absolute(dir) {
         return Err("nvmDir 必须为绝对路径".into());
     }
     if !version.is_empty() {
@@ -73,7 +73,12 @@ fn executable(path: &Path) -> bool {
         metadata.permissions().mode() & 0o111 != 0
             && unsafe { libc::access(path.as_ptr(), libc::X_OK) == 0 }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        path.extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+    }
+    #[cfg(not(any(unix, windows)))]
     false
 }
 
@@ -98,10 +103,148 @@ fn candidate_roots(
 }
 
 pub fn detect() -> Vec<NodeVersion> {
-    scan(candidate_roots(
-        std::env::var_os("NVM_DIR").map(PathBuf::from),
-        std::env::var_os("HOME").map(PathBuf::from),
-        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+    #[cfg(windows)]
+    {
+        scan_windows(windows_roots(
+            std::env::var_os("NVM_HOME").map(PathBuf::from),
+            std::env::var_os("APPDATA").map(PathBuf::from),
+            std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+            std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(PathBuf::from),
+            std::env::var_os("ProgramFiles").map(PathBuf::from),
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        scan(candidate_roots(
+            std::env::var_os("NVM_DIR").map(PathBuf::from),
+            std::env::var_os("HOME").map(PathBuf::from),
+            std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        ))
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_roots(
+    nvm_home: Option<PathBuf>,
+    appdata: Option<PathBuf>,
+    local_appdata: Option<PathBuf>,
+    home: Option<PathBuf>,
+    program_files: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut roots: Vec<_> = nvm_home.into_iter().collect();
+    for base in [appdata, local_appdata, program_files]
+        .into_iter()
+        .flatten()
+    {
+        roots.push(base.join("nvm"));
+    }
+    if let Some(home) = home {
+        roots.push(home.join("AppData/Roaming/nvm"));
+        roots.push(home.join("scoop/apps/nvm/current"));
+    }
+    roots.push(PathBuf::from(r"C:\nvm"));
+    let mut seen = HashSet::new();
+    roots.retain(|root| {
+        root.is_absolute() && seen.insert(crate::paths::key(&root.to_string_lossy()))
+    });
+    roots
+}
+
+// nvm-windows 的 Node 位于版本目录根下，不使用 Unix 的 versions/node/bin 布局。
+#[cfg(any(windows, test))]
+fn windows_node_file(dir: &Path) -> bool {
+    let node = dir.join("node.exe");
+    #[cfg(windows)]
+    {
+        executable(&node)
+    }
+    // Mac 测试用普通假 exe 文件构造 Windows 安装，不执行它，也不要求 Unix 执行位。
+    #[cfg(not(windows))]
+    {
+        node.is_file()
+    }
+}
+
+#[cfg(any(windows, test))]
+fn scan_windows(roots: Vec<PathBuf>) -> Vec<NodeVersion> {
+    let mut found = vec![];
+    let mut seen = HashSet::new();
+    for root in roots {
+        if !root.is_absolute() {
+            continue;
+        }
+        let Ok(root) = fs::canonicalize(root) else {
+            continue;
+        };
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+        let Some(nvm_dir) = root.to_str() else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let version = if name.starts_with('v') {
+                name
+            } else {
+                format!("v{name}")
+            };
+            let Some(numbers) = semver(&version) else {
+                continue;
+            };
+            if !windows_node_file(&entry.path()) {
+                continue;
+            }
+            let Ok(node) = fs::canonicalize(entry.path().join("node.exe")) else {
+                continue;
+            };
+            let Some(path) = node.to_str() else {
+                continue;
+            };
+            if seen.insert(crate::paths::key(path)) {
+                found.push((
+                    numbers,
+                    NodeVersion {
+                        version,
+                        path: path.into(),
+                        nvm_dir: nvm_dir.into(),
+                    },
+                ));
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
+    found.into_iter().map(|(_, version)| version).collect()
+}
+
+// 只为新会话提供 PATH 前置目录，不运行 Node 或改变 nvm 全局链接。
+#[cfg(any(windows, test))]
+pub fn windows_node_bin(project: &Project) -> Result<Option<PathBuf>> {
+    if project.project_type != "nodejs" || project.node_version.is_empty() {
+        return Ok(None);
+    }
+    validate_selection(&project.node_version, &project.nvm_dir)?;
+    let root = Path::new(&project.nvm_dir);
+    if !root.is_absolute() {
+        return Err("nvmDir 不是当前系统可用的绝对路径".into());
+    }
+    for name in [
+        &project.node_version,
+        project.node_version.strip_prefix('v').unwrap(),
+    ] {
+        let dir = root.join(name);
+        if windows_node_file(&dir) {
+            return Ok(Some(dir));
+        }
+    }
+    Err(format!(
+        "所选 Node 未安装或缺少 node.exe: {} / {}",
+        root.display(),
+        project.node_version
     ))
 }
 
@@ -306,6 +449,9 @@ fn activation(dir: &str, version: &str, command: &str, scripts: &[PathBuf]) -> R
     if command.contains('\0') {
         return Err("终端命令包含无效空字符".into());
     }
+    if !Path::new(dir).is_absolute() {
+        return Err("nvmDir 不是当前系统可用的绝对路径".into());
+    }
     let node = Path::new(dir)
         .join("versions/node")
         .join(version)
@@ -328,6 +474,109 @@ fn activation(dir: &str, version: &str, command: &str, scripts: &[PathBuf]) -> R
         "test -x {} && test -r {} && export NVM_DIR={} && source {} --no-use && nvm use --silent {} && eval {}",
         quote(node), quote(script), quote(dir), quote(script), quote(version), quote(command),
     ))
+}
+
+#[cfg(test)]
+mod windows_tests {
+    use super::*;
+
+    fn project() -> Project {
+        serde_json::from_value(serde_json::json!({"id":"node","name":"Node","type":"nodejs","path":"C:/项目","platforms":["web"],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"PowerShell","commands":[]})).unwrap()
+    }
+
+    fn installed(root: &Path, version: &str) -> PathBuf {
+        let dir = root.join(version);
+        fs::create_dir_all(&dir).unwrap();
+        // 故意写入不可执行内容；扫描和选择均不得运行它。
+        fs::write(dir.join("node.exe"), "fake exe must never execute").unwrap();
+        dir
+    }
+
+    #[test]
+    fn windows_scan_sorts_normalizes_versions_and_ignores_unix_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("nvm 中文 space");
+        for version in [
+            "v9.9.9",
+            "v22.2.0",
+            "22.10.0",
+            "v01.0.0",
+            "default",
+            "v23.0.0-beta",
+        ] {
+            installed(&root, version);
+        }
+        fs::create_dir_all(root.join("v30.0.0/node.exe")).unwrap();
+        fs::create_dir_all(root.join("v31.0.0")).unwrap();
+        installed(&root.join("versions/node"), "v40.0.0");
+        let found = scan_windows(vec![root.clone(), root.clone(), "relative".into()]);
+        assert_eq!(
+            found.iter().map(|v| v.version.as_str()).collect::<Vec<_>>(),
+            ["v22.10.0", "v22.2.0", "v9.9.9"]
+        );
+        assert!(found
+            .iter()
+            .all(|v| Path::new(&v.path).is_file() && v.path.contains("nvm 中文 space")));
+        assert!(serde_json::to_value(&found[0]).unwrap()["nvmDir"].is_string());
+        let mut selected = project();
+        selected.node_version = "v22.10.0".into();
+        selected.nvm_dir = root.to_string_lossy().into_owned();
+        assert_eq!(
+            windows_node_bin(&selected).unwrap(),
+            Some(root.join("22.10.0"))
+        );
+        let preferred = installed(&root, "v22.10.0");
+        assert_eq!(windows_node_bin(&selected).unwrap(), Some(preferred));
+        for version in ["v31.0.0", "v30.0.0", "v99.0.0", "v22", "../v22.10.0"] {
+            selected.node_version = version.into();
+            assert!(windows_node_bin(&selected).is_err(), "{version}");
+        }
+        selected.node_version = "v22.10.0".into();
+        selected.nvm_dir = "relative".into();
+        assert!(windows_node_bin(&selected).is_err());
+    }
+
+    #[test]
+    fn unselected_and_non_node_projects_return_none() {
+        let mut selected = project();
+        assert_eq!(windows_node_bin(&selected).unwrap(), None);
+        selected.project_type = "backend".into();
+        selected.node_version = "invalid".into();
+        assert_eq!(windows_node_bin(&selected).unwrap(), None);
+    }
+
+    #[test]
+    fn windows_roots_cover_environment_and_common_installations() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = windows_roots(
+            Some(temp.path().join("custom nvm")),
+            Some(temp.path().join("roaming")),
+            Some(temp.path().join("local")),
+            Some(temp.path().join("profile")),
+            Some(temp.path().join("program files")),
+        );
+        for suffix in [
+            "custom nvm",
+            "roaming/nvm",
+            "local/nvm",
+            "profile/AppData/Roaming/nvm",
+            "profile/scoop/apps/nvm/current",
+            "program files/nvm",
+        ] {
+            assert!(roots.contains(&temp.path().join(suffix)), "{suffix}");
+        }
+        assert!(
+            windows_roots(Some("relative".into()), None, None, None, None)
+                .iter()
+                .all(|p| p.is_absolute())
+        );
+        for dir in [r"C:\nvm data", r"\\server\share\nvm", "/nvm data"] {
+            validate_selection("v22.10.0", dir).unwrap();
+        }
+        for dir in [r"C:relative", r"\nvm", "C:/bad\0"] {
+            assert!(validate_selection("v22.10.0", dir).is_err());
+        }
+    }
 }
 
 #[cfg(all(test, unix))]

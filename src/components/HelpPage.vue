@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { isWindows } from '../platform';
 import {
   BookOpen,
   Boxes,
@@ -35,7 +36,7 @@ const features = [
   {
     icon: Terminal,
     title: '终端命令与 Node 版本',
-    text: '读取 package.json 脚本，使用 Ghostty、Terminal 或 iTerm 执行。Node.js 项目可选择本地 nvm 已安装版本。',
+    text: '读取 package.json 脚本，macOS 使用 Ghostty、Terminal 或 iTerm，Windows 使用 Windows Terminal 或 PowerShell。可选择本地 nvm / nvm-windows 已安装版本。',
   },
   {
     icon: Terminal,
@@ -50,7 +51,7 @@ const features = [
   {
     icon: PanelLeft,
     title: '菜单栏快捷操作',
-    text: '从 macOS 菜单栏搜索项目并执行命令，快速打开项目详情；关闭主窗口后仍可使用，点击程序坞图标可恢复主窗口。',
+    text: '从 macOS 菜单栏或 Windows 托盘搜索项目并执行命令，快速打开项目详情；关闭主窗口后可从托盘恢复，macOS 也可点击程序坞图标恢复。',
   },
   {
     icon: Archive,
@@ -87,7 +88,7 @@ const guides = [
     steps: [
       '添加 Node.js 项目，选择平台；使用「获取本地版本」检测 nvm 已安装版本，或选择「跟随终端默认版本」。',
       '读取 package.json 脚本，选择添加为命令，也可以手动填写。按需为项目选择专用终端。',
-      '在命令列表点击「执行」，终端会进入项目目录；若指定 Node 版本，先通过 nvm 启用该版本，再执行命令。每条终端命令可在「运行与发行」中单独填写环境变量，如 KEY=VALUE;KEY2=VALUE2。JSON 等复杂值可用单/双引号包裹，引号内分号不会被拆分；执行该命令前导出，仅作用于本次终端。',
+      '在命令列表点击「执行」，终端会进入项目目录；若指定 Node 版本，macOS 通过 nvm 启用，Windows 仅将所选 node.exe 所在目录加入新会话 PATH，再执行命令，不改变系统版本。每条终端命令可在「运行与发行」中单独填写环境变量，如 KEY=VALUE;KEY2=VALUE2。JSON 等复杂值可用单/双引号包裹，引号内分号不会被拆分；执行该命令前导出，仅作用于本次终端。',
       '运行日志和服务停止在对应终端中处理。DevDock 的「已触发」表示命令已交给终端，不代表服务已启动成功。',
     ],
   },
@@ -124,7 +125,7 @@ const faqs = [
   {
     question: '支持哪些系统？后端项目可以运行吗？',
     answer:
-      '当前外部工具自动化优先支持 macOS。Windows 自动化尚未实现；后端项目支持管理记录、打开项目终端并执行可选命令，后端业务运行和发布流程待后续支持。',
+      'macOS 支持现有构建与菜单自动化；Windows 基础版提供项目管理、终端执行、环境变量、Node 选择、Git 和备份，真实 Windows 行为需在实机验收。HBuilderX 自动化与 APK/WGT 构建暂未支持 Windows。后端项目可管理记录、打开终端和执行可选命令，后端业务运行与发布流程待后续支持。',
   },
   {
     question: 'iOS 可以直接生成安装包吗？',
@@ -154,12 +155,12 @@ const faqs = [
   {
     question: 'Node 版本列表为空，或指定版本无法启用怎么办？',
     answer:
-      '版本列表只读取本地 nvm 已安装的 Node，不会自动下载。先在本机 nvm 环境中安装所需版本，再点击获取本地版本。已卸载的版本或失效的 nvm 路径需要重新选择；也可选择跟随终端默认版本。指定版本启用失败时不会继续运行原命令。',
+      '版本列表只读取本地 nvm / nvm-windows 已安装的 Node，不会自动下载。Windows 不调用 nvm use，而为新会话前置所选 Node 的 PATH。先在本机 nvm 环境中安装所需版本，再点击获取本地版本。已卸载的版本或失效的 nvm 路径需要重新选择；也可选择跟随终端默认版本。指定版本启用失败时不会继续运行原命令。',
   },
   {
     question: '点击执行后终端没有正确运行命令怎么办？',
     answer:
-      '检查项目目录、终端路径和辅助功能权限。Ghostty、iTerm 依赖默认的新标签页快捷键与粘贴操作，修改过快捷键时可能无法交接。可尝试选择 Terminal，再到终端中查看实际报错。菜单栏快捷弹框会先收起，再把命令交给终端。',
+      '检查项目目录、终端路径和辅助功能权限。Ghostty、iTerm 依赖默认的新标签页快捷键与粘贴操作，修改过快捷键时可能无法交接。macOS 可尝试选择 Terminal。Windows 请确认终端为 Windows Terminal 或 PowerShell，命令使用 PowerShell 语法；npm.ps1 被策略限制时可使用 npm.cmd run dev，不修改组织执行策略。具体错误在终端查看。',
   },
   {
     question: 'APK 构建报 JDK 或 Gradle 错误怎么办？',
@@ -221,7 +222,12 @@ const filteredFaqs = computed(() => {
     </nav>
     <div v-if="tab === 'features'">
       <div class="help-scope">
-        <span class="local-dot"></span>当前优先支持 macOS · 后端业务运行待支持 · iOS 仅支持 WGT
+        <span class="local-dot"></span
+        >{{
+          isWindows
+            ? 'Windows 基础版 · HBuilderX / App 构建暂不支持'
+            : 'macOS · 后端业务运行待支持 · iOS 仅支持 WGT'
+        }}
       </div>
       <div class="help-features">
         <article v-for="feature in features" :key="feature.title" class="panel help-feature">

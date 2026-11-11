@@ -29,6 +29,8 @@ pub struct Control {
     cancel: AtomicBool,
     pid: Mutex<Option<u32>>,
     permission_prompt: Mutex<PermissionPrompt>,
+    #[cfg(windows)]
+    job: Mutex<Option<Arc<crate::windows_job::Job>>>,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +90,15 @@ impl Task {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
+        #[cfg(windows)]
+        let (job, mut child) = crate::windows_job::Job::spawn(&mut command)?;
+        #[cfg(windows)]
+        let job = Arc::new(job);
+        #[cfg(windows)]
+        {
+            *self.control.job.lock().unwrap() = Some(job.clone());
+        }
+        #[cfg(not(windows))]
         let mut child = command.spawn().map_err(|e| e.to_string())?;
         *self.control.pid.lock().unwrap() = Some(child.id());
         let out = child.stdout.take().unwrap();
@@ -125,7 +136,7 @@ impl Task {
         let start = Instant::now();
         let result = loop {
             if self.check().is_err() || start.elapsed() > Duration::from_secs(timeout) {
-                kill_group(child.id());
+                kill_managed(&self.control, child.id());
                 let _ = child.kill();
                 let _ = child.wait();
                 break Err(if self.check().is_err() {
@@ -145,15 +156,21 @@ impl Task {
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(100)),
                 Err(e) => {
-                    kill_group(child.id());
+                    kill_managed(&self.control, child.id());
                     let _ = child.wait();
                     break Err(e.to_string());
                 }
             }
         };
         // 子进程可能继承输出管道，先终止残留进程再等待读取线程，避免阻塞。
-        kill_group(child.id());
+        kill_managed(&self.control, child.id());
         *self.control.pid.lock().unwrap() = None;
+        #[cfg(windows)]
+        {
+            self.control.job.lock().unwrap().take();
+            // 等待继承输出管道的读取线程前，关闭最后一个 Job 句柄。
+            drop(job);
+        }
         let _ = reader.join();
         if let Ok(Some(denial)) = errors.join() {
             if self.check().is_ok() {
@@ -162,6 +179,15 @@ impl Task {
         }
         result
     }
+}
+fn kill_managed(control: &Control, pid: u32) {
+    #[cfg(windows)]
+    if let Some(job) = control.job.lock().unwrap().as_ref() {
+        job.terminate();
+    }
+    #[cfg(not(windows))]
+    let _ = control;
+    kill_group(pid);
 }
 fn kill_group(pid: u32) {
     #[cfg(unix)]
@@ -175,7 +201,7 @@ pub fn mac_only() -> Result<()> {
     if cfg!(target_os = "macos") {
         Ok(())
     } else {
-        Err("此自动化功能首版仅支持 macOS；Windows 仅预留打包架构".into())
+        Err("HBuilderX 自动化与 App 构建目前仅支持 macOS；Windows 可使用项目管理和终端执行".into())
     }
 }
 pub fn data_dir(app: &AppHandle) -> Result<PathBuf> {
@@ -249,7 +275,9 @@ fn spawn(
     exclusive: bool,
     work: impl FnOnce(&Task) -> Result<&'static str> + Send + 'static,
 ) -> Result<String> {
-    mac_only()?;
+    if exclusive || !cfg!(any(target_os = "macos", windows)) {
+        mac_only()?;
+    }
     if exclusive {
         PermissionPrompt::default().ensure()?;
     }
@@ -308,7 +336,7 @@ pub fn cancel(app: &AppHandle, id: &str) -> Result<()> {
         .ok_or("任务不存在或已经结束；终端中已触发的命令需在终端自行停止")?;
     control.cancel.store(true, Ordering::SeqCst);
     if let Some(pid) = *control.pid.lock().unwrap() {
-        kill_group(pid)
+        kill_managed(control, pid)
     }
     Ok(())
 }
@@ -316,7 +344,7 @@ pub fn cancel_all(app: &AppHandle) {
     for c in app.state::<Runtime>().tasks.lock().unwrap().values() {
         c.cancel.store(true, Ordering::SeqCst);
         if let Some(pid) = *c.pid.lock().unwrap() {
-            kill_group(pid)
+            kill_managed(c, pid)
         }
     }
 }
@@ -389,7 +417,12 @@ pub fn action_with_title(
         return Err("菜单路径必须从运行/发行开始".into());
     }
     spawn(app, project.id.clone(), exclusive, move |task| {
-        let scripts = scripts(&task.app)?;
+        // Windows 终端交接不加载 macOS 自动化脚本。
+        let scripts = if action.kind == "menu" || cfg!(target_os = "macos") {
+            scripts(&task.app)?
+        } else {
+            PathBuf::new()
+        };
         if action.kind == "menu" {
             let bundle = PathBuf::from(hbuilder(&settings)?);
             let projects = load(&task.app)?.projects;
@@ -454,29 +487,51 @@ pub fn action_with_title(
             })?;
         } else {
             let terminal = fallback(&project.terminal, &settings.terminal);
-            let terminal = if terminal.is_empty() {
-                "Terminal"
-            } else {
-                terminal
-            };
-            if terminal != "Terminal" && !Path::new(terminal).is_absolute() {
-                return Err("终端必须使用绝对路径".into());
+            #[cfg(windows)]
+            {
+                task.check()?;
+                crate::windows_terminal::launch(
+                    &project,
+                    &action,
+                    terminal,
+                    title.as_deref(),
+                    &data_dir(&task.app)?,
+                )?;
+                if let Err(error) = crate::tray::hide_quick_panel(task.app.clone()) {
+                    task.emit(
+                        "log",
+                        &format!("终端已触发，快捷窗口收起失败: {error}"),
+                        None,
+                        None,
+                    );
+                }
             }
-            if accessibility::terminal_needs_accessibility(terminal) {
-                task.control.permission_prompt.lock().unwrap().ensure()?;
+            #[cfg(not(windows))]
+            {
+                let terminal = if terminal.is_empty() {
+                    "Terminal"
+                } else {
+                    terminal
+                };
+                if terminal != "Terminal" && !Path::new(terminal).is_absolute() {
+                    return Err("终端必须使用绝对路径".into());
+                }
+                if accessibility::terminal_needs_accessibility(terminal) {
+                    task.control.permission_prompt.lock().unwrap().ensure()?;
+                }
+                // 仅 Node shell 动作有明确选择时激活；交给终端前再次验证安装文件。
+                let command = nvm::command_for(&project, &action)?;
+                // 非激活面板可能仍持有键盘焦点；先收起再让终端接收新标签和粘贴按键。
+                crate::tray::hide_quick_panel(task.app.clone())?;
+                let terminal_title = title.clone().unwrap_or_default();
+                let mut c = Command::new("/usr/bin/osascript");
+                c.arg(scripts.join("terminal.applescript"))
+                    .arg(terminal)
+                    .arg(&project.path)
+                    .arg(command)
+                    .arg(terminal_title);
+                task.command(c, 30)?;
             }
-            // 仅 Node shell 动作有明确选择时激活；交给终端前再次验证安装文件。
-            let command = nvm::command_for(&project, &action)?;
-            // 非激活面板可能仍持有键盘焦点；先收起再让终端接收新标签和粘贴按键。
-            crate::tray::hide_quick_panel(task.app.clone())?;
-            let terminal_title = title.clone().unwrap_or_default();
-            let mut c = Command::new("/usr/bin/osascript");
-            c.arg(scripts.join("terminal.applescript"))
-                .arg(terminal)
-                .arg(&project.path)
-                .arg(command)
-                .arg(terminal_title);
-            task.command(c, 30)?;
             task.emit(
                 "log",
                 "命令已交给终端，应用不能确认其退出状态或取消终端进程",

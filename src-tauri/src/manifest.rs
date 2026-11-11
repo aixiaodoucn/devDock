@@ -229,6 +229,9 @@ fn apply_line_ending(text: &str, style: &str) -> String {
 }
 pub fn restore(record: &Recovery) -> Result<String> {
     let path = Path::new(&record.path);
+    if !path.is_absolute() {
+        return Err("恢复记录的路径不适用于当前系统，保留记录且不访问其他目录".into());
+    }
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let current = field(&text, "appid")?;
     if current == record.original {
@@ -334,14 +337,32 @@ mod tests {
         // 旧记录没有换行风格时保持文件当前格式。
         let p = d.path().join("legacy.json");
         std::fs::write(&p, "{\r\n \"appid\": \"temp\"\r\n}\r\n").unwrap();
-        let legacy: Recovery = serde_json::from_str(&format!(
-            r#"{{"path":"{}","original":"old","temporary":"temp"}}"#,
-            p.display()
-        ))
+        let legacy: Recovery = serde_json::from_value(serde_json::json!({
+            "path": p,
+            "original": "old",
+            "temporary": "temp"
+        }))
         .unwrap();
         assert!(legacy.line_ending.is_empty());
         restore(&legacy).unwrap();
         assert!(std::fs::read_to_string(&p).unwrap().contains("\r\n"));
+    }
+    #[test]
+    fn recovery_rejects_relative_and_foreign_host_paths() {
+        let foreign = if cfg!(windows) {
+            "/Users/example/manifest.json"
+        } else {
+            r"C:\Users\example\manifest.json"
+        };
+        for path in ["manifest.json", "relative/manifest.json", foreign] {
+            let record = Recovery {
+                path: path.into(),
+                original: "original".into(),
+                temporary: "temporary".into(),
+                line_ending: "lf".into(),
+            };
+            assert!(restore(&record).unwrap_err().contains("不适用于当前系统"));
+        }
     }
     #[test]
     fn validation() {

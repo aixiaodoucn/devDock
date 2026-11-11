@@ -1,10 +1,10 @@
 # DevDock
 
-基于 Tauri 2、Vue 3 和 Rust 的本地开发工作台。首版支持 macOS，管理 uni-app、Node.js 项目，集中执行 App 构建、HBuilderX 菜单操作和终端命令。
+基于 Tauri 2、Vue 3 和 Rust 的本地开发工作台。支持 macOS，并加入 Windows 基础工作台适配：管理 uni-app、Node.js 项目、运行终端命令、Git 分支展示及 JSON 备份。App 构建与 HBuilderX 菜单自动化目前仅支持 macOS。
 
 ## 启动
 
-需要 Node.js 22+、pnpm 11、Rust 1.89+ 和 Xcode Command Line Tools。
+需要 Node.js 22+、pnpm 11、Rust 1.89+。macOS 需要 Xcode Command Line Tools；Windows 需要 MSVC C++ Build Tools、Windows SDK 与 WebView2。
 
 ```sh
 pnpm install
@@ -24,7 +24,36 @@ bash scripts/test-build.sh        # macOS：伪 JDK/Gradle 验证兼容参数与
 pnpm tauri build                 # 构建本机架构的 macOS 应用与 DMG
 ```
 
-macOS 构建结果位于 `src-tauri/target/release/bundle/`。对外分发前需自行配置 Apple Developer 签名与公证。Windows 原生安装包需要在 Windows 构建和验证；首版外部工具自动化仅实现 macOS，其他系统会返回未支持说明。
+macOS 构建结果位于 `src-tauri/target/release/bundle/`。对外分发前需自行配置 Apple Developer 签名与公证。Windows 安装包需要在 Windows 构建和验证，步骤见下方。Windows 支持基础工作台及终端执行，HBuilderX 菜单自动化和 APK/WGT 构建入口暂不可执行。
+
+## Windows 基础版与打包
+
+第一阶段已加入 Windows 平台实现，但当前开发机器为 macOS，Windows 目标编译、真实终端和安装包行为仍需在 Windows 实机验收；macOS 测试不能替代这一步。
+
+- 项目管理、排序、Git 分支、读取 package.json、自定义终端命令、逐命令环境变量、JSON 导入导出可使用基础工作台逻辑。
+- 支持盘符和 UNC 路径，Windows 路径去重忽略大小写并统一分隔符；Mac 路径仍区分大小写。跨系统备份可导入，执行前需重新配置本机实际目录、终端和 Node 安装位置。
+- 默认终端为 PowerShell，也可在偏好设置检测 Windows Terminal / PowerShell 7 或手动选择 `wt.exe`、`powershell.exe`、`pwsh.exe`。在 Windows 上使用 Mac `.app` 终端路径会提示重新选择。
+- 终端通过普通启动参数读取当前用户数据目录中的一次性 JSON，再删除该数据文件。目录、环境变量、命令内容按数据交接，无剪贴板模拟；目录切换失败时不继续执行命令。启动错误显示在保留的终端中，不修改执行策略、不提权。
+- Windows 命令遵循 PowerShell 语法，Mac 专用命令需要自行调整。读取 package.json 后提供 `npm.cmd` / `pnpm.cmd` / `yarn.cmd` 建议，使用工具官方 Windows 入口；手填命令若遇到 `npm.ps1` 策略限制，也可使用 `npm.cmd run dev`，应用不尝试绕过组织策略。
+- 检测 nvm-windows 的已安装版本；所选 `node.exe` 目录只加入新会话的 PATH，不执行 `nvm use`，不改变全局链接。版本不存在时在交接前失败，不自动下载或换版本。
+- 托盘采用彩色图标，关闭主窗口后可从托盘恢复。受管理的任务进程采用 Windows Job Object 取消进程树；交给外部终端的长期会话由用户在终端中停止。
+- HBuilderX 安装路径和 JDK 可检测、保存，但 HBuilderX 菜单读取/执行、停止小程序及 App 构建暂不支持。读取 uni-app.scripts 仍可用于配置、迁移操作。
+
+在 **Windows x64** 电脑中准备 Node.js、pnpm、Rust MSVC 工具链、Visual Studio C++ Build Tools（含 Windows SDK），确认项目依赖已安装，然后运行：
+
+```bat
+scripts\build-windows.cmd
+```
+
+脚本检查工具与依赖，运行前后端测试后生成 NSIS `.exe`，不自动安装项目依赖。若尚未安装依赖，先确认并手动执行 `pnpm install --frozen-lockfile`。安装包输出目录：
+
+```text
+src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\
+```
+
+安装默认仅针对当前用户，提供简体中文/英文。WebView2 已安装时沿用本机版本，否则安装器下载引导程序；首次打包也可能需要联网下载 Tauri 的 Windows 打包工具。正式发布仍需在 Windows 检查签名、升级、卸载与数据保留。
+
+实机验收至少覆盖：中文/空格/单引号目录，长 JSON 环境变量的 Node 读取，所选 Node 版本与原终端默认版本相互独立，托盘打开/关闭和多屏缩放，项目拖拽排序、文件定位，以及安装/升级/卸载。Windows 专属文件占用与 Job 测试由上述 Windows 构建脚本执行。
 
 ## 配置项目
 
@@ -125,7 +154,7 @@ WGT 确认框必须能通过辅助功能识别，具备 WGT 标识、目标项�
 
 ## 终端
 
-支持检测 Terminal、Ghostty、iTerm 以及手动设置应用路径。项目终端可以覆盖全局选择。
+macOS 支持 Terminal、Ghostty、iTerm，Windows 支持 Windows Terminal、PowerShell 及 PowerShell 7，均可手动指定终端路径。项目终端可以覆盖全局选择。
 
 - 项目「运行与发行」中的终端命令使用「项目名 · 执行命令」作为标签标题，不包含目录切换、环境变量或 nvm 激活前缀。打开 AI/全局终端命令或仅打开目录时不主动设置标题。
 - Terminal 通过 AppleScript 打开终端执行。
@@ -147,7 +176,7 @@ WGT 确认框必须能通过辅助功能识别，具备 WGT 标识、目标项�
 
 添加或编辑 Node.js 项目时，可以选择该项目使用的 Node.js 版本。「获取本地版本」读取本机 nvm 已安装版本，按版本号排序；也可以选择「跟随终端默认版本」。每个项目可以使用不同版本，选择随项目配置及 JSON 备份保存。
 
-指定版本后，终端先进入项目目录，再通过 nvm 启用指定版本，然后执行所选命令。只有版本启用成功才继续运行；已卸载的版本或失效的 nvm 路径会报错，不自动安装，也不悄悄改用其他版本。切换只作用于新终端会话，不修改 nvm 默认版本或其他终端。
+指定版本后，终端先进入项目目录：macOS 通过 nvm 启用指定版本，Windows 将 nvm-windows 选定版本的目录加入本次会话 PATH，再执行所选命令。只有版本启用成功才继续运行；已卸载的版本或失效的 nvm 路径会报错，不自动安装，也不悄悄改用其他版本。切换只作用于新终端会话，不修改 nvm 默认版本或其他终端。
 
 ### 环境变量
 

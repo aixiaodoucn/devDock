@@ -1,3 +1,5 @@
+import { isWindows, pathKey } from './platform';
+
 export type ProjectType = 'uniapp' | 'nodejs' | 'backend';
 export type Platform = 'app' | 'web' | 'miniapp';
 export type BuildMode = 'apk' | 'wgt-android' | 'wgt-ios';
@@ -156,8 +158,8 @@ export function defaultConfig(): AppConfig {
     schemaVersion: 1,
     projects: [],
     settings: {
-      hbuilderxPath: '/Applications/HBuilderX.app',
-      terminal: '/Applications/Ghostty.app',
+      hbuilderxPath: isWindows ? '' : '/Applications/HBuilderX.app',
+      terminal: isWindows ? 'PowerShell' : '/Applications/Ghostty.app',
       jdkPath: '',
       theme: 'lavender',
       openOutputAfterBuild: true,
@@ -213,7 +215,7 @@ export function normalizeProjectPlatforms(project: Project): Project {
 
 // 合并按 ID 和标准化路径去重，保留当前设备设置，避免导入覆盖本机工具路径。
 export function mergeConfig(current: AppConfig, incoming: AppConfig): AppConfig {
-  const canonicalPath = (path: string) => path.replace(/[\\/]+$/, '').replaceAll('\\', '/');
+  const canonicalPath = pathKey;
   const projects = structuredClone(current.projects).map(normalizeProjectPlatforms);
   for (const project of incoming.projects.map(normalizeProjectPlatforms)) {
     const idIndex = projects.findIndex((item) => item.id === project.id);

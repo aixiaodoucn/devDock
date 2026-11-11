@@ -9,7 +9,13 @@ fn clean_environment(command: &mut Command) {
     let inherited = std::env::vars_os().map(|(key, _)| key);
     let overrides: Vec<_> = command.get_envs().map(|(key, _)| key.to_owned()).collect();
     for key in inherited.chain(overrides) {
-        if key.to_string_lossy().starts_with("GIT_") {
+        let name = key.to_string_lossy();
+        let git_variable = if cfg!(windows) {
+            name.to_ascii_uppercase().starts_with("GIT_")
+        } else {
+            name.starts_with("GIT_")
+        };
+        if git_variable {
             command.env_remove(key);
         }
     }
@@ -19,6 +25,12 @@ fn clean_environment(command: &mut Command) {
 fn git_command(path: &Path) -> Command {
     let mut command = Command::new("git");
     command.current_dir(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // 只读查询不弹出额外控制台窗口。
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
     clean_environment(&mut command);
     command
 }

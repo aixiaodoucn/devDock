@@ -5,20 +5,23 @@ mod git;
 mod hbuilder_owner;
 mod manifest;
 mod nvm;
+mod paths;
+mod system_tools;
 mod tasks;
 mod tray;
 mod tray_geometry;
 #[cfg(target_os = "macos")]
 mod tray_panel;
 mod uniapp_scripts;
+#[cfg(windows)]
+mod windows_job;
+#[cfg(any(windows, test))]
+mod windows_terminal;
 use config::{Action, AppConfig, Project, Result, Settings};
 use serde::Serialize;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-    sync::Mutex,
-};
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
+use std::{fs, path::Path, process::Command, sync::Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 #[derive(Default)]
 struct StartupLogs(Mutex<Vec<String>>);
@@ -81,7 +84,17 @@ fn package_scripts(root: &Path) -> Result<Vec<PackageScript>> {
             return Err("package.json scripts 名称或命令无效".into());
         }
         // 脚本名作为 shell 数据安全引用，发现脚本时绝不执行内容。
-        let quoted = format!("'{}'", name.replace('\'', "'\\''"));
+        let quoted = if cfg!(windows) {
+            format!("'{}'", name.replace('\'', "''"))
+        } else {
+            format!("'{}'", name.replace('\'', "'\\''"))
+        };
+        // Windows 使用工具官方 .cmd 入口，不依赖 PowerShell 脚本执行策略。
+        let manager = if cfg!(windows) {
+            format!("{manager}.cmd")
+        } else {
+            manager.to_owned()
+        };
         result.push(PackageScript {
             name: name.clone(),
             command: format!("{manager} run {quoted}"),
@@ -118,29 +131,33 @@ fn write_backup(path: String, config: AppConfig) -> Result<()> {
 fn path_open_command(path: &Path) -> Result<Command> {
     let resolved = fs::canonicalize(path)
         .map_err(|e| format!("路径不存在或无法访问（{}）: {e}", path.display()))?;
-    let mut command = Command::new("/usr/bin/open");
-    // 产物文件应在 Finder 中选中，避免启动 WGT/APK 的关联应用。
-    if resolved.is_file() {
-        command.arg("-R");
-    }
-    command.arg(resolved);
-    Ok(command)
+    // 产物文件只在文件管理器中选中，目录正常打开，不启动产物的关联应用。
+    system_tools::open_command(&resolved, resolved.is_file(), std::env::consts::OS)
 }
 #[tauri::command]
 async fn open_path(path: String) -> Result<()> {
-    tasks::mac_only()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let output = path_open_command(Path::new(&path))?
-            .output()
-            .map_err(|e| e.to_string())?;
-        if output.status.success() {
+        let mut command = path_open_command(Path::new(&path))?;
+        #[cfg(windows)]
+        {
+            // Explorer 可能复用已有进程，启动成功后无需等待其退出码。
+            command
+                .spawn()
+                .map_err(|e| format!("无法打开资源管理器: {e}"))?;
             Ok(())
-        } else {
-            Err(format!(
-                "打开目录或定位文件失败: {} {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))
+        }
+        #[cfg(not(windows))]
+        {
+            let output = command.output().map_err(|e| e.to_string())?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "打开目录或定位文件失败: {} {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
+            }
         }
     })
     .await
@@ -152,7 +169,21 @@ fn detect_node_versions() -> Vec<nvm::NodeVersion> {
 }
 #[tauri::command]
 fn detect_tools() -> Result<Tools> {
-    tasks::mac_only()?;
+    #[cfg(windows)]
+    {
+        Ok(system_tools::windows_tools())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        detect_macos_tools()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        Err("当前系统暂不支持自动检测开发工具".into())
+    }
+}
+#[cfg(target_os = "macos")]
+fn detect_macos_tools() -> Result<Tools> {
     let home = std::env::var("HOME").unwrap_or_default();
     let mut terminals = vec![];
     for (name, path) in [
@@ -493,6 +524,7 @@ mod package_tests {
         fs::write(&path, serde_json::to_string(&config).unwrap()).unwrap();
         assert!(read_backup(path).unwrap_err().contains("theme"));
     }
+    #[cfg(target_os = "macos")]
     #[test]
     fn artifacts_are_revealed_in_finder_instead_of_launched() {
         let dir = tempfile::tempdir().unwrap();
@@ -511,6 +543,7 @@ mod package_tests {
             );
         }
     }
+    #[cfg(target_os = "macos")]
     #[test]
     fn project_directories_are_opened_normally() {
         let dir = tempfile::tempdir().unwrap();
@@ -537,8 +570,13 @@ mod package_tests {
         .unwrap();
         fs::write(dir.path().join("pnpm-lock.yaml"), "lockfileVersion: 9").unwrap();
         let scripts = package_scripts(dir.path()).unwrap();
-        assert_eq!(scripts[0].command, "pnpm run 'build'");
-        assert_eq!(scripts[1].command, "pnpm run 'odd'\\'' name'");
+        if cfg!(windows) {
+            assert_eq!(scripts[0].command, "pnpm.cmd run 'build'");
+            assert_eq!(scripts[1].command, "pnpm.cmd run 'odd'' name'");
+        } else {
+            assert_eq!(scripts[0].command, "pnpm run 'build'");
+            assert_eq!(scripts[1].command, "pnpm run 'odd'\\'' name'");
+        }
         fs::write(
             dir.path().join("package.json"),
             r#"{"scripts":{"build":false}}"#,

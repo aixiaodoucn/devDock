@@ -28,6 +28,14 @@
   "bundle": {
     "active": true,
     "macOS": { "infoPlist": "Info.plist" },
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true
+      }
+    },
     "targets": "all",
     "resources": { "../scripts/": "scripts/" },
     "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"]

@@ -127,15 +127,22 @@ impl Default for AppConfig {
             schema_version: 1,
             projects: vec![],
             settings: Settings {
-                terminal: "Terminal".into(),
+                terminal: if cfg!(windows) {
+                    "PowerShell"
+                } else {
+                    "Terminal"
+                }
+                .into(),
                 ..Default::default()
             },
         }
     }
 }
 fn terminal(t: &str) -> Result<()> {
-    if !t.is_empty() && t != "Terminal" && !Path::new(t).is_absolute() {
-        return Err("终端必须是 Terminal 或应用绝对路径".into());
+    if !["", "Terminal", "WindowsTerminal", "PowerShell"].contains(&t)
+        && !crate::paths::is_absolute(t)
+    {
+        return Err("终端必须是 Terminal、WindowsTerminal、PowerShell 或应用绝对路径".into());
     }
     Ok(())
 }
@@ -210,12 +217,12 @@ impl AppConfig {
                 return Err("项目 id/name 为空或 id 重复".into());
             }
             if !["uniapp", "nodejs", "backend"].contains(&p.project_type.as_str())
-                || !Path::new(&p.path).is_absolute()
+                || !crate::paths::is_absolute(&p.path)
             {
                 return Err("项目类型或绝对路径无效".into());
             }
-            // components 去除尾斜杠与多余分隔符，不要求备份中的目录当前存在。
-            let normalized: PathBuf = Path::new(&p.path).components().collect();
+            // 按来源平台比较路径，不要求备份中的目录在当前宿主存在。
+            let normalized = crate::paths::key(&p.path);
             if !paths.insert(normalized) {
                 return Err("项目目录重复".into());
             }
@@ -286,7 +293,11 @@ pub fn atomic_write(path: &Path, data: &str) -> Result<()> {
         if let Some(permissions) = permissions {
             std::fs::set_permissions(&temp, permissions).map_err(|e| e.to_string())?;
         }
-        std::fs::rename(&temp, path).map_err(|e| e.to_string())?;
+        // Windows 替换前关闭写入句柄；rename 失败（如目标被占用）时保留原文件，
+        // 不使用先删除目标再重命名的非原子回退。
+        drop(f);
+        std::fs::rename(&temp, path)
+            .map_err(|e| format!("无法原子替换 {}: {e}", path.display()))?;
         #[cfg(unix)]
         std::fs::File::open(parent)
             .and_then(|f| f.sync_all())
@@ -294,6 +305,15 @@ pub fn atomic_write(path: &Path, data: &str) -> Result<()> {
         Ok(())
     })();
     if result.is_err() {
+        // Windows 无法删除继承了只读属性的临时文件；只解除临时副本的只读位。
+        #[cfg(windows)]
+        if let Ok(metadata) = std::fs::metadata(&temp) {
+            let mut permissions = metadata.permissions();
+            if permissions.readonly() {
+                permissions.set_readonly(false);
+                let _ = std::fs::set_permissions(&temp, permissions);
+            }
+        }
         let _ = std::fs::remove_file(temp);
     }
     result
@@ -332,7 +352,7 @@ pub fn migrate_legacy(old_dir: &Path, new_dir: &Path) -> Result<Option<std::fs::
             let data = fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
             let record: crate::manifest::Recovery = serde_json::from_str(&data)
                 .map_err(|e| format!("旧版恢复记录无效，未迁移: {e}"))?;
-            if !Path::new(&record.path).is_absolute() {
+            if !crate::paths::is_absolute(&record.path) {
                 return Err("旧版恢复记录路径无效，未迁移".into());
             }
             let target = new_dir.join("pending").join(entry.file_name());
@@ -355,6 +375,19 @@ pub fn migrate_legacy(old_dir: &Path, new_dir: &Path) -> Result<Option<std::fs::
 pub fn manifest_path(p: &Project) -> Result<PathBuf> {
     let root = Path::new(&p.path);
     let explicit = Path::new(&p.manifest_path);
+    // 可导入的跨平台路径不能直接用于宿主 I/O，也不能被拼接成相对路径。
+    if !crate::paths::is_absolute(&p.path) || !root.is_absolute() {
+        return Err("项目路径不是当前系统可用的绝对路径".into());
+    }
+    if p.manifest_path.contains('\0')
+        || (crate::paths::is_absolute(&p.manifest_path) && !explicit.is_absolute())
+        || (!p.manifest_path.is_empty()
+            && !explicit.is_absolute()
+            && (p.manifest_path.starts_with('\\')
+                || p.manifest_path.as_bytes().get(1) == Some(&b':')))
+    {
+        return Err("manifest 路径不适用于当前系统".into());
+    }
     let paths = if p.manifest_path.is_empty() {
         vec![root.join("manifest.json"), root.join("src/manifest.json")]
     } else {
@@ -373,6 +406,189 @@ pub fn manifest_path(p: &Project) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn portable_paths_terminals_and_duplicate_validation() {
+        for path in [
+            r"C:\项目 空格",
+            "C:/项目",
+            r"\\server\share\项目",
+            "/tmp/项目",
+        ] {
+            for terminal in [
+                "",
+                "Terminal",
+                "WindowsTerminal",
+                "PowerShell",
+                r"C:\Program Files\pwsh.exe",
+                "/bin/zsh",
+                r"\\server\share\terminal.exe",
+            ] {
+                let mut value = platform_fixture();
+                value["projects"][0]["path"] = path.into();
+                value["projects"][0]["terminal"] = terminal.into();
+                value["projects"][0]["nodeVersion"] = "v22.10.0".into();
+                value["projects"][0]["nvmDir"] = r"C:\nvm data".into();
+                value["settings"]["terminal"] = terminal.into();
+                let parsed = parse(&value.to_string()).unwrap();
+                assert_eq!(parsed.projects[0].path, path);
+                assert_eq!(parsed.settings.terminal, terminal);
+                parse(&serialize(&parsed).unwrap()).unwrap();
+            }
+        }
+        for invalid in [
+            "wt",
+            "cmd",
+            "unknown",
+            "C:relative",
+            r"\path",
+            "PowerShell\0",
+            "C:/bad\0",
+        ] {
+            for field in ["path", "terminal"] {
+                let mut value = platform_fixture();
+                value["projects"][0][field] = invalid.into();
+                assert!(parse(&value.to_string()).is_err(), "{field}: {invalid}");
+            }
+            let mut value = platform_fixture();
+            value["settings"]["terminal"] = invalid.into();
+            assert!(parse(&value.to_string()).is_err(), "{invalid}");
+        }
+        for (first, second, duplicate) in [
+            (r"C:\项目\Foo", "c:/项目/foo/", true),
+            (r"\\SERVER\Share\Project", "//server/share/project/", true),
+            ("/tmp/Project", "/tmp/project", false),
+            ("/tmp/Project", "/tmp//Project/./", true),
+        ] {
+            let mut value = platform_fixture();
+            value["projects"][0]["path"] = first.into();
+            let mut other = value["projects"][0].clone();
+            other["id"] = "other".into();
+            other["path"] = second.into();
+            value["projects"].as_array_mut().unwrap().push(other);
+            assert_eq!(
+                parse(&value.to_string()).is_err(),
+                duplicate,
+                "{first} / {second}"
+            );
+        }
+        assert_eq!(
+            AppConfig::default().settings.terminal,
+            if cfg!(windows) {
+                "PowerShell"
+            } else {
+                "Terminal"
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_rejects_foreign_paths_before_accessing_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut project = parse(&platform_fixture().to_string())
+            .unwrap()
+            .projects
+            .remove(0);
+        project.path = temp.path().to_string_lossy().into_owned();
+        std::fs::write(temp.path().join("manifest.json"), "{}").unwrap();
+        assert!(manifest_path(&project).unwrap().is_absolute());
+        for foreign in [
+            r"C:\project\manifest.json",
+            "C:/project/manifest.json",
+            r"\\server\share\manifest.json",
+            r"C:manifest.json",
+            r"\manifest.json",
+        ] {
+            project.manifest_path = foreign.into();
+            assert!(manifest_path(&project).unwrap_err().contains("当前系统"));
+        }
+        project.manifest_path.clear();
+        project.path = r"C:\project".into();
+        assert!(manifest_path(&project).unwrap_err().contains("当前系统"));
+    }
+
+    #[test]
+    fn recovery_migration_accepts_portable_paths_and_rejects_invalid_paths() {
+        for path in [
+            r"C:\项目 空格\manifest.json",
+            r"\\server\share\manifest.json",
+            "/tmp/manifest.json",
+            "C:relative",
+            r"\path",
+            "C:/bad\0",
+        ] {
+            let old = tempfile::tempdir().unwrap();
+            let new = tempfile::tempdir().unwrap();
+            let record =
+                serde_json::json!({"path":path,"original":"old","temporary":"new"}).to_string();
+            atomic_write(
+                &old.path().join("config.json"),
+                &serialize(&AppConfig::default()).unwrap(),
+            )
+            .unwrap();
+            atomic_write(&old.path().join("pending/task.json"), &record).unwrap();
+            let migrated = migrate_legacy(old.path(), new.path());
+            assert_eq!(migrated.is_ok(), crate::paths::is_absolute(path), "{path}");
+            if migrated.is_ok() {
+                assert_eq!(
+                    std::fs::read_to_string(new.path().join("pending/task.json")).unwrap(),
+                    record
+                );
+            } else {
+                assert!(!new.path().join("config.json").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn atomic_replace_existing_file_and_clean_up_after_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        atomic_write(&path, "old").unwrap();
+        atomic_write(&path, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        let directory = temp.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(atomic_write(&directory, "replacement").is_err());
+        assert!(directory.is_dir());
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_replace_readonly_file_cleans_temporary_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("readonly.json");
+        std::fs::write(&path, "old").unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        assert!(atomic_write(&path, "new").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomic_replace_occupied_file_preserves_original() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("occupied.json");
+        std::fs::write(&path, "old").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        assert!(atomic_write(&path, "new").is_err());
+        drop(held);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
     fn platform_fixture() -> serde_json::Value {
         serde_json::json!({"schemaVersion":1,"projects":[{
             "id":"uni","name":"旧项目","type":"uniapp","path":"/tmp/platform-fixture",

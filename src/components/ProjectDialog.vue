@@ -5,6 +5,7 @@ import type { Project, Tools, Action, NodeVersion, UniappScript } from '../types
 import { PLATFORM_LABELS, normalizeProjectPlatforms } from '../types';
 import { api, desktop } from '../api';
 import PathInput from './PathInput.vue';
+import { isWindows, isAbsolutePath, pathKey } from '../platform';
 const props = defineProps<{
   project: Project;
   tools: Tools;
@@ -389,20 +390,20 @@ function submit() {
   error.value = '';
   const item = draft.value;
   item.name = item.name.trim();
-  item.path = item.path.trim().replace(/\/$/, '');
+  item.path = item.path.trim();
   if (!item.name || !item.path) {
     error.value = '请填写项目名称和目录。';
     tab.value = 'general';
     return;
   }
-  if (!item.path.startsWith('/')) {
+  if (!isAbsolutePath(item.path)) {
     error.value = '请填写完整的绝对路径。';
     tab.value = 'general';
     return;
   }
   if (
     props.existing.some(
-      (other) => other.id !== item.id && other.path.replace(/\/$/, '') === item.path,
+      (other) => other.id !== item.id && pathKey(other.path) === pathKey(item.path),
     )
   ) {
     error.value = '此目录已添加，请编辑已有项目。';
@@ -549,7 +550,11 @@ function submit() {
               已指定 {{ draft.nodeVersion }}。执行前会检查版本是否仍安装，缺少时停止运行。
             </p>
             <p v-else class="field-help">
-              选择版本后，执行命令前通过 nvm 启用。仅作用于本次终端，不改变默认版本。
+              {{
+                isWindows
+                  ? '选择版本后，仅在新终端会话中将该版本加入 PATH，不调用 nvm use，也不改变系统版本。'
+                  : '选择版本后，执行命令前通过 nvm 启用。仅作用于本次终端，不改变默认版本。'
+              }}
             </p>
             <p v-if="nodesLoaded && !nodeVersions.length" class="field-help">
               未发现已安装的 nvm Node.js 版本，可先使用终端默认版本。
@@ -684,6 +689,9 @@ function submit() {
           </p>
         </div>
         <div v-show="tab === 'actions'" class="form-stack">
+          <p v-if="isWindows && draft.type === 'uniapp'" class="field-help">
+            Windows 支持读取脚本并配置操作；HBuilderX 菜单执行和 App 构建暂不支持，可使用终端命令。
+          </p>
           <div class="section-heading">
             <div>
               <h3>项目操作</h3>
@@ -754,7 +762,7 @@ function submit() {
             <button
               type="button"
               class="button"
-              :disabled="loadingHbuilderMenus || !desktop"
+              :disabled="loadingHbuilderMenus || !desktop || isWindows"
               @click="loadHbuilderMenus"
             >
               <RefreshCw :size="15" :class="{ spinning: loadingHbuilderMenus }" />{{

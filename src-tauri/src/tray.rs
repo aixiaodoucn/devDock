@@ -223,9 +223,15 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "tray-open-main", "打开 DevDock", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "tray-quit", "退出 DevDock", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
+    // Windows 任务栏不应用 macOS 模板着色，使用彩色图标兼容深浅任务栏。
+    let icon: &[u8] = if cfg!(target_os = "macos") {
+        include_bytes!("../icons/tray-icon.png")
+    } else {
+        include_bytes!("../icons/icon.png")
+    };
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?)
-        .icon_as_template(true)
+        .icon(Image::from_bytes(icon)?)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("DevDock")
         .menu(&menu)
         .show_menu_on_left_click(false)

@@ -16,6 +16,7 @@ import { api, desktop } from './api';
 import { applyTheme } from './theme';
 import { stopMenuAction } from './actions';
 import { resolveAiTool } from './ai';
+import { isWindows } from './platform';
 import {
   defaultConfig,
   TYPE_LABELS,
@@ -337,7 +338,13 @@ onUnmounted(() => {
           <div v-for="action in projectActions(project)" :key="action.id" class="quick-action-line">
             <button
               class="quick-action"
-              :disabled="launching || loading || !desktop || !eventsReady"
+              :disabled="
+                launching ||
+                loading ||
+                !desktop ||
+                !eventsReady ||
+                (isWindows && action.kind === 'menu')
+              "
               :title="actionText(action)"
               :aria-label="`执行 ${project.name}：${action.name}`"
               @click="run(project, action)"
@@ -353,7 +360,7 @@ onUnmounted(() => {
             <button
               v-if="stopMenuAction(action)"
               class="icon-button quick-stop"
-              :disabled="launching || loading || !desktop || !eventsReady"
+              :disabled="launching || loading || !desktop || !eventsReady || isWindows"
               :aria-label="`停止 ${project.name}：${action.name}`"
               title="停止当前项目的运行任务"
               @click="runStop(project, action)"
