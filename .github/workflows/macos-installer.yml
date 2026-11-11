@@ -2,6 +2,7 @@ name: macOS Installer
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -31,6 +32,12 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
+
+      - name: 校验项目版本
+        run: node scripts/version.mjs check
+
+      - name: 测试版本同步工具
+        run: node --test scripts/test-version.mjs
 
       - name: 配置项目指定版本的 pnpm
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
@@ -92,4 +99,5 @@ jobs:
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg.sha256
           if-no-files-found: error
+          overwrite: true
           retention-days: 7

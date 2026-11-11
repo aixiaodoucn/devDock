@@ -26,6 +26,40 @@ pnpm tauri build                 # 构建本机架构的 macOS 应用与 DMG
 
 macOS 构建结果位于 `src-tauri/target/release/bundle/`。对外分发前需自行配置 Apple Developer 签名与公证。Windows 安装包需要在 Windows 构建和验证，步骤见下方。Windows 支持基础工作台及终端执行，HBuilderX 菜单自动化和 APK/WGT 构建入口暂不可执行。
 
+## 版本管理与 Release 发布
+
+`.github/workflows/release.yml` 的 **Release Draft** 工作流负责准备发布：推送 `v版本号` Tag 后，先校验版本，再并行构建 Windows x64 EXE 和 macOS 通用版 DMG；两边都成功且 SHA256 校验通过后，将原始文件上传至 GitHub Release 草稿，**不会自动公开**。维护者在 **Releases** 检查草稿的 Assets 后，手动点击 **Publish release**。公开后用户可直接下载 `.exe` / `.dmg`，无需解压 Artifacts ZIP。
+
+发布版本是 DevDock 自身版本，与业务项目的 APK/WGT 版本无关。同步工具同时维护以下四处，只替换应用版本，不更新依赖：
+
+- `package.json` 的 `version`。
+- `src-tauri/tauri.conf.json` 的 `version`。
+- `src-tauri/Cargo.toml` 的 `[package].version`。
+- `src-tauri/Cargo.lock` 中 `dev-dock` 根包版本。
+
+例如准备发布 `0.2.0`：
+
+```sh
+pnpm version:set 0.2.0
+pnpm version:check
+git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+git commit -m "chore(release): 发布 0.2.0" -m "Zs use ai commit"
+git tag v0.2.0
+```
+
+确认提交与 Tag 后，手动推送到 GitHub。以下示例使用本地已配置的 `github` 远程名，其他克隆需替换为实际 GitHub 远程名（通常为 `origin`）：
+
+```sh
+git push github master
+git push github v0.2.0
+```
+
+版本必须一致：Tag 为 `v0.2.0`，项目四处版本都应是 `0.2.0`；不匹配时在构建前失败。工具支持 `0.2.0-beta.1` 等预发布版本，Release 自动标记为预发布；不支持 build metadata。应用侧栏版本同样读取 `package.json`，不再写死。
+
+发布工作流仅草稿上传步骤申请仓库内容写权限，使用 GitHub 自动提供的 `GITHUB_TOKEN`，无需个人访问令牌。已公开的同版本 Release 会拒绝覆盖；上传失败留下的草稿可通过重跑失败任务继续补齐附件，最终公开始终由维护者手动完成。修复源代码需要新的版本提交和 Tag，不应强制移动已发布 Tag。
+
+`pnpm test:version` 验证同步与标签校验，`pnpm test:release` 使用 CLI 替身验证发布保护，不会访问 GitHub 或创建真实 Release。两个独立手动打包工作流继续提供 Artifacts ZIP，适合验证构建；要直接下载安装包，应使用本节的 Tag 发布流程。
+
 ## macOS 通用版打包
 
 `.github/workflows/macos-installer.yml` 提供手动触发的 **macOS Installer** 工作流，使用 `macos-latest` runner，生成同时支持 Intel 和 Apple Silicon 的 Universal `.dmg` 安装包。

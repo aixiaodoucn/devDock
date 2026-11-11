@@ -9,6 +9,10 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
+    "test:version": "node --test scripts/test-version.mjs",
+    "test:release": "node --test scripts/test-release.mjs",
+    "version:set": "node scripts/version.mjs set",
+    "version:check": "node scripts/version.mjs check",
     "format": "prettier --write src index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/capabilities/main.json",
     "format:check": "prettier --check src index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/capabilities/main.json",
     "tauri": "tauri"
