@@ -1,12 +1,29 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { History } from 'lucide-vue-next';
 import { api, desktop } from '../api';
 import type { BuildRecord } from '../types';
 
 const props = defineProps<{ projectId: string }>();
+const DISPLAY_LIMIT_KEY = 'dev-dock-history-display-limit';
+const DISPLAY_LIMIT_OPTIONS = [10, 20, 50, 100];
+const DEFAULT_DISPLAY_LIMIT = 20;
+function readDisplayLimit() {
+  try {
+    const saved = localStorage.getItem(DISPLAY_LIMIT_KEY);
+    return (
+      DISPLAY_LIMIT_OPTIONS.find((option) => String(option) === saved) ?? DEFAULT_DISPLAY_LIMIT
+    );
+  } catch {
+    return DEFAULT_DISPLAY_LIMIT;
+  }
+}
+const limit = ref(readDisplayLimit());
+const preferenceError = ref('');
 const records = ref<BuildRecord[]>([]);
+// 展示偏好仅截断前端列表，不改变历史记录及后端保留规则。
+const visibleRecords = computed(() => records.value.slice(0, limit.value));
 const loading = ref(false);
 const deleting = ref(false);
 const opening = ref<string | null>(null);
@@ -110,6 +127,19 @@ async function openArtifact(path: string, exists: boolean) {
     if (current(request)) opening.value = null;
   }
 }
+watch(limit, (value) => {
+  preferenceError.value = '';
+  try {
+    localStorage.setItem(DISPLAY_LIMIT_KEY, String(value));
+  } catch {
+    preferenceError.value = '本机展示偏好未保存，本次设置已生效；重新打开后可能恢复默认。';
+  }
+});
+watch(visibleRecords, (visible) => {
+  // 条目被展示上限或刷新结果隐藏后，清理详情及移除确认，避免再次出现残留状态。
+  if (!visible.some((record) => record.id === expanded.value)) expanded.value = null;
+  if (!visible.some((record) => record.id === confirming.value)) confirming.value = null;
+});
 watch(
   () => props.projectId,
   () => {
@@ -145,11 +175,27 @@ onUnmounted(() => {
 <template>
   <section class="build-history" aria-label="构建历史" :aria-busy="loading || deleting">
     <header>
-      <h3><History :size="16" aria-hidden="true" />构建历史</h3>
-      <button class="button small" :disabled="!desktop || loading || deleting" @click="refresh">
-        {{ loading ? '读取中…' : '刷新' }}
-      </button>
+      <div class="history-heading">
+        <h3><History :size="16" aria-hidden="true" />构建历史</h3>
+        <span class="history-muted"
+          >显示 {{ visibleRecords.length }} / 共 {{ records.length }} 条</span
+        >
+      </div>
+      <div class="history-controls">
+        <label class="history-limit">
+          最多显示
+          <select v-model.number="limit" aria-label="最多显示">
+            <option v-for="option in DISPLAY_LIMIT_OPTIONS" :key="option" :value="option">
+              {{ option }}条
+            </option>
+          </select>
+        </label>
+        <button class="button small" :disabled="!desktop || loading || deleting" @click="refresh">
+          {{ loading ? '读取中…' : '刷新' }}
+        </button>
+      </div>
     </header>
+    <p v-if="preferenceError" class="history-error" role="status">{{ preferenceError }}</p>
     <p v-if="!desktop" class="history-muted" role="status">
       请在桌面应用中查看本机构建历史，浏览器预览无法读取历史记录。
     </p>
@@ -159,7 +205,7 @@ onUnmounted(() => {
         {{ loading ? '正在读取构建历史…' : error ? '暂时无法读取历史记录' : '暂无构建历史' }}
       </p>
       <ul v-else>
-        <li v-for="record in records" :key="record.id">
+        <li v-for="record in visibleRecords" :key="record.id">
           <button
             class="history-row"
             :aria-expanded="expanded === record.id"
@@ -238,14 +284,38 @@ onUnmounted(() => {
   font-size: 12px;
 }
 header,
-h3 {
+h3,
+.history-heading,
+.history-controls,
+.history-limit {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 header {
+  flex-wrap: wrap;
   justify-content: space-between;
   margin-bottom: 12px;
+}
+.history-heading,
+.history-controls {
+  flex-wrap: wrap;
+}
+.history-limit {
+  flex-direction: row;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.history-limit select {
+  width: 88px;
+  height: var(--control-height-small);
+  min-height: var(--control-height-small);
+  padding: 4px 28px 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background-color: var(--paper);
+  color: var(--ink);
+  font: inherit;
 }
 h3 {
   color: var(--ink);

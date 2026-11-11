@@ -28,6 +28,8 @@ import {
   Palette,
   CircleHelp,
   Activity,
+  ArrowLeft,
+  History,
 } from 'lucide-vue-next';
 import ProjectDialog from './components/ProjectDialog.vue';
 import GitBranch from './components/GitBranch.vue';
@@ -68,7 +70,7 @@ import type {
 const sidebar = useSidebarResize();
 const config = ref<AppConfig>(defaultConfig());
 const selectedId = ref('');
-const page = ref<'project' | 'settings' | 'help'>('project');
+const page = ref<'project' | 'settings' | 'help' | 'history'>('project');
 const search = ref('');
 const selectedPlatform = ref('app');
 const editing = ref<Project | null>(null);
@@ -591,7 +593,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
           :key="item.id"
           :class="[
             'project-item',
-            { active: selectedId === item.id && page === 'project' },
+            { active: selectedId === item.id && (page === 'project' || page === 'history') },
             { dragging: draggingProjectId === item.id },
           ]"
           draggable="true"
@@ -614,7 +616,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
             class="running-dot"
           ></span
           ><ChevronRight
-            v-else-if="selectedId === item.id && page === 'project'"
+            v-else-if="selectedId === item.id && (page === 'project' || page === 'history')"
             :size="14"
             class="project-chevron"
           />
@@ -667,6 +669,9 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
                 ? '偏好设置'
                 : project?.name || '概览'
           }}</strong>
+          <template v-if="page === 'history'">
+            <ChevronRight :size="13" /><strong>构建历史</strong>
+          </template>
         </div>
         <div class="topbar-right">
           <button
@@ -734,6 +739,18 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         @import="importBackup"
         @error="fail"
       />
+      <section v-else-if="page === 'history' && project" class="project-page history-page">
+        <div class="page-heading">
+          <div>
+            <h1>构建历史<span class="heading-dot">.</span></h1>
+            <p>{{ project.name }} · 查看构建结果与产物</p>
+          </div>
+          <button class="button" @click="page = 'project'">
+            <ArrowLeft :size="15" />返回构建配置
+          </button>
+        </div>
+        <BuildHistory :key="project.id" :project-id="project.id" />
+      </section>
       <div v-else-if="!project" class="welcome-page">
         <div class="welcome-kicker">
           <span class="tiny-line"></span>YOUR LOCAL DEVELOPMENT SPACE
@@ -873,7 +890,9 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
                   <h2>构建配置</h2>
                   <p>选择目标与版本，在本机完成构建。</p>
                 </div>
-                <Package :size="22" class="muted-icon" />
+                <button class="button small" @click="page = 'history'">
+                  <History :size="15" />构建历史
+                </button>
               </div>
               <span class="field-label">构建目标</span>
               <div class="build-targets">
@@ -996,7 +1015,6 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
               </div>
             </aside>
           </div>
-          <BuildHistory :key="project.id" :project-id="project.id" />
         </template>
         <section v-else-if="project.type === 'backend'" class="panel backend-placeholder">
           <Cpu :size="32" />

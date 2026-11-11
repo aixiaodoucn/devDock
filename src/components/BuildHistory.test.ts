@@ -83,8 +83,18 @@ async function mount() {
     },
   };
 }
+async function selectLimit(root: HTMLElement, limit: number) {
+  const select = root.querySelector('select');
+  expect(select).not.toBeNull();
+  select!.value = String(limit);
+  select!.dispatchEvent(new Event('change', { bubbles: true }));
+  await flush();
+}
+const DISPLAY_LIMIT_KEY = 'dev-dock-history-display-limit';
+const manyRecords = () => Array.from({ length: 65 }, (_, index) => record(`record-${index}`));
 beforeEach(() => {
   vi.resetAllMocks();
+  localStorage.clear();
   mocks.desktop = true;
   mocks.history.mockResolvedValue([record()]);
   mocks.remove.mockResolvedValue(undefined);
@@ -94,8 +104,114 @@ beforeEach(() => {
     return unlisten;
   });
 });
-afterEach(() => disposers.splice(0).forEach((dispose) => dispose()));
+afterEach(() => {
+  disposers.splice(0).forEach((dispose) => dispose());
+  vi.restoreAllMocks();
+});
 describe('构建历史', () => {
+  it('默认最多显示20条并显示当前与总数，切换立即生效且不删除历史', async () => {
+    mocks.history.mockResolvedValue(manyRecords());
+    const panel = await mount();
+    const select = panel.root.querySelector('select');
+    expect(select?.getAttribute('aria-label')).toBe('最多显示');
+    expect([...panel.root.querySelectorAll('option')].map((option) => option.value)).toEqual([
+      '10',
+      '20',
+      '50',
+      '100',
+    ]);
+    expect(select?.value).toBe('20');
+    expect(panel.root.querySelectorAll('.history-row')).toHaveLength(20);
+    expect(panel.root.textContent).toContain('显示 20 / 共 65 条');
+    for (const limit of [10, 50, 100]) {
+      await selectLimit(panel.root, limit);
+      expect(panel.root.querySelectorAll('.history-row')).toHaveLength(Math.min(limit, 65));
+      expect(panel.root.textContent).toContain(`显示 ${Math.min(limit, 65)} / 共 65 条`);
+    }
+    expect(mocks.history).toHaveBeenCalledOnce();
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+  it('展示偏好跨刷新、项目切换和重挂载保留', async () => {
+    mocks.history.mockResolvedValue(manyRecords());
+    const panel = await mount();
+    await selectLimit(panel.root, 10);
+    expect(localStorage.getItem(DISPLAY_LIMIT_KEY)).toBe('10');
+    panel.button('刷新').click();
+    await flush();
+    expect(panel.root.querySelectorAll('.history-row')).toHaveLength(10);
+    panel.projectId.value = 'two';
+    await flush();
+    expect(panel.root.querySelector('select')?.value).toBe('10');
+    expect(panel.root.querySelectorAll('.history-row')).toHaveLength(10);
+    panel.dispose();
+    const remounted = await mount();
+    expect(remounted.root.querySelector('select')?.value).toBe('10');
+    expect(remounted.root.querySelectorAll('.history-row')).toHaveLength(10);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+  it.each(['garbage', '0', '-10', '21', '20.5', 'null', ''])(
+    '无效存储值 %j 安全回退20条',
+    async (value) => {
+      localStorage.setItem(DISPLAY_LIMIT_KEY, value);
+      mocks.history.mockResolvedValue(manyRecords());
+      const panel = await mount();
+      expect(panel.root.querySelector('select')?.value).toBe('20');
+      expect(panel.root.querySelectorAll('.history-row')).toHaveLength(20);
+    },
+  );
+  it('存储读取异常回退20条，写入失败仍调整显示且不影响加载和移除', async () => {
+    vi.spyOn(localStorage, 'getItem').mockImplementation(() => {
+      throw new Error('storage blocked');
+    });
+    vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new Error('storage blocked');
+    });
+    mocks.history.mockResolvedValue(manyRecords());
+    const panel = await mount();
+    expect(panel.root.querySelectorAll('.history-row')).toHaveLength(20);
+    await selectLimit(panel.root, 10);
+    expect(panel.root.querySelectorAll('.history-row')).toHaveLength(10);
+    expect(panel.root.textContent).toContain('本机展示偏好未保存');
+    expect(panel.root.textContent).toContain('本次设置已生效');
+    expect(mocks.remove).not.toHaveBeenCalled();
+    panel.button('刷新').click();
+    await flush();
+    expect(panel.root.querySelectorAll('.history-row')).toHaveLength(10);
+    panel.button('详情').click();
+    await flush();
+    panel.button('移除记录').click();
+    await flush();
+    panel.button('确认移除').click();
+    await flush();
+    expect(mocks.remove).toHaveBeenCalledExactlyOnceWith('one', 'record-0');
+    expect(panel.root.textContent).toContain('显示 10 / 共 64 条');
+  });
+  it('缩小上限清除隐藏条目的展开与确认状态', async () => {
+    mocks.history.mockResolvedValue(manyRecords());
+    const panel = await mount();
+    panel.root.querySelectorAll<HTMLButtonElement>('.history-row')[15]!.click();
+    await flush();
+    panel.button('移除记录').click();
+    await flush();
+    expect(panel.root.querySelector('.history-confirm')).not.toBeNull();
+    await selectLimit(panel.root, 10);
+    await selectLimit(panel.root, 20);
+    expect(panel.root.querySelector('.history-details')).toBeNull();
+    panel.root.querySelectorAll<HTMLButtonElement>('.history-row')[15]!.click();
+    await flush();
+    expect(panel.root.querySelector('.history-confirm')).toBeNull();
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+  it('浏览器预览可保存展示偏好但不访问原生历史', async () => {
+    mocks.desktop = false;
+    const panel = await mount();
+    await selectLimit(panel.root, 50);
+    expect(localStorage.getItem(DISPLAY_LIMIT_KEY)).toBe('50');
+    expect(panel.root.textContent).toContain('浏览器预览无法读取历史记录');
+    expect(mocks.history).not.toHaveBeenCalled();
+    expect(mocks.listen).not.toHaveBeenCalled();
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
   it('显示版本、平台、分支、时间耗时及所有历史状态，空态可刷新', async () => {
     mocks.history.mockResolvedValue(
       ['running', 'success', 'error', 'cancelled', 'interrupted'].map((status) =>

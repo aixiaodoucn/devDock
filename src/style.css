@@ -655,6 +655,14 @@ button {
   font-size: 26px;
   line-height: 1.2;
 }
+.history-page .page-heading p {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.history-page .build-history {
+  margin-top: 0;
+}
 /* 项目名、类型与分支合并为一行，减少首屏元信息占用。 */
 .project-heading-line {
   display: flex;
