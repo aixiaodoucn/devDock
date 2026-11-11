@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 pub const RUNNING_MARKER: &str = "__DEVDOCK_HX_ALREADY_RUNNING__:";
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Default, PartialEq)]
 struct Metadata {
     input: String,
@@ -11,6 +12,7 @@ struct Metadata {
     script: String,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_process(bytes: &[u8], bundle: &Path) -> Option<Metadata> {
     let argc = i32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?);
     if !(1..=1024).contains(&argc) || bytes.last() != Some(&0) {
@@ -69,6 +71,7 @@ pub struct Owner {
     pub command: String,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn resolve_owner(metadata: &[Metadata], label: &str) -> Option<Owner> {
     let mut owners = std::collections::HashMap::new();
     for item in metadata {
@@ -287,6 +290,7 @@ mod tests {
         bytes
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "显式传入期望目录，只读验证当前 HX 运行进程，不启动项目"]
     fn live_read_only_owner_probe() {
@@ -406,8 +410,9 @@ mod tests {
 
     #[test]
     fn builtin_weixin_requires_live_platform_and_real_directory_suffix() {
+        let dir = tempfile::tempdir().unwrap();
         let metadata = vec![Metadata {
-            input: "/tmp/real-project".into(),
+            input: dir.path().join("real-project").to_string_lossy().into(),
             script: String::new(),
             platform: "mp-weixin".into(),
         }];
@@ -422,6 +427,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("real");
         std::fs::create_dir(&root).unwrap();
+        #[cfg(unix)]
         let alias = dir.path().join("alias");
         #[cfg(unix)]
         std::os::unix::fs::symlink(&root, &alias).unwrap();

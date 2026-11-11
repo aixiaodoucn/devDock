@@ -1,7 +1,9 @@
+#[cfg(not(windows))]
+use crate::nvm;
 use crate::{
     accessibility::{self, PermissionPrompt},
     config::{self, Action, AppConfig, Project, Result, Settings},
-    hbuilder_owner, manifest, nvm,
+    hbuilder_owner, manifest,
 };
 use serde::Serialize;
 use std::{

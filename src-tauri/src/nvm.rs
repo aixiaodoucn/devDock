@@ -1,4 +1,6 @@
-use crate::config::{Action, Project, Result};
+#[cfg(any(not(windows), test))]
+use crate::config::Action;
+use crate::config::{Project, Result};
 use serde::Serialize;
 use std::{
     collections::HashSet,
@@ -6,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(any(not(windows), test))]
 const NVM_SCRIPTS: [&str; 2] = ["/opt/homebrew/opt/nvm/nvm.sh", "/usr/local/opt/nvm/nvm.sh"];
 
 #[derive(Debug, Serialize)]
@@ -16,6 +19,7 @@ pub struct NodeVersion {
     pub nvm_dir: String,
 }
 
+#[cfg(any(not(windows), test))]
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -82,6 +86,7 @@ fn executable(path: &Path) -> bool {
     false
 }
 
+#[cfg(any(not(windows), test))]
 fn candidate_roots(
     nvm_dir: Option<PathBuf>,
     home: Option<PathBuf>,
@@ -248,6 +253,7 @@ pub fn windows_node_bin(project: &Project) -> Result<Option<PathBuf>> {
     ))
 }
 
+#[cfg(not(windows))]
 fn scan(roots: Vec<PathBuf>) -> Vec<NodeVersion> {
     let mut found = vec![];
     let mut seen = HashSet::new();
@@ -409,6 +415,7 @@ pub fn validate_env_vars(text: &str) -> Result<()> {
     parse_env_vars(text).map(|_| ())
 }
 
+#[cfg(any(not(windows), test))]
 fn env_prefix(text: &str) -> Result<String> {
     let vars = parse_env_vars(text)?;
     Ok(vars
@@ -418,6 +425,7 @@ fn env_prefix(text: &str) -> Result<String> {
         .join("; "))
 }
 
+#[cfg(any(not(windows), test))]
 pub fn command_for(project: &Project, action: &Action) -> Result<String> {
     if action.kind != "shell" {
         return Ok(action.command.clone());
@@ -441,6 +449,7 @@ pub fn command_for(project: &Project, action: &Action) -> Result<String> {
     })
 }
 
+#[cfg(any(not(windows), test))]
 fn activation(dir: &str, version: &str, command: &str, scripts: &[PathBuf]) -> Result<String> {
     validate_selection(version, dir)?;
     if version.is_empty() {
@@ -474,6 +483,39 @@ fn activation(dir: &str, version: &str, command: &str, scripts: &[PathBuf]) -> R
         "test -x {} && test -r {} && export NVM_DIR={} && source {} --no-use && nvm use --silent {} && eval {}",
         quote(node), quote(script), quote(dir), quote(script), quote(version), quote(command),
     ))
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+
+    #[test]
+    fn unix_candidates_use_host_absolute_paths_and_preserve_priority() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let xdg = temp.path().join("xdg");
+        let custom = temp.path().join("custom nvm");
+        assert_eq!(
+            candidate_roots(Some(custom.clone()), Some(home.clone()), Some(xdg.clone())),
+            [
+                custom,
+                home.join(".nvm"),
+                home.join(".config/nvm"),
+                xdg.join("nvm")
+            ]
+        );
+        assert!(candidate_roots(Some("relative".into()), None, None).is_empty());
+    }
+
+    #[test]
+    fn shell_environment_quotes_values_without_executing_them() {
+        assert_eq!(quote("a'b;$(false)"), "'a'\\''b;$(false)'");
+        assert_eq!(
+            env_prefix("TOKEN=a'b;CONFIG=\"x;y\"").unwrap(),
+            "export TOKEN='a'\\''b'; export CONFIG='x;y'"
+        );
+        assert!(env_prefix("BAD NAME=value").is_err());
+    }
 }
 
 #[cfg(test)]
