@@ -1,6 +1,8 @@
 mod accessibility;
 mod ai;
+mod build_history;
 mod config;
+mod environment;
 mod git;
 mod hbuilder_owner;
 mod manifest;
@@ -116,6 +118,54 @@ async fn read_git_branch(path: String) -> Result<String> {
     tauri::async_runtime::spawn_blocking(move || git::read_branch(Path::new(&path)))
         .await
         .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn check_environment(
+    project: Project,
+    settings: Settings,
+) -> Result<environment::EnvironmentReport> {
+    tauri::async_runtime::spawn_blocking(move || environment::check(&project, &settings))
+        .await
+        .map_err(|error| format!("环境体检任务异常：{error}"))?
+}
+#[tauri::command]
+fn request_accessibility_permission(window: tauri::WebviewWindow) -> Result<bool> {
+    if window.label() != "main" {
+        return Err("请在 DevDock 主窗口请求辅助功能授权".into());
+    }
+    accessibility::request_authorization()
+}
+#[tauri::command]
+async fn list_build_history(
+    app: AppHandle,
+    project_id: String,
+) -> Result<Vec<build_history::BuildRecord>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<build_history::Store>()
+            .list(&tasks::data_dir(&app)?, Some(&project_id))
+    })
+    .await
+    .map_err(|error| format!("读取构建历史任务异常：{error}"))?
+}
+#[tauri::command]
+async fn delete_build_history(app: AppHandle, project_id: String, id: String) -> Result<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory = tasks::data_dir(&app)?;
+        let store = app.state::<build_history::Store>();
+        if !store
+            .list(&directory, Some(&project_id))?
+            .iter()
+            .any(|record| record.id == id)
+        {
+            return Err("当前项目中没有该构建记录".into());
+        }
+        // 仅移除元数据；实际构建产物始终保留。
+        store.delete(&directory, &id)?;
+        let _ = app.emit("build-history-updated", &project_id);
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("移除构建记录任务异常：{error}"))?
 }
 #[tauri::command]
 fn read_backup(path: String) -> Result<AppConfig> {
@@ -592,6 +642,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updater::UpdateState::default())
+        .manage(build_history::Store::default())
         .manage(tasks::Runtime::default())
         .manage(StartupLogs::default())
         .setup(|app| {
@@ -611,8 +662,17 @@ pub fn run() {
                 config::migrate_legacy(&old_dir, &dir).map_err(std::io::Error::other)?;
             // 同时持有新旧实例锁，迁移后的恢复与构建仍受跨版本互斥保护。
             app.manage((lock, legacy_lock));
-            let logs =
+            let mut logs =
                 tasks::recover(app.handle()).unwrap_or_else(|e| vec![format!("启动恢复失败: {e}")]);
+            // 历史恢复使用同一实例锁保护；历史损坏保留原文件，不阻止项目工作台启动。
+            let history = app.state::<build_history::Store>();
+            match history.load(&dir).and_then(|_| history.recover(&dir)) {
+                Ok(count) if count > 0 => {
+                    logs.push(format!("已将 {count} 条未结束的构建记录标记为中断"))
+                }
+                Err(error) => logs.push(format!("构建历史恢复失败：{error}")),
+                _ => {}
+            }
             *app.state::<StartupLogs>().0.lock().unwrap() = logs;
             // tray 初始化失败明确终止启动，避免主窗口隐藏后应用失联。
             tray::init(app.handle())?;
@@ -622,6 +682,10 @@ pub fn run() {
             updater::check_update,
             updater::download_update,
             updater::install_update,
+            check_environment,
+            request_accessibility_permission,
+            list_build_history,
+            delete_build_history,
             load_config,
             save_config,
             read_manifest,

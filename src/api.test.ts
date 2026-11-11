@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
 import { api } from './api';
 import { defaultConfig, newProject } from './types';
 
@@ -72,6 +73,19 @@ describe('DevDock 预览配置迁移', () => {
       path: '/local/node-app',
       commands: [],
     });
+  });
+
+  it('浏览器体检、授权和历史操作均拒绝调用原生接口', async () => {
+    vi.mocked(invoke).mockClear();
+    await expect(api.checkEnvironment(newProject(), defaultConfig().settings)).rejects.toThrow(
+      '浏览器预览',
+    );
+    await expect(api.requestAccessibilityPermission()).rejects.toThrow('浏览器预览');
+    await expect(api.buildHistory('example-project')).rejects.toThrow('浏览器预览');
+    await expect(api.deleteBuildHistory('example-project', 'example-record')).rejects.toThrow(
+      '浏览器预览',
+    );
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('无效旧数据不复制为新版配置', async () => {

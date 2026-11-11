@@ -27,6 +27,7 @@ import {
   Copy,
   Palette,
   CircleHelp,
+  Activity,
 } from 'lucide-vue-next';
 import ProjectDialog from './components/ProjectDialog.vue';
 import GitBranch from './components/GitBranch.vue';
@@ -34,6 +35,8 @@ import SettingsPage from './components/SettingsPage.vue';
 import HelpPage from './components/HelpPage.vue';
 import AiLauncher from './components/AiLauncher.vue';
 import AppUpdater from './components/AppUpdater.vue';
+import EnvironmentCheck from './components/EnvironmentCheck.vue';
+import BuildHistory from './components/BuildHistory.vue';
 import { api, desktop } from './api';
 import { applyTheme } from './theme';
 import { stopMenuAction } from './actions';
@@ -87,6 +90,7 @@ const manifest = ref<ManifestInfo | null>(null);
 const versionName = ref('');
 const versionCode = ref('');
 const buildMode = ref<BuildMode>('apk');
+const showEnvironment = ref(false);
 const showProjectMenu = ref(false);
 const draggingProjectId = ref('');
 let dragOrderBefore: string[] = [];
@@ -783,6 +787,14 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
             </button>
           </div>
           <div class="heading-actions">
+            <button
+              class="button"
+              :disabled="loading || loadFailed || saving"
+              title="只读检查项目目录、开发工具与构建配置"
+              @click="showEnvironment = true"
+            >
+              <Activity :size="15" />环境体检
+            </button>
             <button class="button" :disabled="busy" @click="editProject">
               <Pencil :size="15" />编辑项目
             </button>
@@ -984,6 +996,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
               </div>
             </aside>
           </div>
+          <BuildHistory :key="project.id" :project-id="project.id" />
         </template>
         <section v-else-if="project.type === 'backend'" class="panel backend-placeholder">
           <Cpu :size="32" />
@@ -1169,6 +1182,21 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         </footer>
       </section>
     </main>
+    <EnvironmentCheck
+      v-if="showEnvironment && project"
+      :key="project.id"
+      :project="project"
+      :settings="config.settings"
+      @close="showEnvironment = false"
+      @settings="
+        showEnvironment = false;
+        page = 'settings';
+      "
+      @edit="
+        showEnvironment = false;
+        editProject();
+      "
+    />
     <ProjectDialog
       v-if="editing"
       :project="editing"

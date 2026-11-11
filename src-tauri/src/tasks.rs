@@ -2,6 +2,7 @@
 use crate::nvm;
 use crate::{
     accessibility::{self, PermissionPrompt},
+    build_history::{self, BuildRecord, Store},
     config::{self, Action, AppConfig, Project, Result, Settings},
     hbuilder_owner, manifest,
 };
@@ -31,6 +32,7 @@ pub struct Control {
     cancel: AtomicBool,
     pid: Mutex<Option<u32>>,
     permission_prompt: Mutex<PermissionPrompt>,
+    history_running: AtomicBool,
     #[cfg(windows)]
     job: Mutex<Option<Arc<crate::windows_job::Job>>>,
 }
@@ -55,6 +57,11 @@ pub struct Task {
 }
 impl Task {
     pub fn emit(&self, kind: &str, message: &str, status: Option<&str>, path: Option<&Path>) {
+        if kind == "artifact" && self.control.history_running.load(Ordering::SeqCst) {
+            if let Some(path) = path {
+                self.history_update(|store, dir| store.artifact(dir, &self.id, path));
+            }
+        }
         let _ = self.app.emit(
             "task-event",
             Event {
@@ -66,6 +73,25 @@ impl Task {
                 path: path.map(|p| p.to_string_lossy().into_owned()),
             },
         );
+    }
+    fn history_update(&self, update: impl FnOnce(&Store, &Path) -> Result<()>) -> bool {
+        let result = data_dir(&self.app).and_then(|dir| update(&self.app.state::<Store>(), &dir));
+        match result {
+            Ok(()) => {
+                let _ = self.app.emit("build-history-updated", &self.project);
+                true
+            }
+            Err(error) => {
+                // 不在历史摘要或全局通知中输出可能包含敏感值的底层异常。
+                let message = if error.contains("损坏") || error.contains("记录无效") {
+                    "构建历史文件损坏，已保留原文件；本次记录无法保存，请先备份并修复应用数据目录中的 build-history.json"
+                } else {
+                    "构建历史读写失败，本次记录可能不完整；请检查应用数据目录中的 build-history.json 和写入权限"
+                };
+                self.emit("notice", message, None, None);
+                false
+            }
+        }
     }
     pub fn check(&self) -> Result<()> {
         if self.control.cancel.load(Ordering::SeqCst) {
@@ -320,6 +346,10 @@ fn spawn(
         };
         if task.control.cancel.load(Ordering::SeqCst) {
             task.emit("log", "已停止本应用管理的进程；HBuilderX 内部发行或已交给终端的命令无法保证撤回，请在对应应用确认", None, None);
+        }
+        // 历史必须先落盘再退表，退出等待任务表清空时才能保证收尾已完成。
+        if task.control.history_running.load(Ordering::SeqCst) {
+            task.history_update(|store, dir| store.finish(dir, &task.id, status));
         }
         let runtime = task.app.state::<Runtime>();
         if exclusive {
@@ -637,6 +667,24 @@ pub fn build(
     hbuilder(&settings)?;
     app_vue(&project)?;
     spawn(app, project.id.clone(), true, move |task| {
+        let record = BuildRecord {
+            id: task.id.clone(),
+            project_id: project.id.clone(),
+            project_name: project.name.clone(),
+            project_path: project.path.clone(),
+            mode: mode.clone(),
+            version_name: name.clone(),
+            version_code: code.clone(),
+            branch: crate::git::read_branch(Path::new(&project.path)).ok(),
+            started_at: build_history::now_ms(),
+            finished_at: None,
+            duration_ms: None,
+            status: "running".into(),
+            summary: String::new(),
+            artifacts: vec![],
+        };
+        let saved = task.history_update(|store, dir| store.start(dir, record));
+        task.control.history_running.store(saved, Ordering::SeqCst);
         build_inner(task, &project, &settings, &mode, &name, &code, &path)
     })
 }
@@ -694,101 +742,105 @@ fn build_inner(
         &journal,
         &serde_json::to_string(&record).map_err(|e| e.to_string())?,
     )?;
-    let result = (|| {
-        task.check()?;
-        config::atomic_write(path, &updated)?;
-        if p.sync_main_version {
-            sync_main(path.parent().unwrap().join("main.js"), name)?
-        }
-        task.emit(
-            "log",
-            "版本已写入源码；仅 AppID 会在任务结束后恢复",
-            None,
-            None,
-        );
-        let root = Path::new(&p.path);
-        if mode == "apk" {
-            let output = build_output_dir(root, &p.output_dir, mode);
-            let android = Path::new(&p.android_project_path);
-            let jdk = resolve_jdk(fallback(&p.jdk_path, &settings.jdk_path))?;
-            if !android.is_absolute() || !android.join("gradlew").is_file() {
-                return Err("请配置 Android 项目、Gradle wrapper 和 JDK".into());
-            }
-            if !regex::Regex::new(r"^[A-Za-z0-9_-]+$")
-                .unwrap()
-                .is_match(&p.android_module)
-            {
-                return Err("Android module 应为单一模块目录名".into());
-            }
-            sync_gradle(android.join(&p.android_module), name, code)?;
-            let resources = root.join("unpackage/resources").join(appid);
-            let before = snapshot(&resources, "");
-            let started = SystemTime::now();
-            task.command(menu_command(&scripts, p, settings, mode)?, 45)?;
-            let fresh_resources = wait_fresh(task, &resources, "", &before, started, 300)?;
-            let generated_manifest = resources.join("www/manifest.json");
-            if !fresh_resources.contains(&generated_manifest) {
-                return Err("本地资源 manifest.json 未更新，拒绝复制旧资源".into());
-            }
-            let generated: serde_json::Value = serde_json::from_str(
-                &fs::read_to_string(&generated_manifest).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| format!("生成资源 manifest 无效: {e}"))?;
-            if generated["id"].as_str() != Some(appid)
-                || generated["version"]["name"].as_str() != Some(name)
-            {
-                return Err("生成资源的 AppID/版本与目标不一致".into());
-            }
-            let apk_dir = android.join(&p.android_module).join("build/outputs/apk");
-            let before = snapshot(&apk_dir, "apk");
-            let started = SystemTime::now();
-            let gradle_task = if p.gradle_task.is_empty() {
-                "assembleRelease"
-            } else {
-                &p.gradle_task
-            };
-            let mut c = Command::new("/bin/bash");
-            c.arg(scripts.join("build.sh"))
-                .arg(&resources)
-                .arg(android)
-                .arg(&p.android_module)
-                .arg(jdk)
-                .arg(gradle_task)
-                .arg(appid);
-            task.command(c, 900)?;
-            let fresh = wait_fresh(task, &apk_dir, "apk", &before, started, 15)?;
-            for artifact in fresh {
-                publish_apk(task, &artifact, &output)?
-            }
-        } else {
-            let release = build_output_dir(root, &p.output_dir, mode);
-            let source = release.join(format!("{appid}.wgt"));
-            let before = snapshot(&release, "wgt");
-            let started = SystemTime::now();
-            task.command(menu_command(&scripts, p, settings, mode)?, 60)?;
-            let fresh = wait_fresh(task, &release, "wgt", &before, started, 300)?;
-            if !fresh.contains(&source) {
-                return Err("新 WGT 与当前 AppID 不一致".into());
-            }
-            verify_archive(task, &source)?;
+    let result = restore_after_build(
+        || {
             task.check()?;
-            let target = finalize_wgt(&source, name, mode == "wgt-ios")?;
-            task.emit("artifact", "已生成 WGT 产物", None, Some(&target));
-        }
-        task.check()?;
-        Ok("success")
-    })();
-    // 失败或取消也必须恢复 AppID；出现冲突或恢复失败时保留记录。
-    match manifest::restore(&record) {
-        Ok(log) => {
-            task.emit("log", &log, None, None);
-            fs::remove_file(journal).map_err(|e| e.to_string())?;
-        }
-        Err(e) => {
-            task.emit("log", &e, None, None);
-            return Err(format!("AppID 恢复未完成: {e}; 构建结果: {result:?}"));
-        }
-    }
+            config::atomic_write(path, &updated)?;
+            if p.sync_main_version {
+                sync_main(path.parent().unwrap().join("main.js"), name)?
+            }
+            task.emit(
+                "log",
+                "版本已写入源码；仅 AppID 会在任务结束后恢复",
+                None,
+                None,
+            );
+            let root = Path::new(&p.path);
+            if mode == "apk" {
+                let output = build_output_dir(root, &p.output_dir, mode);
+                let android = Path::new(&p.android_project_path);
+                let jdk = resolve_jdk(fallback(&p.jdk_path, &settings.jdk_path))?;
+                if !android.is_absolute() || !android.join("gradlew").is_file() {
+                    return Err("请配置 Android 项目、Gradle wrapper 和 JDK".into());
+                }
+                if !regex::Regex::new(r"^[A-Za-z0-9_-]+$")
+                    .unwrap()
+                    .is_match(&p.android_module)
+                {
+                    return Err("Android module 应为单一模块目录名".into());
+                }
+                sync_gradle(android.join(&p.android_module), name, code)?;
+                let resources = root.join("unpackage/resources").join(appid);
+                let before = snapshot(&resources, "");
+                let started = SystemTime::now();
+                task.command(menu_command(&scripts, p, settings, mode)?, 45)?;
+                let fresh_resources = wait_fresh(task, &resources, "", &before, started, 300)?;
+                let generated_manifest = resources.join("www/manifest.json");
+                if !fresh_resources.contains(&generated_manifest) {
+                    return Err("本地资源 manifest.json 未更新，拒绝复制旧资源".into());
+                }
+                let generated: serde_json::Value = serde_json::from_str(
+                    &fs::read_to_string(&generated_manifest).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| format!("生成资源 manifest 无效: {e}"))?;
+                if generated["id"].as_str() != Some(appid)
+                    || generated["version"]["name"].as_str() != Some(name)
+                {
+                    return Err("生成资源的 AppID/版本与目标不一致".into());
+                }
+                let apk_dir = android.join(&p.android_module).join("build/outputs/apk");
+                let before = snapshot(&apk_dir, "apk");
+                let started = SystemTime::now();
+                let gradle_task = if p.gradle_task.is_empty() {
+                    "assembleRelease"
+                } else {
+                    &p.gradle_task
+                };
+                let mut c = Command::new("/bin/bash");
+                c.arg(scripts.join("build.sh"))
+                    .arg(&resources)
+                    .arg(android)
+                    .arg(&p.android_module)
+                    .arg(jdk)
+                    .arg(gradle_task)
+                    .arg(appid);
+                task.command(c, 900)?;
+                let fresh = wait_fresh(task, &apk_dir, "apk", &before, started, 15)?;
+                for artifact in fresh {
+                    publish_apk(task, &artifact, &output)?
+                }
+            } else {
+                let release = build_output_dir(root, &p.output_dir, mode);
+                let source = release.join(format!("{appid}.wgt"));
+                let before = snapshot(&release, "wgt");
+                let started = SystemTime::now();
+                task.command(menu_command(&scripts, p, settings, mode)?, 60)?;
+                let fresh = wait_fresh(task, &release, "wgt", &before, started, 300)?;
+                if !fresh.contains(&source) {
+                    return Err("新 WGT 与当前 AppID 不一致".into());
+                }
+                verify_archive(task, &source)?;
+                task.check()?;
+                let target = finalize_wgt(&source, name, mode == "wgt-ios")?;
+                task.emit("artifact", "已生成 WGT 产物", None, Some(&target));
+            }
+            task.check()?;
+            Ok("success")
+        },
+        || {
+            // 失败、取消或 panic 都必须恢复 AppID；冲突及恢复失败仍保留恢复记录。
+            match manifest::restore(&record) {
+                Ok(log) => {
+                    task.emit("log", &log, None, None);
+                    fs::remove_file(journal).map_err(|e| e.to_string())
+                }
+                Err(e) => {
+                    task.emit("log", &e, None, None);
+                    Err(e)
+                }
+            }
+        },
+    );
     // 恢复完成后再次检查取消；打开目录失败只警告，不改变成功的构建结果。
     let result = result.and_then(|status| task.check().map(|_| status));
     finish_build(
@@ -815,6 +867,16 @@ fn build_output_dir(root: &Path, configured: &str, mode: &str) -> PathBuf {
         // join 对绝对路径直接使用该路径，相对路径则以项目目录为基准。
         root.join(configured)
     }
+}
+fn restore_after_build(
+    work: impl FnOnce() -> Result<&'static str>,
+    restore: impl FnOnce() -> Result<()>,
+) -> Result<&'static str> {
+    // catch 放在恢复之前，避免外层任务捕获 panic 后直接跳过 AppID 收尾。
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+        .unwrap_or_else(|_| Err("构建任务异常，请在任务面板查看详情".into()));
+    restore().map_err(|e| format!("AppID 恢复未完成: {e}; 构建结果: {result:?}"))?;
+    result
 }
 fn finish_build(
     result: Result<&'static str>,
@@ -930,6 +992,26 @@ fn patch_gradle(text: &str, name: &str, code: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn appid_restore_runs_after_success_failure_cancel_and_panic() {
+        for outcome in ["success", "error", "cancelled", "panic"] {
+            let restored = std::cell::Cell::new(false);
+            let result = restore_after_build(
+                || match outcome {
+                    "success" => Ok("success"),
+                    "panic" => panic!("模拟构建 panic"),
+                    _ => Err(outcome.into()),
+                },
+                || {
+                    restored.set(true);
+                    Ok(())
+                },
+            );
+            assert!(restored.get(), "{outcome} 必须先恢复再返回");
+            assert_eq!(result.is_ok(), outcome == "success");
+        }
+        assert!(restore_after_build(|| Ok("success"), || Err("恢复冲突".into())).is_err());
+    }
     #[test]
     fn menu_paths_and_names_remain_literal_argv_without_shell_source() {
         let dir = tempfile::tempdir().unwrap();

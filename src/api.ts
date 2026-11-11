@@ -10,6 +10,8 @@ import type {
   BuildMode,
   NodeVersion,
   UniappScript,
+  EnvironmentReport,
+  BuildRecord,
 } from './types';
 import { defaultConfig, normalizeProjectPlatforms } from './types';
 
@@ -41,6 +43,21 @@ export const api = {
   async persist(config: AppConfig) {
     if (desktop) await invoke('save_config', { config });
     else localStorage.setItem(PREVIEW_KEY, JSON.stringify(config));
+  },
+  checkEnvironment(project: Project, settings: Settings) {
+    return native<EnvironmentReport>('check_environment', {
+      project: JSON.parse(JSON.stringify(project)),
+      settings: JSON.parse(JSON.stringify(settings)),
+    });
+  },
+  requestAccessibilityPermission() {
+    return native<boolean>('request_accessibility_permission');
+  },
+  buildHistory(projectId: string) {
+    return native<BuildRecord[]>('list_build_history', { projectId });
+  },
+  deleteBuildHistory(projectId: string, id: string) {
+    return native<void>('delete_build_history', { projectId, id });
   },
   gitBranch(path: string) {
     return native<string>('read_git_branch', { path });

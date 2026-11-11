@@ -135,6 +135,34 @@ export interface TaskEvent {
   status?: TaskStatus;
   path?: string;
 }
+export interface EnvironmentCheckItem {
+  id: string;
+  label: string;
+  status: 'pass' | 'warning' | 'error' | 'skipped';
+  detail: string;
+  action: 'request-accessibility' | 'settings' | null;
+}
+export interface EnvironmentReport {
+  projectId: string;
+  checkedAt: number;
+  items: EnvironmentCheckItem[];
+}
+export interface BuildRecord {
+  id: string;
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  mode: BuildMode;
+  versionName: string;
+  versionCode: string;
+  branch: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+  durationMs: number | null;
+  status: 'running' | 'success' | 'error' | 'cancelled' | 'interrupted';
+  summary: string;
+  artifacts: { path: string; exists: boolean }[];
+}
 export interface Task {
   id: string;
   projectId: string;

@@ -81,6 +81,40 @@ fn open_settings() -> Result<()> {
     }
 }
 
+/// 只读查询；非 macOS 无 AX 权限要求，视为已满足。
+pub(crate) fn trusted() -> bool {
+    is_trusted()
+}
+
+/// 仅由用户显式请求授权时调用，不要求重启应用。
+pub(crate) fn request_authorization() -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        request_authorization_with(is_trusted, request_permission, open_settings)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("当前系统不使用 macOS 辅助功能授权，无需请求该权限".into())
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn request_authorization_with(
+    trusted: impl Fn() -> bool,
+    request: impl FnOnce(),
+    open: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
+    if trusted() {
+        return Ok(true);
+    }
+    request();
+    if trusted() {
+        return Ok(true);
+    }
+    open()?;
+    Ok(false)
+}
+
 #[derive(Default)]
 pub(crate) struct PermissionPrompt {
     denial: Option<String>,
@@ -158,6 +192,35 @@ pub(crate) fn terminal_needs_accessibility(terminal: &str) -> bool {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn explicit_authorization_queries_then_prompts_and_falls_back_without_restart() {
+        let granted = Cell::new(false);
+        let opened = Cell::new(false);
+        assert!(!request_authorization_with(
+            || granted.get(),
+            || {},
+            || {
+                opened.set(true);
+                Ok(())
+            }
+        )
+        .unwrap());
+        assert!(opened.get());
+        assert!(request_authorization_with(
+            || granted.get(),
+            || granted.set(true),
+            || panic!("已授权无需设置")
+        )
+        .unwrap());
+        assert!(request_authorization_with(
+            || true,
+            || panic!("不应请求"),
+            || panic!("不应打开设置")
+        )
+        .unwrap());
+        assert!(request_authorization_with(|| false, || {}, || Err("设置不可用".into())).is_err());
+    }
 
     #[test]
     fn recognizes_only_accessibility_denials() {
