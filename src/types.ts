@@ -147,6 +147,12 @@ export interface EnvironmentReport {
   checkedAt: number;
   items: EnvironmentCheckItem[];
 }
+export interface BuildHistorySettings {
+  retentionLimit: number;
+}
+export interface BuildHistorySettingsUpdate extends BuildHistorySettings {
+  removedCount: number;
+}
 export interface BuildRecord {
   id: string;
   projectId: string;

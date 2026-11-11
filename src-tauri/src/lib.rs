@@ -136,6 +136,31 @@ fn request_accessibility_permission(window: tauri::WebviewWindow) -> Result<bool
     accessibility::request_authorization()
 }
 #[tauri::command]
+async fn get_build_history_settings(app: AppHandle) -> Result<build_history::HistorySettings> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<build_history::Store>()
+            .settings(&tasks::data_dir(&app)?)
+    })
+    .await
+    .map_err(|error| format!("读取历史保留设置任务异常：{error}"))?
+}
+#[tauri::command]
+async fn save_build_history_settings(
+    app: AppHandle,
+    retention_limit: u32,
+) -> Result<build_history::SettingsUpdate> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = app
+            .state::<build_history::Store>()
+            .set_retention_limit(&tasks::data_dir(&app)?, retention_limit)?;
+        // 空项目标识表示保留策略影响所有项目，通知当前历史页重新加载。
+        let _ = app.emit("build-history-updated", "");
+        Ok(result)
+    })
+    .await
+    .map_err(|error| format!("保存历史保留设置任务异常：{error}"))?
+}
+#[tauri::command]
 async fn list_build_history(
     app: AppHandle,
     project_id: String,
@@ -684,6 +709,8 @@ pub fn run() {
             updater::install_update,
             check_environment,
             request_accessibility_permission,
+            get_build_history_settings,
+            save_build_history_settings,
             list_build_history,
             delete_build_history,
             load_config,

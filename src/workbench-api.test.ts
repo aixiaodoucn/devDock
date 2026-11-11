@@ -38,6 +38,18 @@ describe('环境体检与构建历史的桌面接口', () => {
     });
   });
 
+  it('历史保留设置通过原生接口持久化并返回实际清理数量', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ retentionLimit: 100 });
+    expect(await api.buildHistorySettings()).toEqual({ retentionLimit: 100 });
+    expect(invoke).toHaveBeenLastCalledWith('get_build_history_settings', undefined);
+    vi.mocked(invoke).mockResolvedValueOnce({ retentionLimit: 50, removedCount: 12 });
+    expect(await api.saveBuildHistorySettings(50)).toEqual({
+      retentionLimit: 50,
+      removedCount: 12,
+    });
+    expect(invoke).toHaveBeenLastCalledWith('save_build_history_settings', { retentionLimit: 50 });
+  });
+
   it('授权只通过独立的显式命令请求', async () => {
     vi.mocked(invoke).mockResolvedValueOnce(false);
     expect(await api.requestAccessibilityPermission()).toBe(false);

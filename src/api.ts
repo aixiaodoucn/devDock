@@ -12,6 +12,8 @@ import type {
   UniappScript,
   EnvironmentReport,
   BuildRecord,
+  BuildHistorySettings,
+  BuildHistorySettingsUpdate,
 } from './types';
 import { defaultConfig, normalizeProjectPlatforms } from './types';
 
@@ -52,6 +54,12 @@ export const api = {
   },
   requestAccessibilityPermission() {
     return native<boolean>('request_accessibility_permission');
+  },
+  buildHistorySettings() {
+    return native<BuildHistorySettings>('get_build_history_settings');
+  },
+  saveBuildHistorySettings(retentionLimit: number) {
+    return native<BuildHistorySettingsUpdate>('save_build_history_settings', { retentionLimit });
   },
   buildHistory(projectId: string) {
     return native<BuildRecord[]>('list_build_history', { projectId });

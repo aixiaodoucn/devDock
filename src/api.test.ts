@@ -85,6 +85,8 @@ describe('DevDock 预览配置迁移', () => {
     await expect(api.deleteBuildHistory('example-project', 'example-record')).rejects.toThrow(
       '浏览器预览',
     );
+    await expect(api.buildHistorySettings()).rejects.toThrow('浏览器预览');
+    await expect(api.saveBuildHistorySettings(50)).rejects.toThrow('浏览器预览');
     expect(invoke).not.toHaveBeenCalled();
   });
 

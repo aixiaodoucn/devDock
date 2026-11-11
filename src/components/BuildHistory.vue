@@ -3,11 +3,11 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { History } from 'lucide-vue-next';
 import { api, desktop } from '../api';
-import type { BuildRecord } from '../types';
+import type { BuildHistorySettings, BuildRecord } from '../types';
 
 const props = defineProps<{ projectId: string }>();
 const DISPLAY_LIMIT_KEY = 'dev-dock-history-display-limit';
-const DISPLAY_LIMIT_OPTIONS = [10, 20, 50, 100];
+const DISPLAY_LIMIT_OPTIONS = [10, 20, 50, 100, 200, 500, 1000];
 const DEFAULT_DISPLAY_LIMIT = 20;
 function readDisplayLimit() {
   try {
@@ -30,6 +30,25 @@ const opening = ref<string | null>(null);
 const expanded = ref<string | null>(null);
 const confirming = ref<string | null>(null);
 const error = ref('');
+const settings = ref<BuildHistorySettings | null>(null);
+const settingsLoading = ref(false);
+const saving = ref(false);
+const editing = ref(false);
+const retentionDraft = ref<string | number>('');
+const settingsError = ref('');
+const settingsNotice = ref('');
+const confirmingReduction = ref(false);
+const busy = computed(
+  () => loading.value || deleting.value || settingsLoading.value || saving.value,
+);
+const retentionValue = computed(() => Number(retentionDraft.value));
+const retentionInvalid = computed(
+  () =>
+    !String(retentionDraft.value).trim() ||
+    !Number.isInteger(retentionValue.value) ||
+    retentionValue.value < 1 ||
+    retentionValue.value > 1000,
+);
 const statusLabels = {
   running: '构建中',
   success: '成功',
@@ -41,6 +60,7 @@ const modeLabels = { apk: 'Android APK', 'wgt-android': 'Android WGT', 'wgt-ios'
 let generation = 0;
 let disposed = false;
 let refreshPending = false;
+let settingsPending = false;
 let unlisten: UnlistenFn | undefined;
 const errorText = (value: unknown) => (value instanceof Error ? value.message : String(value));
 function duration(value: number | null) {
@@ -54,7 +74,7 @@ function current(request: number) {
 async function refresh() {
   if (!desktop || disposed || !props.projectId) return;
   // 事件与删除并发时合并一次补读，避免旧快照恢复已经删除的记录。
-  if (loading.value || deleting.value) {
+  if (loading.value || deleting.value || saving.value) {
     refreshPending = true;
     return;
   }
@@ -79,17 +99,97 @@ async function refresh() {
   }
 }
 function flushRefresh() {
+  if (disposed || busy.value) return;
+  if (settingsPending) {
+    settingsPending = false;
+    void refreshSettings();
+  }
   if (refreshPending) {
     refreshPending = false;
     void refresh();
   }
 }
+async function refreshSettings() {
+  if (!desktop || disposed) return;
+  if (settingsLoading.value || saving.value || deleting.value) {
+    settingsPending = true;
+    return;
+  }
+  const request = generation;
+  settingsLoading.value = true;
+  settingsError.value = '';
+  try {
+    const result = await api.buildHistorySettings();
+    if (current(request)) {
+      const firstLoad = settings.value === null;
+      settings.value = result;
+      if (editing.value && firstLoad) retentionDraft.value = String(result.retentionLimit);
+    }
+  } catch (value) {
+    if (current(request)) settingsError.value = `保留设置读取失败：${errorText(value)}。请重试。`;
+  } finally {
+    settingsLoading.value = false;
+    flushRefresh();
+  }
+}
+function openSettings() {
+  if (!desktop || busy.value) return;
+  retentionDraft.value = settings.value ? String(settings.value.retentionLimit) : '';
+  confirmingReduction.value = false;
+  settingsNotice.value = '';
+  editing.value = true;
+}
+function cancelSettings() {
+  if (busy.value) return;
+  editing.value = false;
+  confirmingReduction.value = false;
+}
+async function saveSettings(confirmed = false) {
+  if (
+    !desktop ||
+    disposed ||
+    busy.value ||
+    !settings.value ||
+    settingsError.value ||
+    retentionInvalid.value
+  )
+    return;
+  if (
+    retentionValue.value < settings.value.retentionLimit &&
+    (!confirmed || !confirmingReduction.value)
+  ) {
+    confirmingReduction.value = true;
+    return;
+  }
+  const request = generation;
+  const value = retentionValue.value;
+  saving.value = true;
+  settingsNotice.value = '';
+  try {
+    const result = await api.saveBuildHistorySettings(value);
+    if (current(request)) {
+      settings.value = { retentionLimit: result.retentionLimit };
+      editing.value = false;
+      confirmingReduction.value = false;
+      settingsNotice.value = `保留设置已保存，已移除 ${result.removedCount} 条已结束记录；实际文件保留。`;
+    }
+    refreshPending = true;
+  } catch (value) {
+    if (current(request))
+      settingsNotice.value = `保留设置保存失败：${errorText(value)}。草稿已保留，请重试。`;
+  } finally {
+    saving.value = false;
+    flushRefresh();
+  }
+}
+watch([retentionDraft, settings], () => {
+  confirmingReduction.value = false;
+});
 async function remove(record: BuildRecord) {
   if (
     !desktop ||
     disposed ||
-    loading.value ||
-    deleting.value ||
+    busy.value ||
     record.status === 'running' ||
     confirming.value !== record.id
   )
@@ -108,10 +208,9 @@ async function remove(record: BuildRecord) {
   } catch (value) {
     if (current(request)) error.value = `移除记录失败：${errorText(value)}。请重试。`;
   } finally {
-    if (current(request)) {
-      deleting.value = false;
-      flushRefresh();
-    }
+    // 删除跨项目切换仍持有锁；结果只更新发起操作的项目。
+    deleting.value = false;
+    flushRefresh();
   }
 }
 async function openArtifact(path: string, exists: boolean) {
@@ -146,8 +245,11 @@ watch(
     generation++;
     records.value = [];
     expanded.value = confirming.value = opening.value = null;
-    loading.value = deleting.value = refreshPending = false;
+    loading.value = refreshPending = false;
+    editing.value = confirmingReduction.value = false;
+    settingsNotice.value = '';
     error.value = '';
+    void refreshSettings();
     void refresh();
   },
   { immediate: true },
@@ -156,7 +258,12 @@ onMounted(async () => {
   if (!desktop) return;
   try {
     const release = await listen<string>('build-history-updated', (event) => {
-      if (!disposed && event.payload === props.projectId) void refresh();
+      if (disposed) return;
+      // 空项目 ID 表示全局保留策略已更新，设置与当前项目记录一起补读。
+      if (event.payload === '') {
+        void refreshSettings();
+        void refresh();
+      } else if (event.payload === props.projectId) void refresh();
     });
     // Tauri 注册为异步操作，卸载后才拿到句柄也必须清理。
     if (disposed) release();
@@ -173,7 +280,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="build-history" aria-label="构建历史" :aria-busy="loading || deleting">
+  <section class="build-history" aria-label="构建历史" :aria-busy="busy">
     <header>
       <div class="history-heading">
         <h3><History :size="16" aria-hidden="true" />构建历史</h3>
@@ -190,11 +297,70 @@ onUnmounted(() => {
             </option>
           </select>
         </label>
-        <button class="button small" :disabled="!desktop || loading || deleting" @click="refresh">
+        <button
+          class="button small"
+          :disabled="!desktop || busy"
+          :aria-expanded="editing"
+          @click="openSettings"
+        >
+          保留设置
+        </button>
+        <button class="button small" :disabled="!desktop || busy" @click="refresh">
           {{ loading ? '读取中…' : '刷新' }}
         </button>
       </div>
     </header>
+    <div v-if="editing" class="history-settings" role="group" aria-label="保留设置">
+      <p class="history-muted">
+        本机全局策略，作用于所有项目的已结束记录；运行中不清理，实际文件保留。
+      </p>
+      <div class="history-controls">
+        <label class="history-retention">
+          每项目保留上限
+          <input
+            v-model="retentionDraft"
+            type="number"
+            min="1"
+            max="1000"
+            step="1"
+            aria-label="每项目保留上限"
+            :disabled="busy || !settings || !!settingsError"
+          />
+        </label>
+        <button class="button small" :disabled="busy" @click="cancelSettings">取消</button>
+        <button
+          class="button small"
+          :disabled="busy || !settings || !!settingsError || retentionInvalid"
+          @click="saveSettings()"
+        >
+          {{ saving ? '保存中…' : '保存' }}
+        </button>
+      </div>
+      <p v-if="retentionInvalid && settings" class="history-error" role="alert">
+        请输入 1 到 1000 之间的整数。
+      </p>
+      <div
+        v-if="confirmingReduction"
+        class="history-confirm"
+        role="group"
+        aria-label="确认降低保留上限"
+      >
+        <p>
+          每项目保留上限将从 {{ settings?.retentionLimit }} 降为
+          {{
+            retentionValue
+          }}，立即清理所有项目超限的最旧已结束记录，无法恢复；运行中记录和实际文件保留。
+        </p>
+        <button class="button small danger" :disabled="busy" @click="saveSettings(true)">
+          确认降低并保存
+        </button>
+      </div>
+    </div>
+    <div v-if="desktop && settingsError" class="history-error" role="alert">
+      {{ settingsError }}
+      <button class="button small" :disabled="busy" @click="refreshSettings">重试读取设置</button>
+    </div>
+    <p v-if="settingsNotice" class="history-muted" role="status">{{ settingsNotice }}</p>
     <p v-if="preferenceError" class="history-error" role="status">{{ preferenceError }}</p>
     <p v-if="!desktop" class="history-muted" role="status">
       请在桌面应用中查看本机构建历史，浏览器预览无法读取历史记录。
@@ -248,20 +414,15 @@ onUnmounted(() => {
               aria-label="确认移除记录"
             >
               <p>仅删除历史记录，不删除实际产物。确认移除这条记录？</p>
-              <button class="button small" :disabled="deleting" @click="confirming = null">
-                取消</button
-              ><button
-                class="button small danger"
-                :disabled="deleting || loading"
-                @click="remove(record)"
-              >
+              <button class="button small" :disabled="busy" @click="confirming = null">取消</button
+              ><button class="button small danger" :disabled="busy" @click="remove(record)">
                 {{ deleting ? '移除中…' : '确认移除' }}
               </button>
             </div>
             <button
               v-else-if="record.status !== 'running'"
               class="button small"
-              :disabled="loading || deleting"
+              :disabled="busy"
               @click="confirming = record.id"
             >
               移除记录
@@ -287,7 +448,8 @@ header,
 h3,
 .history-heading,
 .history-controls,
-.history-limit {
+.history-limit,
+.history-retention {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -301,12 +463,22 @@ header {
 .history-controls {
   flex-wrap: wrap;
 }
-.history-limit {
+.history-limit,
+.history-retention {
   flex-direction: row;
   white-space: nowrap;
   font-size: 11px;
 }
-.history-limit select {
+.history-settings {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.history-limit select,
+.history-retention input {
   width: 88px;
   height: var(--control-height-small);
   min-height: var(--control-height-small);

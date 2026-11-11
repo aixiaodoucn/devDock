@@ -33,12 +33,67 @@ pub struct BuildRecord {
     pub artifacts: Vec<Artifact>,
 }
 
+const DEFAULT_RETENTION_LIMIT: u32 = 100;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySettings {
+    pub retention_limit: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsUpdate {
+    pub retention_limit: u32,
+    pub removed_count: usize,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryDocument {
+    schema_version: u32,
+    retention_limit: u32,
+    records: Vec<BuildRecord>,
+}
+
+impl Default for HistoryDocument {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            retention_limit: DEFAULT_RETENTION_LIMIT,
+            records: vec![],
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Store {
     lock: Mutex<()>,
 }
 
 impl Store {
+    pub fn settings(&self, dir: &Path) -> Result<HistorySettings> {
+        let _guard = self.lock.lock().map_err(|_| "构建历史锁异常")?;
+        Ok(HistorySettings {
+            retention_limit: read(dir)?.retention_limit,
+        })
+    }
+
+    pub fn set_retention_limit(&self, dir: &Path, limit: u32) -> Result<SettingsUpdate> {
+        validate_retention_limit(limit)?;
+        let _guard = self.lock.lock().map_err(|_| "构建历史锁异常")?;
+        let mut document = read(dir)?;
+        let original_count = document.records.len();
+        document.retention_limit = limit;
+        trim(&mut document.records, limit);
+        // 设置与清理作为同一个文档提交，写入失败不会改变后续读取的策略。
+        write(dir, &document)?;
+        Ok(SettingsUpdate {
+            retention_limit: limit,
+            removed_count: original_count - document.records.len(),
+        })
+    }
+
     pub fn load(&self, dir: &Path) -> Result<()> {
         let _guard = self.lock.lock().map_err(|_| "构建历史锁异常")?;
         read(dir).map(|_| ())
@@ -46,7 +101,7 @@ impl Store {
 
     pub fn list(&self, dir: &Path, project_id: Option<&str>) -> Result<Vec<BuildRecord>> {
         let _guard = self.lock.lock().map_err(|_| "构建历史锁异常")?;
-        let mut records = read(dir)?;
+        let mut records = read(dir)?.records;
         records.retain(|r| project_id.is_none_or(|id| r.project_id == id));
         for record in &mut records {
             for artifact in &mut record.artifacts {
@@ -105,18 +160,18 @@ impl Store {
     // 必须在取得应用单实例锁后、接受新构建前调用；遗留 running 只能标记中断。
     pub fn recover(&self, dir: &Path) -> Result<usize> {
         let _guard = self.lock.lock().map_err(|_| "构建历史锁异常")?;
-        let mut records = read(dir)?;
+        let mut document = read(dir)?;
         let mut count = 0;
         let now = now_ms();
-        for record in &mut records {
+        for record in &mut document.records {
             if record.status == "running" {
                 complete(record, "interrupted", now)?;
                 count += 1;
             }
         }
         if count > 0 {
-            trim(&mut records);
-            write(dir, &records)?;
+            trim(&mut document.records, document.retention_limit);
+            write(dir, &document)?;
         }
         Ok(count)
     }
@@ -142,10 +197,10 @@ impl Store {
     ) -> Result<()> {
         let _guard = self.lock.lock().map_err(|_| "构建历史锁异常")?;
         // 每次在同一临界区重新读取及原子写入；读取失败绝不以空历史覆盖原文件。
-        let mut records = read(dir)?;
-        change(&mut records)?;
-        trim(&mut records);
-        write(dir, &records)
+        let mut document = read(dir)?;
+        change(&mut document.records)?;
+        trim(&mut document.records, document.retention_limit);
+        write(dir, &document)
     }
 }
 
@@ -153,16 +208,39 @@ fn native_absolute(path: &str) -> bool {
     Path::new(path).is_absolute() && (cfg!(windows) || !path.starts_with("//"))
 }
 
-fn read(dir: &Path) -> Result<Vec<BuildRecord>> {
+fn validate_retention_limit(limit: u32) -> Result<()> {
+    if !(1..=1000).contains(&limit) {
+        return Err("构建历史保留上限必须为 1 到 1000 的整数".into());
+    }
+    Ok(())
+}
+
+fn read(dir: &Path) -> Result<HistoryDocument> {
     let text = match fs::read_to_string(dir.join("build-history.json")) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(HistoryDocument::default());
+        }
         Err(error) => return Err(format!("无法读取构建历史: {error}")),
     };
-    let records: Vec<BuildRecord> = serde_json::from_str(&text)
+    // 只兼容旧数组；对象必须提供完整版本及设置，避免损坏设置被默认值覆盖。
+    let value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|_| "构建历史文件损坏，已保留原文件，请先备份并修复".to_string())?;
+    let document: HistoryDocument = if value.is_array() {
+        serde_json::from_value(value).map(|records| HistoryDocument {
+            records,
+            ..HistoryDocument::default()
+        })
+    } else {
+        serde_json::from_value(value)
+    }
+    .map_err(|_| "构建历史文件损坏，已保留原文件，请先备份并修复".to_string())?;
+    if document.schema_version != 1 {
+        return Err("构建历史文件版本不支持，已保留原文件".into());
+    }
+    validate_retention_limit(document.retention_limit)?;
     let mut ids = std::collections::HashSet::new();
-    for record in &records {
+    for record in &document.records {
         if !ids.insert(&record.id)
             || !["apk", "wgt-android", "wgt-ios"].contains(&record.mode.as_str())
             || summary(&record.status).is_err()
@@ -174,11 +252,11 @@ fn read(dir: &Path) -> Result<Vec<BuildRecord>> {
             return Err("构建历史记录无效，已保留原文件，请先备份并修复".into());
         }
     }
-    Ok(records)
+    Ok(document)
 }
 
-fn write(dir: &Path, records: &[BuildRecord]) -> Result<()> {
-    let text = serde_json::to_string_pretty(records).map_err(|e| e.to_string())?;
+fn write(dir: &Path, document: &HistoryDocument) -> Result<()> {
+    let text = serde_json::to_string_pretty(document).map_err(|e| e.to_string())?;
     config::atomic_write(&dir.join("build-history.json"), &text)
 }
 
@@ -212,7 +290,7 @@ fn complete(record: &mut BuildRecord, status: &str, now: u64) -> Result<()> {
     Ok(())
 }
 
-fn trim(records: &mut Vec<BuildRecord>) {
+fn trim(records: &mut Vec<BuildRecord>, retention_limit: u32) {
     // 同毫秒完成时以插入顺序决定新旧，每个项目仅裁掉最旧的完成记录。
     let mut completed: Vec<_> = records
         .iter()
@@ -226,7 +304,7 @@ fn trim(records: &mut Vec<BuildRecord>) {
     for (index, _, project) in completed {
         let count = counts.entry(project).or_insert(0);
         *count += 1;
-        if *count > 100 {
+        if *count > retention_limit {
             remove.insert(index);
         }
     }
@@ -267,6 +345,208 @@ mod tests {
             artifacts: vec![],
         }
     }
+    fn completed(id: &str, project: &str, finished_at: u64) -> BuildRecord {
+        let mut record = record(id, project);
+        complete(&mut record, "success", finished_at).unwrap();
+        record
+    }
+
+    fn seed(dir: &Path, limit: u32, records: Vec<BuildRecord>) {
+        let value = serde_json::json!({
+            "schemaVersion": 1,
+            "retentionLimit": limit,
+            "records": records,
+        });
+        fs::write(dir.join("build-history.json"), value.to_string()).unwrap();
+    }
+
+    #[test]
+    fn settings_default_and_legacy_array_migrate_only_on_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::default();
+        let path = dir.path().join("build-history.json");
+        assert_eq!(store.settings(dir.path()).unwrap().retention_limit, 100);
+        assert!(!path.exists());
+        let legacy = serde_json::to_string(&vec![completed("old", "p", 1)]).unwrap();
+        fs::write(&path, &legacy).unwrap();
+        store.load(dir.path()).unwrap();
+        assert_eq!(store.settings(dir.path()).unwrap().retention_limit, 100);
+        assert_eq!(store.list(dir.path(), None).unwrap().len(), 1);
+        assert_eq!(fs::read_to_string(&path).unwrap(), legacy);
+        store.start(dir.path(), record("new", "p")).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["retentionLimit"], 100);
+        assert_eq!(value["records"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn raised_limit_persists_across_stores_and_all_later_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::default();
+        let stale = Store::default();
+        stale.load(dir.path()).unwrap();
+        let update = store.set_retention_limit(dir.path(), 1000).unwrap();
+        assert_eq!(
+            serde_json::to_value(update).unwrap(),
+            serde_json::json!({"retentionLimit": 1000, "removedCount": 0})
+        );
+        assert_eq!(
+            serde_json::to_value(stale.settings(dir.path()).unwrap()).unwrap(),
+            serde_json::json!({"retentionLimit": 1000})
+        );
+        seed(
+            dir.path(),
+            1000,
+            (0..105)
+                .map(|i| completed(&format!("done-{i}"), "p", i))
+                .collect(),
+        );
+        stale.start(dir.path(), record("new", "p")).unwrap();
+        stale
+            .artifact(dir.path(), "new", &dir.path().join("app.apk"))
+            .unwrap();
+        stale.finish(dir.path(), "new", "success").unwrap();
+        stale.delete(dir.path(), "done-0").unwrap();
+        assert_eq!(store.list(dir.path(), None).unwrap().len(), 105);
+        assert_eq!(
+            Store::default()
+                .settings(dir.path())
+                .unwrap()
+                .retention_limit,
+            1000
+        );
+    }
+
+    #[test]
+    fn lowering_limit_prunes_oldest_per_project_preserves_running_and_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::default();
+        let artifact = dir.path().join("old.apk");
+        fs::write(&artifact, "apk").unwrap();
+        let mut records = vec![];
+        for project in ["p", "q"] {
+            for i in [3, 1, 2] {
+                let mut item = completed(&format!("{project}-{i}"), project, i);
+                item.artifacts.push(Artifact {
+                    path: artifact.to_string_lossy().into_owned(),
+                    exists: false,
+                });
+                records.push(item);
+            }
+            records.push(record(&format!("{project}-running"), project));
+        }
+        seed(dir.path(), 100, records);
+        let update = store.set_retention_limit(dir.path(), 1).unwrap();
+        assert_eq!(update.retention_limit, 1);
+        assert_eq!(update.removed_count, 4);
+        for project in ["p", "q"] {
+            let records = store.list(dir.path(), Some(project)).unwrap();
+            assert_eq!(records.len(), 2);
+            assert!(records.iter().any(|r| r.id == format!("{project}-3")));
+            assert!(records.iter().any(|r| r.status == "running"));
+        }
+        assert_eq!(fs::read_to_string(artifact).unwrap(), "apk");
+        assert_eq!(
+            store
+                .set_retention_limit(dir.path(), 1)
+                .unwrap()
+                .removed_count,
+            0
+        );
+    }
+
+    #[test]
+    fn recovery_uses_persisted_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        seed(
+            dir.path(),
+            1,
+            vec![
+                completed("old", "p", 1),
+                record("a", "p"),
+                record("b", "p"),
+                record("q", "q"),
+            ],
+        );
+        let store = Store::default();
+        assert_eq!(store.recover(dir.path()).unwrap(), 3);
+        let records = store.list(dir.path(), Some("p")).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "b");
+        assert_eq!(records[0].status, "interrupted");
+        assert_eq!(store.list(dir.path(), Some("q")).unwrap().len(), 1);
+        assert_eq!(store.settings(dir.path()).unwrap().retention_limit, 1);
+    }
+
+    #[test]
+    fn invalid_settings_or_documents_are_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::default();
+        let path = dir.path().join("build-history.json");
+        store.set_retention_limit(dir.path(), 2).unwrap();
+        let original = fs::read(&path).unwrap();
+        for limit in [0, 1001, u32::MAX] {
+            assert!(store.set_retention_limit(dir.path(), limit).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+        for bad in [
+            "{broken",
+            "{}",
+            "null",
+            r#"{"schemaVersion":2,"retentionLimit":100,"records":[]}"#,
+            r#"{"schemaVersion":1,"retentionLimit":0,"records":[]}"#,
+            r#"{"schemaVersion":1,"retentionLimit":1001,"records":[]}"#,
+            r#"{"schemaVersion":1,"retentionLimit":1.5,"records":[]}"#,
+            r#"{"schemaVersion":1,"retentionLimit":"100","records":[]}"#,
+            r#"{"schemaVersion":1,"records":[]}"#,
+        ] {
+            fs::write(&path, bad).unwrap();
+            assert!(store.settings(dir.path()).is_err());
+            assert!(store.set_retention_limit(dir.path(), 1).is_err());
+            assert!(store.load(dir.path()).is_err());
+            assert!(store.start(dir.path(), record("a", "p")).is_err());
+            assert!(store
+                .artifact(dir.path(), "a", Path::new("/app.apk"))
+                .is_err());
+            assert!(store.finish(dir.path(), "a", "success").is_err());
+            assert!(store.recover(dir.path()).is_err());
+            assert!(store.delete(dir.path(), "a").is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), bad);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_settings_write_preserves_document_and_future_policy() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::default();
+        seed(
+            dir.path(),
+            3,
+            vec![
+                completed("a", "p", 1),
+                completed("b", "p", 2),
+                completed("c", "p", 3),
+            ],
+        );
+        let path = dir.path().join("build-history.json");
+        let original = fs::read(&path).unwrap();
+        let permissions = fs::metadata(dir.path()).unwrap().permissions();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        let result = store.set_retention_limit(dir.path(), 1);
+        fs::set_permissions(dir.path(), permissions).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(store.settings(dir.path()).unwrap().retention_limit, 3);
+        store.start(dir.path(), record("new", "p")).unwrap();
+        store.finish(dir.path(), "new", "success").unwrap();
+        assert_eq!(store.list(dir.path(), None).unwrap().len(), 3);
+        assert_eq!(store.settings(dir.path()).unwrap().retention_limit, 3);
+    }
+
     #[test]
     fn round_trip_filter_and_all_terminal_statuses() {
         let dir = tempfile::tempdir().unwrap();
