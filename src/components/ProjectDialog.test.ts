@@ -109,7 +109,7 @@ describe('Node 项目版本选择', () => {
         'AI_CONFIG=\'[{"name":"weixin","model":"DeepSeek"}]\'',
       );
       env.value =
-        'AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com;';
+        'AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=示例发件人 <sender@example.com>;SMTP=smtp.qq.com;';
       env.dispatchEvent(new Event('input', { bubbles: true }));
       await nextTick();
       expect(await dialog.submit()).toMatchObject({
@@ -117,7 +117,7 @@ describe('Node 项目版本选择', () => {
           {
             command: 'npm run dev',
             envVars:
-              'AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com;',
+              'AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=示例发件人 <sender@example.com>;SMTP=smtp.qq.com;',
           },
         ],
       });

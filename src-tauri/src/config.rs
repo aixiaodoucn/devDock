@@ -751,12 +751,12 @@ mod tests {
         assert_eq!(parsed.projects[0].commands[1].env_vars, "NODE_ENV=test");
         // 旧版项目级环境变量迁移到尚未配置的终端命令，不覆盖命令自身配置。
         value["projects"][0]["envVars"] =
-            "ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com".into();
+            "ALERT_EMAIL_FROM=示例发件人 <sender@example.com>;SMTP=smtp.qq.com".into();
         let parsed = parse(&value.to_string()).unwrap();
         assert!(parsed.projects[0].env_vars.is_empty());
         assert_eq!(
             parsed.projects[0].commands[0].env_vars,
-            "ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;SMTP=smtp.qq.com"
+            "ALERT_EMAIL_FROM=示例发件人 <sender@example.com>;SMTP=smtp.qq.com"
         );
         assert_eq!(parsed.projects[0].commands[1].env_vars, "NODE_ENV=test");
         let serialized = serde_json::to_value(&parsed).unwrap();

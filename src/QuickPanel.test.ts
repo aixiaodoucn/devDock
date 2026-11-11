@@ -251,7 +251,7 @@ describe('菜单栏快捷弹框', () => {
           taskId: 'occupied',
           projectId: 'node',
           kind: 'notice',
-          message: '有项目「shopopening」已经在运行了；当前项目未启动',
+          message: '有项目「example-project」已经在运行了；当前项目未启动',
         },
       });
       handlers.get('task-event')?.({
@@ -269,7 +269,7 @@ describe('菜单栏快捷弹框', () => {
     try {
       panel.root.querySelector<HTMLButtonElement>('.quick-action')!.click();
       await flush();
-      expect(panel.root.querySelector('[role="status"]')?.textContent).toContain('shopopening');
+      expect(panel.root.querySelector('[role="status"]')?.textContent).toContain('example-project');
       expect(panel.root.querySelector('[role="status"]')?.textContent).toContain('当前项目未启动');
     } finally {
       panel.dispose();

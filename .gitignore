@@ -7,3 +7,31 @@ src-tauri/gen/
 *.log
 .playwright-mcp/
 .idea
+
+# 本机工具配置与环境变量，示例模板可提交。
+.claude/
+*.local.*
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# 用户配置、导出备份及签名私钥不属于源码。
+/config.json
+/backup.json
+/backups/
+dev-dock-backup-*.json
+*.backup.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# 安装包和业务构建产物通过发行附件分发，不进入源码仓库。
+*.exe
+*.msi
+*.dmg
+*.apk
+*.wgt

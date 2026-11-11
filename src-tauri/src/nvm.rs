@@ -625,12 +625,12 @@ mod tests {
         assert_eq!(parse_env_vars("").unwrap(), vec![]);
         assert_eq!(
             parse_env_vars(
-                "AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;ALERT_EMAIL_SMTP_HOST=smtp.qq.com;"
+                "AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=示例发件人 <sender@example.com>;ALERT_EMAIL_SMTP_HOST=smtp.qq.com;"
             )
             .unwrap(),
             vec![
                 ("AI_ALERT_EMAIL_ENABLED".into(), "false".into()),
-                ("ALERT_EMAIL_FROM".into(), "艾小逗 <1144755431@qq.com>".into()),
+                ("ALERT_EMAIL_FROM".into(), "示例发件人 <sender@example.com>".into()),
                 ("ALERT_EMAIL_SMTP_HOST".into(), "smtp.qq.com".into()),
             ]
         );
@@ -684,10 +684,10 @@ mod tests {
         let mut action: Action = serde_json::from_value(serde_json::json!({"id":"dev","name":"Dev","platform":"web","kind":"shell","menuPath":[],"command":"npm run dev"})).unwrap();
         project.node_version = "v22.10.0".into();
         project.nvm_dir = root.to_string_lossy().into();
-        action.env_vars = "ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;TOKEN=a'b".into();
+        action.env_vars = "ALERT_EMAIL_FROM=示例发件人 <sender@example.com>;TOKEN=a'b".into();
         let command = command_for(&project, &action).unwrap();
         assert!(command.starts_with(
-            "export ALERT_EMAIL_FROM='艾小逗 <1144755431@qq.com>'; export TOKEN='a'\\''b' && test -x "
+            "export ALERT_EMAIL_FROM='示例发件人 <sender@example.com>'; export TOKEN='a'\\''b' && test -x "
         ));
         assert!(command.contains("nvm use --silent 'v22.10.0' && eval 'npm run dev'"));
         // 未配置环境变量时保持原命令；菜单动作不注入环境变量。

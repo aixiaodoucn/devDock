@@ -183,7 +183,7 @@ macOS 支持 Terminal、Ghostty、iTerm，Windows 支持 Windows Terminal、Powe
 每条终端命令可在「运行与发行」的编辑区单独填写环境变量，格式为 `KEY=VALUE;KEY2=VALUE2`，也可以用换行分隔，例如：
 
 ```text
-AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;ALERT_EMAIL_SMTP_HOST=smtp.qq.com;
+AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=示例发件人 <sender@example.com>;ALERT_EMAIL_SMTP_HOST=smtp.qq.com;
 ```
 
 值支持空格、`<`、`@` 等符号，首尾空白会去除。复杂值（如 JSON）可用单引号或双引号包裹，引号内的分号和换行不会被当作分隔符；双引号内的 `\"` 会还原为 `"`，例如 `AI_CONFIG="[{\"name\":\"weixin\"}]"` 会作为合法 JSON 传入。名称需以字母或下划线开头，重复名称、缺少等号、引号未闭合会拒绝保存并定位到对应命令。执行该命令时在进入目录后、启用 Node 版本前导出，使用单引号安全引用，仅作用于本次终端会话；不同命令可以使用不同变量。环境变量随项目配置和 JSON 备份保存。旧版项目级环境变量会在加载时自动迁移到该项目的终端命令，已单独配置的命令不受影响。
@@ -202,6 +202,13 @@ AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=艾小逗 <1144755431@qq.com>;ALER
 macOS 配置与恢复记录位于 `~/Library/Application Support/com.devdock.desktop/`。配置写入采用临时文件与原子替换；单实例锁防止另一实例误恢复正在构建的 AppID。
 
 首次升级会从旧版 `com.aidev.desktop` 数据目录复制配置及待恢复记录，保留旧数据，不覆盖已存在的 DevDock 配置。请先退出旧版应用再启动 DevDock，避免两版同时操作同一业务项目。应用标识已更新，macOS 可能需要重新授予自动化和辅助功能权限。旧 JSON 备份仍可导入。
+
+## 公开源码与本地数据
+
+- 文档和测试使用虚构的发件人、项目名称及 `example.com` / `example.invalid` 等示例域名，请勿替换成真实账号或密钥后提交。
+- 本机环境变量、应用配置、JSON 备份及签名私钥不属于源码；忽略规则保留 `.env.example` 等模板，模板也只能填写占位值。
+- 导出的 JSON 包含完整命令和环境变量，终端截图也可能显示密码或令牌；不要把真实备份、诊断目录或整个工作目录直接上传到公开仓库。
+- `.gitignore` 只能防止误加入未跟踪文件，不会清除已经提交的内容。公开仓库前还应检查历史版本与提交作者邮箱；需要时使用 GitHub 提供的 noreply 邮箱。
 
 ## 验证边界
 
