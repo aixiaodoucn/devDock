@@ -55,6 +55,20 @@ src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\
 
 实机验收至少覆盖：中文/空格/单引号目录，长 JSON 环境变量的 Node 读取，所选 Node 版本与原终端默认版本相互独立，托盘打开/关闭和多屏缩放，项目拖拽排序、文件定位，以及安装/升级/卸载。Windows 专属文件占用与 Job 测试由上述 Windows 构建脚本执行。
 
+### 使用 GitHub Actions 打包 EXE
+
+仓库提供 `.github/workflows/windows-installer.yml`，在 GitHub 的 `windows-latest` runner 上构建 **Windows x64 NSIS 安装包**，仅手动触发。无需签名证书或自定义 Secrets；生成的安装包未签名。
+
+1. 将源码和 workflow 提交到 GitHub 仓库的默认分支。若仓库将公开，请先完成历史隐私检查；也可先在私有仓库构建。
+2. 打开 GitHub 仓库的 **Actions → Windows Installer**。首次使用可能需要启用 Actions。
+3. 点击 **Run workflow**，选择要构建的分支并运行。手动入口只有在 workflow 已存在于默认分支后才会显示。
+4. 等任务成功，进入本次运行详情，在底部 **Artifacts** 下载 `DevDock-windows-x64-运行编号`。
+5. 解压下载的 ZIP，里面的 `.exe` 是安装包，旁边 `.exe.sha256` 是校验文件。产物保留 7 天，可在过期前下载保存。
+
+工作流自动配置 Node.js、项目指定版本的 pnpm 和 Rust MSVC，安装锁文件中的依赖，再调用现有 `scripts/build-windows.cmd` 完成前后端测试与打包。Action 版本固定到已核实的提交，仓库权限仅为读取；上传范围仅安装包与校验文件，不上传配置、备份或整个 target 目录。工作流不创建 Release、不提交或推送代码。
+
+若运行失败，查看第一个失败步骤的日志；测试失败时不会继续生成安装包。当前 Windows 适配仍需真实 runner 编译与实机验收，工作流文件本身不代表已经构建成功。未签名安装包可能显示 Windows 未知发布者提示，正式分发可另外配置代码签名。
+
 ## 配置项目
 
 左侧添加项目，选择本地目录、类型与支持的平台：

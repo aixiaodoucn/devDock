@@ -1,0 +1,71 @@
+name: Windows Installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Windows x64 NSIS
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: 配置 Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: 配置项目指定版本的 pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
+        with:
+          run_install: false
+
+      - name: 配置 Rust Windows MSVC 工具链
+        run: |
+          rustup update stable --no-self-update
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default stable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup target add x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: 安装锁定版本的项目依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 运行测试并构建 EXE 安装包
+        shell: cmd
+        run: scripts\build-windows.cmd
+
+      - name: 生成安装包 SHA256 校验文件
+        run: |
+          $installers = @(Get-ChildItem -Path 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe' -File -ErrorAction Stop)
+          if ($installers.Count -eq 0) { throw '未找到 NSIS EXE 安装包' }
+          foreach ($installer in $installers) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()
+            $line = "$hash  $($installer.Name)`n"
+            [System.IO.File]::WriteAllText("$($installer.FullName).sha256", $line, [System.Text.UTF8Encoding]::new($false))
+          }
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: DevDock-windows-x64-${{ github.run_number }}
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sha256
+          if-no-files-found: error
+          retention-days: 7
