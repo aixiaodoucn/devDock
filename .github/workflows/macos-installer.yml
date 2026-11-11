@@ -1,0 +1,95 @@
+name: macOS Installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    name: macOS Universal DMG
+    runs-on: macos-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: stable
+      # 使用 ad-hoc 签名，不要求 Apple Developer 证书或公证凭据。
+      APPLE_SIGNING_IDENTITY: '-'
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: 配置 Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: 配置项目指定版本的 pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
+        with:
+          run_install: false
+
+      - name: 配置 Intel 与 Apple Silicon Rust 目标
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add --toolchain stable aarch64-apple-darwin x86_64-apple-darwin
+          rustup show active-toolchain
+          rustc --version
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            target_lib_dir="$(rustc --print target-libdir --target "$target")"
+            if ! compgen -G "$target_lib_dir/libstd-*.rlib" > /dev/null; then
+              printf '目标标准库不存在：%s\n' "$target" >&2
+              exit 1
+            fi
+          done
+          xcodebuild -version
+
+      - name: 安装锁定版本的项目依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 运行前端与原生测试
+        run: |
+          pnpm test
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
+
+      - name: 验证 macOS 自动化脚本
+        run: |
+          bash scripts/test-hbuilderx.sh
+          bash scripts/test-terminal.sh
+          bash scripts/test-build.sh
+
+      - name: 构建通用版 DMG 安装包
+        run: pnpm exec tauri build --ci --target universal-apple-darwin --bundles dmg
+
+      - name: 生成安装包 SHA256 校验文件
+        run: |
+          shopt -s nullglob
+          installers=(src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          if [ "${#installers[@]}" -eq 0 ]; then
+            printf '未找到 DMG 安装包\n' >&2
+            exit 1
+          fi
+          for installer in "${installers[@]}"; do
+            directory="$(dirname "$installer")"
+            filename="$(basename "$installer")"
+            (cd "$directory" && shasum -a 256 "$filename") > "$installer.sha256"
+          done
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: DevDock-macos-universal-${{ github.run_number }}
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 7

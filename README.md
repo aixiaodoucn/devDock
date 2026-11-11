@@ -26,6 +26,19 @@ pnpm tauri build                 # 构建本机架构的 macOS 应用与 DMG
 
 macOS 构建结果位于 `src-tauri/target/release/bundle/`。对外分发前需自行配置 Apple Developer 签名与公证。Windows 安装包需要在 Windows 构建和验证，步骤见下方。Windows 支持基础工作台及终端执行，HBuilderX 菜单自动化和 APK/WGT 构建入口暂不可执行。
 
+## macOS 通用版打包
+
+`.github/workflows/macos-installer.yml` 提供手动触发的 **macOS Installer** 工作流，使用 `macos-latest` runner，生成同时支持 Intel 和 Apple Silicon 的 Universal `.dmg` 安装包。
+
+1. 将 workflow 和代码更新到 GitHub 默认分支（本项目使用 `master`）。
+2. 在 **Actions → macOS Installer → Run workflow** 中选择要构建的分支并运行。
+3. 成功后在运行详情底部 **Artifacts** 下载 `DevDock-macos-universal-运行编号`。
+4. 解压 ZIP，得到 `.dmg` 和 `.dmg.sha256` 校验文件；安装包中包含 `DevDock.app`。产物保留 7 天。
+
+工作流安装锁定版本依赖，配置两个架构的 Rust 标准库，运行前后端测试及纯脚本测试，然后以 `universal-apple-darwin` 目标构建 DMG。安装包使用 ad-hoc 签名，无需 Apple Developer 证书或自定义 Secrets；它不包含 Developer ID 签名和 Apple 公证，macOS 可能提示开发者未验证，正式分发仍需另外配置签名与公证。
+
+仅上传安装包和校验文件，不创建 Release，也不向仓库提交或推送。配置检查不代表 GitHub 构建已经成功，实际结果以 Actions 运行日志和安装验收为准。
+
 ## Windows 基础版与打包
 
 第一阶段已加入 Windows 平台实现，但当前开发机器为 macOS，Windows 目标编译、真实终端和安装包行为仍需在 Windows 实机验收；macOS 测试不能替代这一步。
