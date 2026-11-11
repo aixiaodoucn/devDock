@@ -138,6 +138,11 @@ const faqs = [
       '应用会尝试打开「系统设置 → 隐私与安全性 → 辅助功能」。手动允许 DevDock，按提示重启后重试。macOS 对 System Events、HBuilderX 或终端的自动化控制也可能单独弹出授权提示。若设置未自动打开，可手动进入上述位置。',
   },
   {
+    question: '执行 npm run dev 也需要辅助功能权限吗？',
+    answer:
+      'npm 本身不需要。macOS 上 DevDock 使用 Ghostty / iTerm 时，要模拟新建标签、粘贴与回车，因此需要辅助功能权限；缺少权限时命令尚未交给终端。如果不希望授予此权限，可在「偏好设置 → 终端命令」将默认终端改为 Terminal 并保存，同时检查项目是否单独指定了 Ghostty / iTerm，项目终端配置会覆盖全局设置。Terminal 使用原生 AppleScript，不要求辅助功能权限，但首次可能需要允许 DevDock 自动化控制终端。Windows Terminal / PowerShell 不涉及 macOS 辅助功能权限。',
+  },
+  {
     question: '为什么脚本读取、HBuilderX 菜单读取或执行失败？',
     answer:
       '读取 uni-app.scripts 时，检查正在配置的项目目录中是否有合法的 package.json，脚本是否包含 title 和 env.UNI_PLATFORM。H5/Web 脚本归入 Web，微信、支付宝、钉钉、百度、抖音等 mp-* 脚本归入小程序；其他不支持的平台会注明不能导入。读取 HBuilderX 菜单需确认应用已启动及辅助功能权限，结果来自 HBuilderX 当前激活项目，不一定是正在配置的项目。实际执行时还需能识别目标项目的 App.vue 和窗口上下文，不同 HBuilderX 版本可能需要适配。',

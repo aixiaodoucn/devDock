@@ -54,6 +54,16 @@ git push github master
 git push github v0.2.0
 ```
 
+推送 Tag 后，在 GitHub 完成以下步骤：
+
+1. 打开 **Actions → Release Draft**，查看该 Tag 对应的运行记录。仅推送 `master` 不会触发此工作流。
+2. 等待版本校验、Windows 和 macOS 构建、草稿附件上传全部成功；任一平台失败时，不会继续上传草稿附件。
+3. 打开仓库 **Releases**，找到对应版本的 **Draft**，进入编辑页面。草稿尚未发布，普通下载者看不到此版本。
+4. 检查版本、发布说明，以及 **Assets** 中的 `.exe`、`.dmg` 和各自的 `.sha256` 文件，确认后点击 **Publish release**。
+5. 发布后，从该版本的 **Assets** 下载安装包。GitHub 自动生成的 **Source code (zip/tar.gz)** 是源码，不是安装包；**Actions → Artifacts** 下载的仍是 ZIP。
+
+如果构建或上传失败，在对应 Actions 运行页面查看失败步骤；临时失败可用 **Re-run failed jobs** 重试。需要修改源码时，修复并验证后使用新的版本提交与 Tag，避免移动旧 Tag。整个流程无需在本机提前生成 EXE 或 DMG。
+
 版本必须一致：Tag 为 `v0.2.0`，项目四处版本都应是 `0.2.0`；不匹配时在构建前失败。工具支持 `0.2.0-beta.1` 等预发布版本，Release 自动标记为预发布；不支持 build metadata。应用侧栏版本同样读取 `package.json`，不再写死。
 
 发布工作流仅草稿上传步骤申请仓库内容写权限，使用 GitHub 自动提供的 `GITHUB_TOKEN`，无需个人访问令牌。已公开的同版本 Release 会拒绝覆盖；上传失败留下的草稿可通过重跑失败任务继续补齐附件，最终公开始终由维护者手动完成。修复源代码需要新的版本提交和 Tag，不应强制移动已发布 Tag。
@@ -160,11 +170,11 @@ src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\
 
 支持：
 
-| 目标 | 依赖 |
-| --- | --- |
+| 目标        | 依赖                                                                    |
+| ----------- | ----------------------------------------------------------------------- |
 | Android APK | HBuilderX、Android 离线原生工程、Gradle wrapper、兼容的 JDK/Android SDK |
-| Android WGT | HBuilderX、Android AppID |
-| iOS WGT | HBuilderX、iOS AppID |
+| Android WGT | HBuilderX、Android AppID                                                |
+| iOS WGT     | HBuilderX、iOS AppID                                                    |
 
 APK 采用「HBuilderX 生成本地 App 资源 → 复制资源到原生工程 → Gradle 构建」流程。工程需已完成 Android SDK、签名、DCloud 离线 SDK 等配置。DevDock 不创建或修改签名材料。
 
@@ -222,6 +232,20 @@ macOS 支持 Terminal、Ghostty、iTerm，Windows 支持 Windows Terminal、Powe
 - Ghostty / iTerm 使用前台自动化创建标签页并粘贴命令；需要默认的新标签页快捷键和辅助功能权限。包含大量环境变量的长命令会按 400 字符分块粘贴，块间留出终端处理时间，全部粘贴完成后再回车并恢复剪贴板，避免命令被截断。
 - 工作目录安全引用，用户自定义命令按原意执行。终端任务只显示「已触发」，运行日志与服务停止在对应终端中处理。
 - 取消 DevDock 构建可以停止它管理的子进程，无法保证撤回 HBuilderX 已开始的内部发行或终端已收到的命令；请在对应工具中确认。
+
+### 执行 npm 命令需要辅助功能权限吗？
+
+`npm run dev` 本身不需要辅助功能权限。通过 DevDock 启动时，权限取决于所选终端的启动方式，与执行 npm、其他命令或仅打开目录无关：
+
+| 系统与终端                                   | 辅助功能权限              | 启动方式                                                                       |
+| -------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------ |
+| macOS Terminal                               | 不需要                    | 使用原生 AppleScript `do script`；首次可能需要允许 DevDock 自动化控制 Terminal |
+| macOS Ghostty / iTerm                        | 需要                      | 通过 System Events 模拟新建标签、粘贴命令与回车                                |
+| Windows Terminal / PowerShell / PowerShell 7 | 不涉及 macOS 辅助功能权限 | 直接启动终端进程                                                               |
+
+提示「辅助功能权限不足，已暂停本次操作」时，命令尚未交给终端。继续使用 Ghostty / iTerm，需要在「系统设置 → 隐私与安全性 → 辅助功能」允许 DevDock，重启应用后重试。
+
+如果不希望授予辅助功能权限，可以在「偏好设置 → 终端命令」将默认终端改为 Terminal 并保存，同时检查项目的终端配置：项目单独指定的终端优先于全局设置，需将项目终端改为跟随全局或直接选择 Terminal。macOS 的「自动化」与「辅助功能」是两种独立权限，切换 Terminal 后仍需按系统提示允许自动化控制。
 
 ### 打开项目目录并执行命令
 
