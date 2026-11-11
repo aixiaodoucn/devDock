@@ -19,6 +19,52 @@ fn is_trusted() -> bool {
     true
 }
 
+#[cfg(target_os = "macos")]
+fn request_permission() {
+    use std::ffi::c_void;
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        static kAXTrustedCheckOptionPrompt: *const c_void;
+        fn AXIsProcessTrustedWithOptions(options: *const c_void) -> u8;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFBooleanTrue: *const c_void;
+        fn CFDictionaryCreate(
+            allocator: *const c_void,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            count: isize,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> *const c_void;
+        fn CFRelease(value: *const c_void);
+    }
+
+    // 静态 CFString/CFBoolean 的生命周期覆盖 options，无需字典 retain/release 回调。
+    unsafe {
+        let keys = [kAXTrustedCheckOptionPrompt];
+        let values = [kCFBooleanTrue];
+        let options = CFDictionaryCreate(
+            std::ptr::null(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            1,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
+        if !options.is_null() {
+            // 仅请求系统原生提示；授权状态由下次 ensure 重新查询。
+            AXIsProcessTrustedWithOptions(options);
+            CFRelease(options);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn request_permission() {}
+
 fn open_settings() -> Result<()> {
     let output = Command::new("/usr/bin/open")
         .arg(SETTINGS_URL)
@@ -42,37 +88,38 @@ pub(crate) struct PermissionPrompt {
 
 impl PermissionPrompt {
     pub(crate) fn ensure(&mut self) -> Result<()> {
-        self.ensure_with(is_trusted, open_settings)
+        self.ensure_with(is_trusted, request_permission, open_settings)
     }
 
     pub(crate) fn denied(&mut self) -> String {
-        self.denied_with(open_settings)
+        self.denied_with(request_permission, open_settings)
     }
 
     fn ensure_with(
         &mut self,
         trusted: impl FnOnce() -> bool,
+        request: impl FnOnce(),
         open: impl FnOnce() -> Result<()>,
     ) -> Result<()> {
-        if let Some(error) = &self.denial {
-            return Err(error.clone());
-        }
+        // 拒绝缓存仅用于同次操作内去重，不能遮蔽用户刚授予或撤销的权限。
         if trusted() {
+            self.denial = None;
             Ok(())
         } else {
-            Err(self.denied_with(open))
+            Err(self.denied_with(request, open))
         }
     }
 
-    fn denied_with(&mut self, open: impl FnOnce() -> Result<()>) -> String {
-        // 同次操作即使收到多行权限拒绝，也只尝试打开一次设置。
+    fn denied_with(&mut self, request: impl FnOnce(), open: impl FnOnce() -> Result<()>) -> String {
+        // 子进程仍可能被拒绝；不以父进程的权限覆盖拒绝，同次操作只请求并打开一次。
         self.denial
             .get_or_insert_with(|| {
+                request();
                 let outcome = match open() {
                     Ok(()) => "已打开系统设置。".to_owned(),
                     Err(error) => format!("打开系统设置失败: {error}。"),
                 };
-                format!("辅助功能权限不足，已暂停本次操作。{outcome}请在系统设置 → 隐私与安全性 → 辅助功能中手动为 DevDock 开启权限，重启 DevDock 后重试。")
+                format!("辅助功能权限不足，已暂停本次操作。{outcome}请在系统设置 → 隐私与安全性 → 辅助功能中手动为 DevDock 开启权限，开启后返回 DevDock 重试。")
             })
             .clone()
     }
@@ -145,11 +192,14 @@ mod tests {
     fn missing_permission_stops_work_and_opens_settings_once() {
         let mut prompt = PermissionPrompt::default();
         let opened = Cell::new(0);
+        let requested = Cell::new(0);
         let mut work_started = false;
         for _ in 0..3 {
             let result = prompt.ensure_with(
                 || false,
+                || requested.set(requested.get() + 1),
                 || {
+                    assert_eq!(requested.get(), 1, "应先请求原生提示再打开设置");
                     opened.set(opened.get() + 1);
                     Ok(())
                 },
@@ -160,17 +210,61 @@ mod tests {
             let error = result.unwrap_err();
             assert!(error.contains("已打开"));
             assert!(error.contains("DevDock"));
-            assert!(error.contains("重启"));
+            assert!(error.contains("开启后返回 DevDock 重试"));
+            assert!(!error.contains("重启"));
+            assert!(!error.contains("退出重开"));
         }
         assert!(!work_started);
+        assert_eq!(requested.get(), 1);
         assert_eq!(opened.get(), 1);
+    }
+
+    #[test]
+    fn cached_denial_is_cleared_after_grant_and_prompts_again_after_revocation() {
+        let mut prompt = PermissionPrompt::default();
+        let trusted = Cell::new(false);
+        let queried = Cell::new(0);
+        let requested = Cell::new(0);
+        let opened = Cell::new(0);
+        let mut ensure = || {
+            prompt.ensure_with(
+                || {
+                    queried.set(queried.get() + 1);
+                    trusted.get()
+                },
+                || requested.set(requested.get() + 1),
+                || {
+                    opened.set(opened.get() + 1);
+                    Ok(())
+                },
+            )
+        };
+
+        assert!(ensure().is_err());
+        assert!(ensure().is_err());
+        assert_eq!(opened.get(), 1);
+        trusted.set(true);
+        assert!(
+            ensure().is_ok(),
+            "授权后应能使用同一个 PermissionPrompt 重试"
+        );
+        trusted.set(false);
+        assert!(ensure().is_err());
+        assert!(ensure().is_err());
+        assert_eq!(queried.get(), 5, "每次 ensure 都应重新查询实际权限");
+        assert_eq!(requested.get(), 2, "授权被撤销后应重新请求原生提示");
+        assert_eq!(opened.get(), 2, "授权被撤销后应重新引导授权");
     }
 
     #[test]
     fn trusted_process_does_not_open_settings() {
         let mut prompt = PermissionPrompt::default();
         assert!(prompt
-            .ensure_with(|| true, || panic!("不应打开设置"))
+            .ensure_with(
+                || true,
+                || panic!("不应请求提示"),
+                || panic!("不应打开设置")
+            )
             .is_ok());
     }
 
@@ -178,24 +272,40 @@ mod tests {
     fn repeated_child_denials_open_settings_once_even_when_parent_is_trusted() {
         let mut prompt = PermissionPrompt::default();
         prompt
-            .ensure_with(|| true, || panic!("不应打开设置"))
+            .ensure_with(
+                || true,
+                || panic!("不应请求提示"),
+                || panic!("不应打开设置"),
+            )
             .unwrap();
         let opened = Cell::new(0);
+        let requested = Cell::new(0);
         for _ in 0..3 {
-            let error = prompt.denied_with(|| {
-                opened.set(opened.get() + 1);
-                Ok(())
-            });
+            let error = prompt.denied_with(
+                || requested.set(requested.get() + 1),
+                || {
+                    opened.set(opened.get() + 1);
+                    Ok(())
+                },
+            );
             assert!(error.contains("手动"));
+            assert!(error.contains("开启后返回 DevDock 重试"));
         }
+        assert_eq!(requested.get(), 1);
         assert_eq!(opened.get(), 1);
     }
 
     #[test]
     fn failed_settings_open_preserves_manual_instructions() {
+        let requested = Cell::new(false);
         let error = PermissionPrompt::default()
-            .ensure_with(|| false, || Err("exit status: 1".into()))
+            .ensure_with(
+                || false,
+                || requested.set(true),
+                || Err("exit status: 1".into()),
+            )
             .unwrap_err();
+        assert!(requested.get());
         assert!(error.contains("打开系统设置失败: exit status: 1"));
         assert!(error.contains("系统设置 → 隐私与安全性 → 辅助功能"));
         assert!(error.contains("DevDock"));
