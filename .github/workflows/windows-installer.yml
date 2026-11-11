@@ -16,6 +16,7 @@ jobs:
         shell: pwsh
     env:
       CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: stable
 
     steps:
       - name: 检出源码
@@ -40,8 +41,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup default stable
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          rustup target add x86_64-pc-windows-msvc
+          rustup target add --toolchain stable x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup show active-toolchain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustc --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $targetLibDir = rustc --print target-libdir --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $targetLibDir = ($targetLibDir | Out-String).Trim()
+          if (-not (Test-Path -Path (Join-Path $targetLibDir 'libstd-*.rlib') -PathType Leaf)) {
+            throw "Rust 目标标准库不存在：$targetLibDir"
+          }
+          Write-Host "Windows x64 标准库已就绪：$targetLibDir"
 
       - name: 安装锁定版本的项目依赖
         run: pnpm install --frozen-lockfile
