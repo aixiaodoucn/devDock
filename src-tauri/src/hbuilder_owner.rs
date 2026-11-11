@@ -328,30 +328,46 @@ mod tests {
 
     #[test]
     fn process_metadata_is_whitelisted_and_requires_hx_compiler() {
-        let args = ["node", "/Applications/HBuilderX.app/Contents/HBuilderX/plugins/uniapp-extension/static/kill.js", "/Applications/HBuilderX.app/Contents/HBuilderX/plugins/uniapp-cli/bin/uniapp-cli.js"];
+        // 测试数据使用宿主路径，与解析器的 Path::join 和绝对路径校验保持一致。
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("HBuilderX.app");
+        let plugins = bundle.join("Contents/HBuilderX/plugins");
+        let hook = plugins.join("uniapp-extension/static/kill.js");
+        let compiler = plugins.join("uniapp-cli/bin/uniapp-cli.js");
+        let input = dir.path().join("项目 space").join("$(touch injected)");
+        let input_env = format!("UNI_INPUT_DIR={}", input.display());
+        let args = ["node", hook.to_str().unwrap(), compiler.to_str().unwrap()];
         let raw = process(
             &args,
             &[
                 "SECRET=do-not-expose",
-                "UNI_INPUT_DIR=/tmp/项目 space/$(touch injected)",
+                &input_env,
                 "UNI_SCRIPT=dev;echo nope",
                 "UNI_PLATFORM=mp-alipay",
             ],
         );
-        let metadata = parse_process(&raw, Path::new("/Applications/HBuilderX.app")).unwrap();
-        assert_eq!(metadata.input, "/tmp/项目 space/$(touch injected)");
+        let metadata = parse_process(&raw, &bundle).expect("应识别宿主路径构造的编译进程元数据");
+        assert_eq!(metadata.input, input.to_string_lossy());
         assert_eq!(metadata.script, "dev;echo nope");
         assert!(!format!("{metadata:?}").contains("SECRET"));
+        let unrelated = dir.path().join("uniapp-cli.js");
         assert!(parse_process(
-            &process(&["node", "/tmp/uniapp-cli.js"], &["UNI_INPUT_DIR=/tmp/a"]),
-            Path::new("/Applications/HBuilderX.app")
+            &process(
+                &["node", unrelated.to_str().unwrap()],
+                &[&input_env, "UNI_PLATFORM=mp-alipay"],
+            ),
+            &bundle,
         )
         .is_none());
-        assert!(parse_process(&raw, Path::new("/Applications/Other.app")).is_none());
-        assert!(parse_process(&[1, 2, 3], Path::new("/Applications/HBuilderX.app")).is_none());
+        assert!(parse_process(&raw, &dir.path().join("Other.app")).is_none());
+        assert!(parse_process(&[1, 2, 3], &bundle).is_none());
+        let other_input_env = format!("UNI_INPUT_DIR={}", dir.path().join("other").display());
         assert!(parse_process(
-            &process(&args, &["UNI_INPUT_DIR=/a", "UNI_INPUT_DIR=/b"]),
-            Path::new("/Applications/HBuilderX.app")
+            &process(
+                &args,
+                &[&input_env, &other_input_env, "UNI_PLATFORM=mp-alipay"]
+            ),
+            &bundle,
         )
         .is_none());
     }
