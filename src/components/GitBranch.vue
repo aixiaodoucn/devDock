@@ -48,8 +48,8 @@ onUnmounted(() => {
   gap: 5px;
   max-width: 240px;
   min-width: 0;
-  margin-top: 8px;
-  padding: 4px 8px;
+  height: 24px;
+  padding: 0 8px;
   border: 1px solid var(--accent-border);
   border-radius: 5px;
   background: var(--accent-soft);
