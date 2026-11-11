@@ -524,10 +524,7 @@ button {
   gap: 7px;
   color: var(--sidebar-muted);
   font-size: 10px;
-  margin: 12px 8px 0;
-}
-.sidebar-updater {
-  margin: 2px 8px 12px;
+  margin: 16px 8px;
 }
 .local-status > span,
 .local-dot {
@@ -620,12 +617,6 @@ button {
   50% {
     opacity: 0.35;
   }
-}
-.platform-badge {
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: 1.5px;
-  color: var(--muted);
 }
 .preview-badge {
   font-size: 10px;
@@ -1985,9 +1976,6 @@ button {
   }
   .topbar-right {
     gap: 8px;
-  }
-  .platform-badge {
-    display: none;
   }
   .heading-actions .button {
     font-size: 0;

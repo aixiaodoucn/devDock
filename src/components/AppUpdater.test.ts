@@ -70,7 +70,7 @@ function progress() {
   };
   return args.onProgress;
 }
-describe('侧栏应用更新', () => {
+describe('应用更新入口', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.resetAllMocks();
@@ -103,6 +103,38 @@ describe('侧栏应用更新', () => {
     panel.button(version).click();
     await flush();
     expect(calls('check_update')).toHaveLength(3);
+  });
+  it('检查期间保留版本文字，仅更新悬浮提示，不插入会撑高布局的状态行', async () => {
+    const pending = deferred<null>();
+    vi.mocked(invoke).mockReturnValueOnce(pending.promise);
+    const panel = await mount();
+    expect(panel.button(version).title).toContain('正在检查更新');
+    expect(panel.button(version).getAttribute('aria-busy')).toBe('true');
+    expect(
+      panel.root.querySelector('.app-updater-check-icon')?.classList.contains('is-checking'),
+    ).toBe(true);
+    expect(panel.root.querySelector('[role="status"]')).toBeNull();
+    expect(panel.root.textContent?.trim()).toBe(`v${version}`);
+    pending.resolve(null);
+    await flush();
+    expect(panel.root.querySelector('[role="status"]')).toBeNull();
+    expect(panel.root.textContent?.trim()).toBe(`v${version}`);
+    expect(panel.button(version).getAttribute('aria-busy')).toBe('false');
+    expect(
+      panel.root.querySelector('.app-updater-check-icon')?.classList.contains('is-checking'),
+    ).toBe(false);
+    const manual = deferred<null>();
+    vi.mocked(invoke).mockReturnValueOnce(manual.promise);
+    panel.button(version).click();
+    await flush();
+    expect(
+      panel.root.querySelector('.app-updater-check-icon')?.classList.contains('is-checking'),
+    ).toBe(true);
+    manual.reject(new Error('检查失败'));
+    await flush();
+    expect(
+      panel.root.querySelector('.app-updater-check-icon')?.classList.contains('is-checking'),
+    ).toBe(false);
   });
   it('检查失败安静显示可重试 tooltip，检查未结束时避免重复调用', async () => {
     const pending = deferred<null>();

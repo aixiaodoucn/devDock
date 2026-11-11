@@ -43,7 +43,7 @@ macOS 构建结果位于 `src-tauri/target/release/bundle/`。对外分发前需
 pnpm version:set 0.2.0
 pnpm version:check
 git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
-git commit -m "chore(release): 发布 0.2.0" -m "Zs use ai commit"
+git commit -m "chore(release): 发布 0.2.0"
 git tag v0.2.0
 ```
 
@@ -64,7 +64,7 @@ git push github v0.2.0
 
 如果构建或上传失败，在对应 Actions 运行页面查看失败步骤；临时失败可用 **Re-run failed jobs** 重试。需要修改源码时，修复并验证后使用新的版本提交与 Tag，避免移动旧 Tag。整个流程无需在本机提前生成 EXE 或 DMG。
 
-版本必须一致：Tag 为 `v0.2.0`，项目四处版本都应是 `0.2.0`；不匹配时在构建前失败。工具支持 `0.2.0-beta.1` 等预发布版本，Release 自动标记为预发布；不支持 build metadata。应用侧栏版本同样读取 `package.json`，不再写死。
+版本必须一致：Tag 为 `v0.2.0`，项目四处版本都应是 `0.2.0`；不匹配时在构建前失败。工具支持 `0.2.0-beta.1` 等预发布版本，Release 自动标记为预发布；不支持 build metadata。应用右上角版本同样读取 `package.json`，不再写死。
 
 发布工作流仅草稿上传步骤申请仓库内容写权限，使用 GitHub 自动提供的 `GITHUB_TOKEN`，无需个人访问令牌。已公开的同版本 Release 会拒绝覆盖；上传失败留下的草稿可通过重跑失败任务继续补齐附件，最终公开始终由维护者手动完成。修复源代码需要新的版本提交和 Tag，不应强制移动已发布 Tag。
 
@@ -72,7 +72,7 @@ git push github v0.2.0
 
 ## 应用内更新
 
-安装版 DevDock 启动时检查一次更新，之后每 4 小时检查一次；点击左下角版本号可手动检查。仅检查 GitHub 最新的正式 Release，草稿和预发布版本不会进入默认更新通道。浏览器预览和开发模式不执行真实更新。
+安装版 DevDock 启动时检查一次更新，之后每 4 小时检查一次；点击右上角版本号可手动检查。仅检查 GitHub 最新的正式 Release，草稿和预发布版本不会进入默认更新通道。浏览器预览和开发模式不执行真实更新。
 
 发现新版本后，版本号旁显示「更新」。点击后下载当前系统对应的更新包并展示进度；下载和签名校验全部成功后，提示下载完成并显示「重启更新」。此时不会自动安装，用户点击后才安装并重启。下载或安装失败可重试，不把下载 100% 当作校验成功。下载中、等待重启及安装中暂停定时检查；DevDock 仍有任务执行时禁止安装，需等待任务完成。重启前请保存尚未提交的配置。已下载的更新保留在当前进程内存中，退出应用后需重新下载。
 

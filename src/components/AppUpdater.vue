@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { Channel, invoke } from '@tauri-apps/api/core';
+import { RefreshCw } from 'lucide-vue-next';
 import { version } from '../../package.json';
 import { desktop } from '../api';
 
@@ -48,7 +49,8 @@ const downloadStatus = computed(() => {
   return percent >= 100 ? '下载 100% · 正在校验…' : `下载中 ${percent}% · ${bytes}`;
 });
 const status = computed(() => {
-  if (phase.value === 'checking') return '正在检查更新…';
+  // 短暂检查只更新版本按钮的提示，避免状态行瞬间出现造成布局闪动。
+  if (phase.value === 'checking') return '';
   if (phase.value === 'downloading') return downloadStatus.value;
   if (phase.value === 'ready')
     return props.busy ? '下载完成，任务或保存结束后可重启' : '下载完成，可重启更新';
@@ -146,10 +148,16 @@ onUnmounted(() => {
         class="app-updater-version"
         :title="versionTitle"
         :aria-label="versionTitle"
+        :aria-busy="phase === 'checking'"
         :disabled="checkDisabled"
         @click="checkUpdate"
       >
-        v{{ version }}
+        <span class="app-updater-version-text">v{{ version }}</span>
+        <RefreshCw
+          :size="12"
+          :class="['app-updater-check-icon', { 'is-checking': phase === 'checking' }]"
+          aria-hidden="true"
+        />
       </button>
       <button
         v-if="update"
@@ -182,15 +190,18 @@ onUnmounted(() => {
         }}
       </button>
     </div>
-    <p v-if="status" class="app-updater-status" role="status" aria-live="polite">{{ status }}</p>
-    <p v-if="actionError" class="app-updater-error" role="alert">{{ actionError }}</p>
+    <div v-if="status || actionError" class="app-updater-feedback">
+      <p v-if="status" class="app-updater-status" role="status" aria-live="polite">{{ status }}</p>
+      <p v-if="actionError" class="app-updater-error" role="alert">{{ actionError }}</p>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .app-updater {
+  position: relative;
   min-width: 0;
-  color: var(--sidebar-muted);
+  color: var(--muted);
   font-size: 11px;
 }
 .app-updater-row {
@@ -206,38 +217,83 @@ onUnmounted(() => {
   border: 1px solid transparent;
   border-radius: 5px;
   background: transparent;
-  color: var(--sidebar-muted);
+  color: var(--muted);
   font: inherit;
   cursor: pointer;
 }
+.app-updater-version {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 始终保留图标位置，检查开始和结束时版本号与相邻控件不移动。 */
+.app-updater-check-icon {
+  flex-shrink: 0;
+  visibility: hidden;
+}
+.app-updater-check-icon.is-checking {
+  visibility: visible;
+  animation: app-updater-spin 0.9s linear infinite;
+}
+@keyframes app-updater-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-updater-check-icon.is-checking {
+    animation: none;
+  }
+}
 .app-updater-action {
   flex-shrink: 0;
-  border-color: var(--sidebar-border);
-  background: var(--sidebar-hover);
-  color: var(--sidebar-accent);
+  border-color: var(--line);
+  background: var(--accent-soft);
+  color: var(--accent-text);
 }
-.app-updater-version:hover:not(:disabled),
+.app-updater-version:hover,
 .app-updater-action:hover:not(:disabled) {
-  background: var(--sidebar-selected);
-  color: var(--sidebar-text);
+  background: var(--accent-soft);
+  color: var(--ink);
 }
 .app-updater-version:focus-visible,
 .app-updater-action:focus-visible {
-  outline: 2px solid var(--sidebar-accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
 }
-.app-updater-version:disabled,
+.app-updater-version:disabled {
+  cursor: default;
+  opacity: 1;
+}
 .app-updater-action:disabled {
   cursor: default;
   opacity: 0.65;
 }
+/* 更新详情浮在顶栏下方，不随进度或提示文字改变顶栏高度。 */
+.app-updater-feedback {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: 280px;
+  max-width: calc(100vw - 48px);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--text-secondary);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 10%);
+}
 .app-updater-status,
 .app-updater-error {
-  margin: 4px 0 0;
+  margin: 0;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 .app-updater-error {
-  color: var(--sidebar-accent);
+  color: var(--danger);
+}
+.app-updater-status + .app-updater-error {
+  margin-top: 6px;
 }
 </style>

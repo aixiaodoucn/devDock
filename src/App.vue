@@ -634,7 +634,6 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
           <Settings2 :size="18" />偏好设置<span>↗</span>
         </button>
         <div class="local-status"><span></span>{{ desktop ? '本地工作台' : '浏览器预览' }}</div>
-        <AppUpdater class="sidebar-updater" :busy="busy || saving || refreshing" />
       </div>
       <div
         class="sidebar-resizer"
@@ -693,7 +692,8 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
             class="preview-badge"
             title="本地构建、终端和菜单操作需在桌面应用中执行"
             >预览模式</span
-          ><span class="platform-badge">{{ isWindows ? 'WINDOWS' : 'macOS FIRST' }}</span>
+          >
+          <AppUpdater :busy="busy || saving || refreshing" />
         </div>
       </header>
       <div v-if="notice" :class="['notice', { error: notice.error }]" role="status">
