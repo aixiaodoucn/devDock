@@ -3,6 +3,11 @@ name: macOS Installer
 on:
   workflow_dispatch:
   workflow_call:
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read
@@ -18,10 +23,19 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUSTUP_TOOLCHAIN: stable
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       # 使用 ad-hoc 签名，不要求 Apple Developer 证书或公证凭据。
       APPLE_SIGNING_IDENTITY: '-'
 
     steps:
+      - name: 检查更新签名私钥
+        run: |
+          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY//[[:space:]]/}" ]]; then
+            printf '缺少 TAURI_SIGNING_PRIVATE_KEY，请配置 GitHub Actions secret 后重试\n' >&2
+            exit 1
+          fi
+
       - name: 检出源码
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -75,14 +89,14 @@ jobs:
           bash scripts/test-build.sh
 
       - name: 构建通用版 DMG 安装包
-        run: pnpm exec tauri build --ci --target universal-apple-darwin --bundles dmg
+        run: pnpm exec tauri build --ci --target universal-apple-darwin --bundles app,dmg
 
       - name: 生成安装包 SHA256 校验文件
         run: |
           shopt -s nullglob
           installers=(src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
-          if [ "${#installers[@]}" -eq 0 ]; then
-            printf '未找到 DMG 安装包\n' >&2
+          if [ "${#installers[@]}" -ne 1 ]; then
+            printf '必须存在唯一的 DMG 安装包\n' >&2
             exit 1
           fi
           for installer in "${installers[@]}"; do
@@ -91,6 +105,16 @@ jobs:
             (cd "$directory" && shasum -a 256 "$filename") > "$installer.sha256"
           done
 
+      - name: 验证 app 更新包与签名
+        run: |
+          # Tauri 2 的 app 更新归档在 bundle/macos，而非 bundle/dmg。
+          archive='src-tauri/target/universal-apple-darwin/release/bundle/macos/DevDock.app.tar.gz'
+          if [ ! -s "$archive" ] || [ ! -s "$archive.sig" ] || ! grep -q '[^[:space:]]' "$archive.sig"; then
+            printf '缺少有效的 DevDock.app.tar.gz 或非空更新签名 .sig\n' >&2
+            exit 1
+          fi
+          tar -tzf "$archive" > /dev/null
+
       - name: 上传安装包
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -98,6 +122,8 @@ jobs:
           path: |
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg.sha256
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/DevDock.app.tar.gz
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/DevDock.app.tar.gz.sig
           if-no-files-found: error
           overwrite: true
           retention-days: 7

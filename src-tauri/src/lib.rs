@@ -13,6 +13,7 @@ mod tray_geometry;
 #[cfg(target_os = "macos")]
 mod tray_panel;
 mod uniapp_scripts;
+mod updater;
 #[cfg(windows)]
 mod windows_job;
 #[cfg(any(windows, test))]
@@ -589,6 +590,8 @@ mod package_tests {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::UpdateState::default())
         .manage(tasks::Runtime::default())
         .manage(StartupLogs::default())
         .setup(|app| {
@@ -616,6 +619,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            updater::check_update,
+            updater::download_update,
+            updater::install_update,
             load_config,
             save_config,
             read_manifest,

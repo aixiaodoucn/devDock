@@ -524,7 +524,10 @@ button {
   gap: 7px;
   color: var(--sidebar-muted);
   font-size: 10px;
-  margin: 16px 8px;
+  margin: 12px 8px 0;
+}
+.sidebar-updater {
+  margin: 2px 8px 12px;
 }
 .local-status > span,
 .local-dot {
@@ -534,11 +537,6 @@ button {
   border-radius: 50%;
   background: var(--accent);
   flex-shrink: 0;
-}
-.local-status small {
-  margin-left: auto;
-  font-family: var(--mono);
-  font-size: 9px;
 }
 .main-area {
   margin-left: var(--sidebar-width, 208px);

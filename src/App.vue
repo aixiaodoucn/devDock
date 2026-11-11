@@ -33,8 +33,8 @@ import GitBranch from './components/GitBranch.vue';
 import SettingsPage from './components/SettingsPage.vue';
 import HelpPage from './components/HelpPage.vue';
 import AiLauncher from './components/AiLauncher.vue';
+import AppUpdater from './components/AppUpdater.vue';
 import { api, desktop } from './api';
-import { version as appVersion } from '../package.json';
 import { applyTheme } from './theme';
 import { stopMenuAction } from './actions';
 import { useSidebarResize } from './sidebar';
@@ -633,9 +633,8 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         >
           <Settings2 :size="18" />偏好设置<span>↗</span>
         </button>
-        <div class="local-status">
-          <span></span>{{ desktop ? '本地工作台' : '浏览器预览' }}<small>v{{ appVersion }}</small>
-        </div>
+        <div class="local-status"><span></span>{{ desktop ? '本地工作台' : '浏览器预览' }}</div>
+        <AppUpdater class="sidebar-updater" :busy="busy || saving || refreshing" />
       </div>
       <div
         class="sidebar-resizer"

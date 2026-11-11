@@ -70,6 +70,42 @@ git push github v0.2.0
 
 `pnpm test:version` 验证同步与标签校验，`pnpm test:release` 使用 CLI 替身验证发布保护，不会访问 GitHub 或创建真实 Release。两个独立手动打包工作流继续提供 Artifacts ZIP，适合验证构建；要直接下载安装包，应使用本节的 Tag 发布流程。
 
+## 应用内更新
+
+安装版 DevDock 启动时检查一次更新，之后每 4 小时检查一次；点击左下角版本号可手动检查。仅检查 GitHub 最新的正式 Release，草稿和预发布版本不会进入默认更新通道。浏览器预览和开发模式不执行真实更新。
+
+发现新版本后，版本号旁显示「更新」。点击后下载当前系统对应的更新包并展示进度；下载和签名校验全部成功后，提示下载完成并显示「重启更新」。此时不会自动安装，用户点击后才安装并重启。下载或安装失败可重试，不把下载 100% 当作校验成功。下载中、等待重启及安装中暂停定时检查；DevDock 仍有任务执行时禁止安装，需等待任务完成。重启前请保存尚未提交的配置。已下载的更新保留在当前进程内存中，退出应用后需重新下载。
+
+更新清单来自 `https://github.com/aixiaodoucn/devDock/releases/latest/download/latest.json`，由 Release Draft 工作流生成。Windows x64 使用签名的 NSIS EXE，macOS 两种架构共用签名的 Universal `DevDock.app.tar.gz`；DMG 继续供用户手动安装。更新器验证固定公钥和签名中的版本，校验失败不会安装。更新签名免费，但不代替 Apple Developer ID、公证或 Windows Authenticode，也不会免除 macOS 辅助功能和自动化授权。
+
+### 首次配置更新签名
+
+两个打包工作流现在都需要更新签名私钥；缺少时会在构建前明确失败。维护者应在仓库 **Settings → Secrets and variables → Actions → New repository secret** 配置：
+
+| Secret                               | 内容                                                                          |
+| ------------------------------------ | ----------------------------------------------------------------------------- |
+| `TAURI_SIGNING_PRIVATE_KEY`          | 与 `src-tauri/tauri.conf.json` 中公钥匹配的私钥文件完整内容，不是本机文件路径 |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 私钥密码；无密码私钥可不设置                                                  |
+
+私钥只能保存在维护者本机和 GitHub Secret 中，不得提交、放入 Release 附件或替换为公开的测试密钥。配置的公钥属于发布线的固定身份，后续版本必须继续使用匹配的私钥；丢失私钥后不能直接换一套密钥为既有客户端更新。需要独立维护新的发布线时，可用 `pnpm exec tauri signer generate --ci -w ~/.tauri/devdock-updater.key` 生成密钥，并将 `.pub` 文件内容配置为公钥，妥善备份私钥；已有发布线不要重新生成或覆盖。
+
+本机构建同样需要提供签名环境变量，例如私钥保存在上述路径时：
+
+```sh
+TAURI_SIGNING_PRIVATE_KEY="$HOME/.tauri/devdock-updater.key" \
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD='' \
+pnpm exec tauri build
+```
+
+### 发布可更新版本
+
+1. 配置上述 Secret，按版本管理流程同步版本、提交并推送新的 Tag。
+2. 等待两平台工作流生成安装包和 `.sig`；Release 工作流验证产物并生成 `latest.json`，一起上传至草稿。
+3. 检查草稿中包含 EXE、DMG、SHA256、`DevDock.app.tar.gz`、两个更新包的 `.sig` 以及 `latest.json`，再手动 **Publish release**。草稿不会被客户端发现。
+4. 首个带更新功能的版本需要手动安装一次；之后安装版客户端会按上述间隔检查更高版本。macOS 应先将应用安装至可写的应用目录，不要直接从只读 DMG 运行并尝试更新。
+
+开发验证：`pnpm test:release` 覆盖草稿发布与更新清单生成，原生更新测试覆盖真实签名校验、签名版本不匹配拒绝安装及任务互斥。测试使用合成数据，不下载安装真实 Release 或覆盖已安装应用。
+
 ## macOS 通用版打包
 
 `.github/workflows/macos-installer.yml` 提供手动触发的 **macOS Installer** 工作流，使用 `macos-latest` runner，生成同时支持 Intel 和 Apple Silicon 的 Universal `.dmg` 安装包。
@@ -77,9 +113,9 @@ git push github v0.2.0
 1. 将 workflow 和代码更新到 GitHub 默认分支（本项目使用 `master`）。
 2. 在 **Actions → macOS Installer → Run workflow** 中选择要构建的分支并运行。
 3. 成功后在运行详情底部 **Artifacts** 下载 `DevDock-macos-universal-运行编号`。
-4. 解压 ZIP，得到 `.dmg` 和 `.dmg.sha256` 校验文件；安装包中包含 `DevDock.app`。产物保留 7 天。
+4. 解压 ZIP，`dmg/` 中为 `.dmg` 和 `.dmg.sha256`，`macos/` 中为 app 更新包及 `.sig`；DMG 中包含 `DevDock.app`。产物保留 7 天。
 
-工作流安装锁定版本依赖，配置两个架构的 Rust 标准库，运行前后端测试及纯脚本测试，然后以 `universal-apple-darwin` 目标构建 DMG。安装包使用 ad-hoc 签名，无需 Apple Developer 证书或自定义 Secrets；它不包含 Developer ID 签名和 Apple 公证，macOS 可能提示开发者未验证，正式分发仍需另外配置签名与公证。
+工作流安装锁定版本依赖，配置两个架构的 Rust 标准库，运行前后端测试及纯脚本测试，然后以 `universal-apple-darwin` 目标构建 DMG。安装包使用 ad-hoc 签名，无需 Apple Developer 证书；更新包另需配置上节的更新签名 Secret。它不包含 Developer ID 签名和 Apple 公证，macOS 可能提示开发者未验证，正式分发仍需另外配置签名与公证。
 
 仅上传安装包和校验文件，不创建 Release，也不向仓库提交或推送。配置检查不代表 GitHub 构建已经成功，实际结果以 Actions 运行日志和安装验收为准。
 
@@ -114,15 +150,15 @@ src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\
 
 ### 使用 GitHub Actions 打包 EXE
 
-仓库提供 `.github/workflows/windows-installer.yml`，在 GitHub 的 `windows-latest` runner 上构建 **Windows x64 NSIS 安装包**，仅手动触发。无需签名证书或自定义 Secrets；生成的安装包未签名。
+仓库提供 `.github/workflows/windows-installer.yml`，在 GitHub 的 `windows-latest` runner 上构建 **Windows x64 NSIS 安装包**，可手动运行或由 Release Draft 调用。无需 Windows 代码签名证书，但需配置上节的更新签名 Secret；生成的安装包尚无 Authenticode 发布者签名。
 
 1. 将源码和 workflow 提交到 GitHub 仓库的默认分支。若仓库将公开，请先完成历史隐私检查；也可先在私有仓库构建。
 2. 打开 GitHub 仓库的 **Actions → Windows Installer**。首次使用可能需要启用 Actions。
 3. 点击 **Run workflow**，选择要构建的分支并运行。手动入口只有在 workflow 已存在于默认分支后才会显示。
 4. 等任务成功，进入本次运行详情，在底部 **Artifacts** 下载 `DevDock-windows-x64-运行编号`。
-5. 解压下载的 ZIP，里面的 `.exe` 是安装包，旁边 `.exe.sha256` 是校验文件。产物保留 7 天，可在过期前下载保存。
+5. 解压下载的 ZIP，里面的 `.exe` 是安装包，旁边 `.exe.sha256` 是校验文件，`.exe.sig` 用于应用内更新签名验证。产物保留 7 天，可在过期前下载保存。
 
-工作流自动配置 Node.js、项目指定版本的 pnpm 和 Rust MSVC，安装锁文件中的依赖，再调用现有 `scripts/build-windows.cmd` 完成前后端测试与打包。Action 版本固定到已核实的提交，仓库权限仅为读取；上传范围仅安装包与校验文件，不上传配置、备份或整个 target 目录。工作流不创建 Release、不提交或推送代码。
+工作流自动配置 Node.js、项目指定版本的 pnpm 和 Rust MSVC，安装锁文件中的依赖，再调用现有 `scripts/build-windows.cmd` 完成前后端测试与打包。Action 版本固定到已核实的提交，仓库权限仅为读取；上传范围仅安装包、更新签名与校验文件，不上传配置、备份或整个 target 目录。工作流不创建 Release、不提交或推送代码。
 
 若运行失败，查看第一个失败步骤的日志；测试失败时不会继续生成安装包。当前 Windows 适配仍需真实 runner 编译与实机验收，工作流文件本身不代表已经构建成功。未签名安装包可能显示 Windows 未知发布者提示，正式分发可另外配置代码签名。
 

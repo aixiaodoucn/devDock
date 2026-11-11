@@ -3,6 +3,11 @@ name: Windows Installer
 on:
   workflow_dispatch:
   workflow_call:
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read
@@ -18,8 +23,16 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUSTUP_TOOLCHAIN: stable
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
     steps:
+      - name: 检查更新签名私钥
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw '缺少 TAURI_SIGNING_PRIVATE_KEY，请配置 GitHub Actions secret 后重试'
+          }
+
       - name: 检出源码
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -72,8 +85,13 @@ jobs:
       - name: 生成安装包 SHA256 校验文件
         run: |
           $installers = @(Get-ChildItem -Path 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe' -File -ErrorAction Stop)
-          if ($installers.Count -eq 0) { throw '未找到 NSIS EXE 安装包' }
+          if ($installers.Count -ne 1) { throw '必须存在唯一的 NSIS EXE 安装包' }
           foreach ($installer in $installers) {
+            $signaturePath = "$($installer.FullName).sig"
+            if (-not (Test-Path -LiteralPath $signaturePath -PathType Leaf) -or
+                [string]::IsNullOrWhiteSpace([System.IO.File]::ReadAllText($signaturePath))) {
+              throw '缺少非空的 EXE 更新签名 .exe.sig'
+            }
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash.ToLowerInvariant()
             $line = "$hash  $($installer.Name)`n"
             [System.IO.File]::WriteAllText("$($installer.FullName).sha256", $line, [System.Text.UTF8Encoding]::new($false))
@@ -86,6 +104,7 @@ jobs:
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sha256
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
           if-no-files-found: error
           overwrite: true
           retention-days: 7
