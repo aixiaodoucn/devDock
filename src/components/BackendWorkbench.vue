@@ -31,6 +31,7 @@ const plan = ref<BackendGitPlan | null>(null);
 const operation = ref<BackendGitOperation | null>(null);
 const history = ref<BackendGitOperation[]>([]);
 const push = ref(false);
+const keepTestPom = ref(false);
 const cleanConfirmed = ref<Record<string, boolean>>({});
 const connected = ref(false);
 const sessionExpired = ref(false);
@@ -223,6 +224,7 @@ watch(
       development.value = [];
       testing.value = [];
       push.value = false;
+      keepTestPom.value = false;
       cleanConfirmed.value = {};
       waiting.value = '';
       notice.value = '';
@@ -275,7 +277,7 @@ watch(
   },
 );
 watch(
-  [selected, push],
+  [selected, push, keepTestPom],
   () => {
     plan.value = null;
   },
@@ -361,6 +363,7 @@ function prepare(operationType: 'switch' | 'merge') {
       repositories,
       operationType,
       operationType === 'merge' && push.value,
+      operationType === 'merge' && keepTestPom.value,
     );
     if (valid(token) && result.projectId === props.project.id) plan.value = result;
   });
@@ -651,12 +654,19 @@ onBeforeUnmount(() => {
         ><label class="checkbox"
           ><input v-model="push" type="checkbox" :disabled="locked" />合并成功后推送测试分支</label
         >
+        <label class="checkbox">
+          <input v-model="keepTestPom" data-keep-test-pom type="checkbox" :disabled="locked" />
+          pom.xml 冲突时保留测试分支版本
+        </label>
       </div>
       <div v-if="plan" class="plan">
         <h4>确认 Git 计划</h4>
         <p>
           {{ plan.operation === 'merge' ? '合并' : '切换分支' }} ·
           {{ plan.push ? '将推送测试分支' : '不推送远端' }}
+        </p>
+        <p v-if="plan.operation === 'merge'">
+          pom.xml 冲突处理：{{ plan.keepTestPom ? '保留测试分支版本' : '暂停并手动处理' }}
         </p>
         <ul>
           <li v-for="item in plan.repositories" :key="item.repository.id">

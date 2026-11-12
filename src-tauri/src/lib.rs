@@ -149,10 +149,18 @@ async fn prepare_backend_git(
     repositories: Vec<backend_git::Repository>,
     operation: String,
     push: bool,
+    keep_test_pom: Option<bool>,
 ) -> Result<backend_git::Plan> {
     ensure_backend_window(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
-        backend_git::prepare(&app, project_id, repositories, operation, push)
+        backend_git::prepare(
+            &app,
+            project_id,
+            repositories,
+            operation,
+            push,
+            keep_test_pom.unwrap_or(false),
+        )
     })
     .await
     .map_err(|_| "Git 预检任务异常".to_owned())?

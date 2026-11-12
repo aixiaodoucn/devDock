@@ -67,12 +67,14 @@ export const api = {
     repositories: BackendRepository[],
     operation: 'switch' | 'merge',
     push = false,
+    keepTestPom = false,
   ) {
     return native<BackendGitPlan>('prepare_backend_git', {
       projectId,
       repositories: JSON.parse(JSON.stringify(repositories)),
       operation,
       push,
+      keepTestPom,
     });
   },
   executeBackendGit(planId: string) {

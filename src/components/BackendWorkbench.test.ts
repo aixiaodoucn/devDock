@@ -223,6 +223,7 @@ it.each(['', 'develop'])('测试分支为 %j 时合并仍被拦截，切换无�
       expect.any(Array),
       'switch',
       false,
+      false,
     );
   } finally {
     panel.close();
@@ -370,6 +371,7 @@ it('新增仓库加入选择、删除仓库剔除，保留取消选择且排除�
       [expect.objectContaining({ id: 'new' })],
       'switch',
       false,
+      false,
     );
   } finally {
     panel.close();
@@ -505,6 +507,57 @@ it('普通目录记录不参与 Git 选择，也不阻断其他仓库的 SCM 映
   }
 });
 
+it('pom 冲突策略默认关闭，只有合并预检携带，修改后旧计划失效', async () => {
+  const panel = await mount();
+  try {
+    const checkbox = panel.root.querySelector<HTMLInputElement>('[data-keep-test-pom]');
+    expect(checkbox).not.toBeNull();
+    const toggle = async (checked: boolean) => {
+      checkbox!.checked = checked;
+      checkbox!.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
+    };
+    expect(checkbox!.checked).toBe(false);
+    click(panel.root, '合并到测试分支');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenLastCalledWith(
+      'example',
+      expect.any(Array),
+      'merge',
+      false,
+      false,
+    );
+    expect(panel.root.querySelector('.plan')?.textContent).toContain('暂停并手动处理');
+    await toggle(true);
+    expect(panel.root.querySelector('.plan')).toBeNull();
+    click(panel.root, '合并到测试分支');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenLastCalledWith(
+      'example',
+      expect.any(Array),
+      'merge',
+      false,
+      true,
+    );
+    expect(panel.root.querySelector('.plan')?.textContent).toContain('保留测试分支版本');
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+    await toggle(false);
+    expect(panel.root.querySelector('.plan')).toBeNull();
+    await toggle(true);
+    click(panel.root, '切换开发分支');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenLastCalledWith(
+      'example',
+      expect.any(Array),
+      'switch',
+      false,
+      false,
+    );
+  } finally {
+    panel.close();
+  }
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   env.desktop = true;
@@ -522,11 +575,12 @@ beforeEach(() => {
   vi.mocked(api.backendRepositoryStatuses).mockResolvedValue([]);
   vi.mocked(api.backendGitOperations).mockResolvedValue([]);
   vi.mocked(api.prepareBackendGit).mockImplementation(
-    async (projectId, repositories, operation, push) => ({
+    async (projectId, repositories, operation, push, keepTestPom) => ({
       planId: 'plan',
       projectId,
       operation,
       push: !!push,
+      keepTestPom: !!keepTestPom,
       repositories: repositories.map((repository) => ({
         repository,
         root: repository.path,
@@ -552,7 +606,13 @@ it('预检不执行，push 默认关闭，确认后执行且与保存互斥', as
   const panel = await mount();
   click(panel.root, '切换开发分支');
   await flush();
-  expect(api.prepareBackendGit).toHaveBeenCalledWith('example', expect.any(Array), 'switch', false);
+  expect(api.prepareBackendGit).toHaveBeenCalledWith(
+    'example',
+    expect.any(Array),
+    'switch',
+    false,
+    false,
+  );
   expect(api.executeBackendGit).not.toHaveBeenCalled();
   click(panel.root, '确认执行计划');
   await flush();
@@ -703,6 +763,7 @@ it('保存中与预检中均禁止重复提交操作，合并默认不推送', a
     'example',
     expect.any(Array),
     'merge',
+    false,
     false,
   );
   resolve({

@@ -28,8 +28,13 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     const repositories = reactive([{ ...repository }]);
     await api.prepareBackendGit('group', repositories, 'merge');
     const [, args] = vi.mocked(invoke).mock.calls.at(-1)!;
-    const payload = args as { repositories: BackendRepository[]; push: boolean };
+    const payload = args as {
+      repositories: BackendRepository[];
+      push: boolean;
+      keepTestPom: boolean;
+    };
     expect(payload.push).toBe(false);
+    expect(payload.keepTestPom).toBe(false);
     expect(isProxy(payload.repositories)).toBe(false);
     expect(isProxy(payload.repositories[0])).toBe(false);
     repositories[0].testBranch = 'changed';
@@ -45,6 +50,15 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     expect(invoke).not.toHaveBeenCalledWith('execute_backend_git', expect.anything());
     await api.executeBackendGit('opaque-plan');
     expect(invoke).toHaveBeenLastCalledWith('execute_backend_git', { planId: 'opaque-plan' });
+  });
+  it('pom 测试版本策略仅在用户显式选择后传入预检', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    await api.prepareBackendGit('group', [repository], 'merge', false, true);
+    expect(invoke).toHaveBeenLastCalledWith(
+      'prepare_backend_git',
+      expect.objectContaining({ keepTestPom: true, push: false }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith('execute_backend_git', expect.anything());
   });
   it('中止和手工完成仅发送计划与子仓库标识', async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);

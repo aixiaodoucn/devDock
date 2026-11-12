@@ -79,6 +79,8 @@ pub struct Plan {
     pub project_id: String,
     pub operation: String,
     pub push: bool,
+    #[serde(default)]
+    pub keep_test_pom: bool,
     pub repositories: Vec<PlanRepository>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -509,7 +511,11 @@ pub fn prepare(
     repositories: Vec<Repository>,
     operation: String,
     push: bool,
+    keep_test_pom: bool,
 ) -> Result<Plan> {
+    if keep_test_pom && operation != "merge" {
+        return Err("仅合并计划支持保留测试分支 pom.xml".into());
+    }
     if push && operation != "merge" {
         return Err("仅合并计划支持显式推送".into());
     }
@@ -558,6 +564,7 @@ pub fn prepare(
         project_id,
         operation: operation.clone(),
         push,
+        keep_test_pom,
         repositories: preflight(&repositories, &operation)?,
     };
     let state = OperationState {
@@ -688,6 +695,74 @@ fn update(app: &AppHandle, id: &str, change: impl FnOnce(&mut OperationState)) {
     }
     let _ = app.emit("backend-git-updated", serde_json::json!({ "planId": id }));
 }
+// -z 保留空格、制表符及 Unicode；只解析索引元信息，不读取或记录文件内容。
+fn unmerged_paths(worktree: &Path, task: Option<&tasks::Task>) -> Result<Vec<(String, bool)>> {
+    let entries = run(worktree, &["ls-files", "--unmerged", "-z"], task)?;
+    if !entries.is_empty() && !entries.ends_with('\0') {
+        return Err("冲突路径输出不完整，现场已保留".into());
+    }
+    let mut paths = std::collections::BTreeMap::new();
+    for entry in entries.split_terminator('\0') {
+        let (metadata, path) = entry
+            .split_once('\t')
+            .ok_or("冲突索引格式无效，现场已保留")?;
+        let stage = metadata
+            .rsplit_once(' ')
+            .map(|(_, stage)| stage)
+            .ok_or("冲突索引格式无效，现场已保留")?;
+        if !["1", "2", "3"].contains(&stage) || path.is_empty() {
+            return Err("冲突索引格式无效，现场已保留".into());
+        }
+        let has_ours = paths.entry(path.to_owned()).or_insert(false);
+        *has_ours |= stage == "2";
+    }
+    Ok(paths.into_iter().collect())
+}
+
+fn resolve_test_pom_conflicts(worktree: &Path, task: Option<&tasks::Task>) -> Result<()> {
+    let conflicts = unmerged_paths(worktree, task)?;
+    if conflicts.is_empty() {
+        // 签名或钩子失败也可能留下 MERGE_HEAD；没有冲突时绝不擅自重试提交。
+        return Err("合并失败且没有可处理的冲突，工作区已保留，请检查签名或钩子".into());
+    }
+    let mut count = 0;
+    for (path, has_ours) in conflicts {
+        if Path::new(&path).file_name() != Some(std::ffi::OsStr::new("pom.xml")) {
+            continue;
+        }
+        // 临时 worktree 附着测试分支，stage 2 / ours 是合并前测试版本。
+        // literal pathspec 防止文件名中的魔法前缀或通配符影响其他路径。
+        if has_ours {
+            run(
+                worktree,
+                &["--literal-pathspecs", "checkout", "--ours", "--", &path],
+                task,
+            )?;
+            run(worktree, &["--literal-pathspecs", "add", "--", &path], task)?;
+        } else {
+            // 测试侧删除时保留删除；普通 rm 失败即停下，不能强制覆盖用户修改。
+            run(worktree, &["--literal-pathspecs", "rm", "--", &path], task)?;
+        }
+        count += 1;
+    }
+    if let Some(task) = task {
+        if count > 0 {
+            task.emit(
+                "log",
+                &format!("已对{count}个pom.xml冲突保留测试版本"),
+                None,
+                None,
+            );
+        }
+    }
+    if !unmerged_paths(worktree, task)?.is_empty() {
+        return Err(format!("已对{count}个pom.xml冲突保留测试版本；仍有其他文件冲突，请在保留的工作区手工处理并提交"));
+    }
+    // 使用正常提交，完整沿用仓库签名和钩子；失败保留工作区供手工处理。
+    run(worktree, &["commit", "--no-edit"], task).map(|_| ())
+}
+
+#[cfg(test)]
 fn perform(
     saved: &PlanRepository,
     operation: &str,
@@ -696,6 +771,20 @@ fn perform(
     task: Option<&tasks::Task>,
     on_worktree: impl Fn() -> Result<()>,
 ) -> Result<()> {
+    perform_with_options(saved, operation, push, false, worktree, task, on_worktree)
+}
+fn perform_with_options(
+    saved: &PlanRepository,
+    operation: &str,
+    push: bool,
+    keep_test_pom: bool,
+    worktree: &Path,
+    task: Option<&tasks::Task>,
+    on_worktree: impl Fn() -> Result<()>,
+) -> Result<()> {
+    if keep_test_pom && operation != "merge" {
+        return Err("仅合并计划支持保留测试分支 pom.xml".into());
+    }
     if let Some(task) = task {
         task.check()?;
     }
@@ -731,11 +820,24 @@ fn perform(
     if sha(worktree, "HEAD")? != saved.target_sha {
         return Err("目标分支在创建工作区时已变化，已保留现场".into());
     }
-    run(
+    if let Err(error) = run(
         worktree,
         &["merge", "--no-edit", "--", &saved.source_sha],
         task,
-    )?;
+    ) {
+        let marker = run(worktree, &["rev-parse", "--git-path", "MERGE_HEAD"], task)?;
+        if !worktree.join(marker).exists() {
+            return Err(error);
+        }
+        if !keep_test_pom {
+            return if unmerged_paths(worktree, task)?.is_empty() {
+                Err(error)
+            } else {
+                Err("合并存在冲突，请在保留工作区手工合并代码".into())
+            };
+        }
+        resolve_test_pom_conflicts(worktree, task)?;
+    }
     if push {
         validate_remote(repo)?;
         // 精确分支 refspec，普通 push 的非快进保护负责拒绝并发远端提交。
@@ -798,10 +900,11 @@ pub fn execute(app: AppHandle, plan_id: String) -> Result<String> {
                 s.repositories[index].status = "running".into()
             });
             task.emit("log", "正在执行后端 Git 仓库操作", None, None);
-            let result = perform(
+            let result = perform_with_options(
                 saved,
                 &plan.operation,
                 plan.push,
+                plan.keep_test_pom,
                 &worktree,
                 Some(task),
                 || {
@@ -1079,6 +1182,255 @@ mod tests {
         };
         (dir, repo)
     }
+    // 所有分支及远端均为本地临时 fixture，不触及用户仓库。
+    fn pom_fixture(
+        paths: &[&str],
+        code_conflict: bool,
+        delete_test: bool,
+    ) -> (TempDir, Repository) {
+        let (dir, repo) = fixture();
+        for path in paths {
+            let file = dir.path().join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "base pom\n").unwrap();
+        }
+        git(dir.path(), &["add", "--all"]);
+        git(dir.path(), &["commit", "-m", "base poms"]);
+        git(dir.path(), &["branch", "-f", "test"]);
+        git(dir.path(), &["switch", "test"]);
+        for path in paths {
+            if delete_test {
+                fs::remove_file(dir.path().join(path)).unwrap();
+            } else {
+                fs::write(dir.path().join(path), "test pom\n").unwrap();
+            }
+        }
+        if code_conflict {
+            fs::write(dir.path().join("file"), "test code\n").unwrap();
+        }
+        git(dir.path(), &["add", "--all"]);
+        git(dir.path(), &["commit", "-m", "test poms"]);
+        git(dir.path(), &["switch", "dev"]);
+        for path in paths {
+            fs::write(dir.path().join(path), "development pom\n").unwrap();
+        }
+        fs::write(dir.path().join("file"), "development code\n").unwrap();
+        git(dir.path(), &["add", "--all"]);
+        git(dir.path(), &["commit", "-m", "development poms"]);
+        (dir, repo)
+    }
+
+    #[test]
+    fn pom_conflicts_are_untouched_by_default() {
+        let (_dir, repo) = pom_fixture(&["pom.xml"], false, false);
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        assert!(perform(&saved, "merge", false, &worktree, None, || Ok(()))
+            .unwrap_err()
+            .contains("手工合并代码"));
+        assert_eq!(
+            git(&worktree, &["diff", "--name-only", "--diff-filter=U"]),
+            "pom.xml"
+        );
+        assert!(fs::read_to_string(worktree.join("pom.xml"))
+            .unwrap()
+            .contains("<<<<<<<"));
+    }
+
+    #[test]
+    fn pom_option_keeps_test_version_and_merges_development_code() {
+        let (dir, repo) = pom_fixture(
+            &[
+                "pom.xml",
+                "module space/子模块/pom.xml",
+                ":(glob)**/pom.xml",
+            ],
+            false,
+            false,
+        );
+        // A clean pom change must survive even when other poms conflict.
+        fs::create_dir(dir.path().join("clean module")).unwrap();
+        fs::write(dir.path().join("clean module/pom.xml"), "incoming\n").unwrap();
+        git(dir.path(), &["add", "clean module/pom.xml"]);
+        git(dir.path(), &["commit", "-m", "clean incoming"]);
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(())).unwrap();
+        for path in [
+            "pom.xml",
+            "module space/子模块/pom.xml",
+            ":(glob)**/pom.xml",
+        ] {
+            assert_eq!(
+                git(dir.path(), &["show", &format!("test:{path}")]),
+                "test pom"
+            );
+        }
+        assert_eq!(
+            git(dir.path(), &["show", "test:clean module/pom.xml"]),
+            "incoming"
+        );
+        assert_eq!(git(dir.path(), &["show", "test:file"]), "development code");
+        assert_eq!(git(dir.path(), &["rev-parse", "test^1"]), saved.target_sha);
+        assert_eq!(git(dir.path(), &["rev-parse", "test^2"]), saved.source_sha);
+        assert_eq!(branch(dir.path()), "dev");
+        assert!(!worktree.exists());
+    }
+
+    #[test]
+    fn pom_option_leaves_other_conflicts_uncommitted() {
+        let (_dir, repo) = pom_fixture(&["pom.xml", "not-pom.xml"], true, false);
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        let error = perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(()))
+            .unwrap_err();
+        assert!(error.contains("其他文件冲突"));
+        assert_eq!(
+            fs::read_to_string(worktree.join("pom.xml")).unwrap(),
+            "test pom\n"
+        );
+        assert_eq!(
+            git(&worktree, &["diff", "--name-only", "--diff-filter=U"]),
+            "file\nnot-pom.xml"
+        );
+        assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.target_sha);
+        assert!(worktree
+            .join(run(&worktree, &["rev-parse", "--git-path", "MERGE_HEAD"], None).unwrap())
+            .exists());
+    }
+
+    #[test]
+    fn pom_option_preserves_test_side_deletion() {
+        let (dir, repo) = pom_fixture(&["pom.xml", "module space/pom.xml"], false, true);
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(())).unwrap();
+        assert!(git(dir.path(), &["ls-tree", "-r", "--name-only", "test"])
+            .lines()
+            .all(|p| Path::new(p).file_name() != Some(std::ffi::OsStr::new("pom.xml"))));
+        assert_eq!(git(dir.path(), &["show", "test:file"]), "development code");
+        assert!(!worktree.exists());
+    }
+
+    #[test]
+    fn pom_option_does_not_replace_clean_pom_changes() {
+        let (dir, repo) = fixture();
+        fs::write(dir.path().join("pom.xml"), "incoming pom\n").unwrap();
+        git(dir.path(), &["add", "pom.xml"]);
+        git(dir.path(), &["commit", "-m", "incoming pom"]);
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        perform_with_options(
+            &saved,
+            "merge",
+            false,
+            true,
+            &tmp.path().join("merge"),
+            None,
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(git(dir.path(), &["show", "test:pom.xml"]), "incoming pom");
+    }
+
+    #[test]
+    fn pom_option_rejects_switch_before_changing_repository() {
+        let (dir, repo) = fixture();
+        let saved = snapshot(&repo, "switch").unwrap();
+        let tmp = tempdir().unwrap();
+        assert!(perform_with_options(
+            &saved,
+            "switch",
+            false,
+            true,
+            &tmp.path().join("merge"),
+            None,
+            || Ok(())
+        )
+        .is_err());
+        assert_eq!(branch(dir.path()), "dev");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pom_option_preserves_commit_hook_rejection() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, repo) = pom_fixture(&["pom.xml"], false, false);
+        let hooks = dir.path().join(".git/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        assert!(
+            perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(())).is_err()
+        );
+        assert!(unmerged_paths(&worktree, None).unwrap().is_empty());
+        assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.target_sha);
+        assert!(worktree.is_dir());
+    }
+
+    #[test]
+    fn pom_option_preserves_signing_rejection_after_resolution() {
+        let (dir, repo) = pom_fixture(&["pom.xml"], false, false);
+        git(dir.path(), &["config", "commit.gpgSign", "true"]);
+        git(
+            dir.path(),
+            &[
+                "config",
+                "gpg.program",
+                dir.path().join("missing-signing-program").to_str().unwrap(),
+            ],
+        );
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        assert!(
+            perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(())).is_err()
+        );
+        assert!(unmerged_paths(&worktree, None).unwrap().is_empty());
+        assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.target_sha);
+        assert!(worktree.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pom_option_does_not_commit_after_nonconflict_merge_hook_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, repo) = fixture();
+        change(dir.path(), "development\n");
+        git(dir.path(), &["config", "merge.ff", "false"]);
+        let hooks = dir.path().join(".git/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-merge-commit");
+        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        assert!(
+            perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(())).is_err()
+        );
+        assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.target_sha);
+        assert!(worktree.is_dir());
+    }
+
+    #[test]
+    fn old_plan_defaults_pom_option_to_false() {
+        let plan: Plan = serde_json::from_value(serde_json::json!({
+            "planId": "old", "projectId": "p", "operation": "merge", "push": false, "repositories": []
+        })).unwrap();
+        assert!(!serde_json::to_value(plan).unwrap()["keepTestPom"]
+            .as_bool()
+            .unwrap());
+    }
+
     #[test]
     fn preserves_repository_signing_configuration() {
         let (dir, repo) = fixture();
@@ -1491,6 +1843,7 @@ mod tests {
                 project_id: "p".into(),
                 operation: "merge".into(),
                 push: true,
+                keep_test_pom: false,
                 repositories: vec![saved],
             },
             state: OperationState {
@@ -1506,8 +1859,14 @@ mod tests {
             },
         };
         let journal = operation.join("operation.json");
-        fs::write(&journal, serde_json::to_vec(&entry).unwrap()).unwrap();
+        let mut legacy = serde_json::to_value(&entry).unwrap();
+        legacy["plan"]
+            .as_object_mut()
+            .unwrap()
+            .remove("keepTestPom");
+        fs::write(&journal, serde_json::to_vec(&legacy).unwrap()).unwrap();
         let restored = restore_entry(&journal).unwrap();
+        assert!(!restored.plan.keep_test_pom);
         assert_eq!(restored.state.status, "paused");
         assert_eq!(restored.state.repositories[0].status, "error");
         entry.state.repositories[0].worktree_path =
