@@ -1023,6 +1023,7 @@ input:not([type='checkbox']) {
   gap: 12px;
 }
 .mapping-fields {
+  margin-left: 23px;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 10px;
