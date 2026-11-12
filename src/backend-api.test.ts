@@ -51,18 +51,21 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     await api.executeBackendGit('opaque-plan');
     expect(invoke).toHaveBeenLastCalledWith('execute_backend_git', { planId: 'opaque-plan' });
   });
-  it('切换测试分支使用独立操作类型，不改写开发映射且不直接执行', async () => {
-    vi.mocked(invoke).mockResolvedValue({});
-    await api.prepareBackendGit('group', [repository], 'switch-test');
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('prepare_backend_git', {
-      projectId: 'group',
-      repositories: [repository],
-      operation: 'switch-test',
-      push: false,
-      keepTestPom: false,
-    });
-    expect(repository.developmentBranch).toBe('feature/demo');
-  });
+  it.each(['switch-test', 'switch-master'] as const)(
+    '分支切换 %s 不改写开发映射且不直接执行',
+    async (operation) => {
+      vi.mocked(invoke).mockResolvedValue({});
+      await api.prepareBackendGit('group', [repository], operation);
+      expect(invoke).toHaveBeenCalledExactlyOnceWith('prepare_backend_git', {
+        projectId: 'group',
+        repositories: [repository],
+        operation,
+        push: false,
+        keepTestPom: false,
+      });
+      expect(repository.developmentBranch).toBe('feature/demo');
+    },
+  );
   it('开发分支推送显式标识远端写入，预检不会直接执行', async () => {
     vi.mocked(invoke).mockResolvedValue({});
     await api.prepareBackendGit('group', [repository], 'push-dev', true, false);

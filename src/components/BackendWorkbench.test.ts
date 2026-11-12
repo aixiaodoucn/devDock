@@ -223,6 +223,66 @@ it('剪贴板拒绝时提示手动复制，不把失败报告为成功', async (
   }
 });
 
+it('切换master不依赖测试目标，预检后确认执行且不采用合并选项', async () => {
+  const initial = fixture();
+  initial.subProjects[0].testBranch = '';
+  const panel = await ready(initial);
+  try {
+    for (const text of ['合并成功后推送测试分支', 'pom.xml 冲突时保留测试分支版本']) {
+      const checkbox = [...panel.root.querySelectorAll('label')]
+        .find((label) => label.textContent?.includes(text))!
+        .querySelector('input')!;
+      checkbox.checked = true;
+      checkbox.dispatchEvent(new Event('change'));
+      await flush();
+    }
+    click(panel.root, '切换master分支');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenCalledExactlyOnceWith(
+      'example',
+      [expect.objectContaining({ developmentBranch: 'develop', testBranch: '' })],
+      'switch-master',
+      false,
+      false,
+    );
+    expect(panel.root.querySelector('.plan')?.textContent).toContain('切换master分支');
+    expect([...panel.root.querySelectorAll('.plan-branch code')].at(-1)?.textContent).toBe(
+      'master',
+    );
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+    click(panel.root, '确认执行计划');
+    await flush();
+    expect(api.executeBackendGit).toHaveBeenCalledExactlyOnceWith('plan');
+    expect(panel.task).toHaveBeenCalledWith('task', '切换master分支');
+  } finally {
+    panel.close();
+  }
+});
+
+it('切换master在工作区脏或保存期间不可执行', async () => {
+  const panel = await ready();
+  try {
+    const statuses: Awaited<ReturnType<typeof api.backendRepositoryStatuses>> = await vi
+      .mocked(api.backendRepositoryStatuses)
+      .mock.results.at(-1)!.value;
+    for (const condition of ['dirty', 'merging', 'rebasing'] as const) {
+      vi.mocked(api.backendRepositoryStatuses).mockResolvedValueOnce(
+        statuses.map((status) => ({ ...status, [condition]: true })),
+      );
+      click(panel.root, '刷新仓库');
+      await flush();
+      expect(button(panel.root, '切换master分支').disabled).toBe(true);
+      click(panel.root, '切换master分支');
+      expect(api.prepareBackendGit).not.toHaveBeenCalled();
+    }
+    panel.saving.value = true;
+    await flush();
+    expect(button(panel.root, '切换master分支').disabled).toBe(true);
+  } finally {
+    panel.close();
+  }
+});
+
 it('待处理和测试项目全部进入开发及测试来源的共享候选列表', async () => {
   const projects = Array.from({ length: 7 }, (_, index) => ({
     id: String(101 + index),
@@ -757,9 +817,11 @@ beforeEach(() => {
         currentBranch: operation === 'push-dev' ? repository.developmentBranch : 'main',
         sourceSha: 'abc123',
         targetBranch:
-          operation === 'switch' || operation === 'push-dev'
-            ? repository.developmentBranch
-            : repository.testBranch,
+          operation === 'switch-master'
+            ? 'master'
+            : operation === 'switch' || operation === 'push-dev'
+              ? repository.developmentBranch
+              : repository.testBranch,
         targetSha: 'def',
         remoteSha: 'def',
         createTracking: false,

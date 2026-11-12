@@ -254,6 +254,7 @@ function branchCopyProps(value?: string) {
 const gitActionLabels = {
   switch: '切换开发分支',
   'switch-test': '切换到测试分支',
+  'switch-master': '切换master分支',
   'push-dev': '推送开发分支到远程',
   merge: '合并到测试分支',
 } satisfies Record<BackendGitPlan['operation'], string>;
@@ -304,6 +305,7 @@ function disabledReason(operationType: BackendGitPlan['operation']): string {
 }
 const switchDisabledReason = computed(() => disabledReason('switch'));
 const switchTestDisabledReason = computed(() => disabledReason('switch-test'));
+const switchMasterDisabledReason = computed(() => disabledReason('switch-master'));
 const pushDevDisabledReason = computed(() => disabledReason('push-dev'));
 const mergeDisabledReason = computed(() => disabledReason('merge'));
 function valid(token: number) {
@@ -915,6 +917,13 @@ onBeforeUnmount(() => {
           @click="prepare('switch-test')"
         >
           切换到测试分支</button
+        ><button
+          class="button small"
+          :disabled="!!switchMasterDisabledReason"
+          :title="switchMasterDisabledReason || '获取远端并预检，确认计划后切换master分支。'"
+          @click="prepare('switch-master')"
+        >
+          切换master分支</button
         ><button
           class="button small"
           :disabled="!!mergeDisabledReason"

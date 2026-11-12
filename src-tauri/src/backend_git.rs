@@ -459,7 +459,15 @@ fn push_remote_sha(repo: &Repository, check: impl Fn() -> Result<()>) -> Result<
     Ok(oid.into())
 }
 fn validate_options(operation: &str, push: bool, keep_test_pom: bool) -> Result<()> {
-    if !["switch", "switch-test", "merge", "push-dev"].contains(&operation) {
+    if ![
+        "switch",
+        "switch-test",
+        "switch-master",
+        "merge",
+        "push-dev",
+    ]
+    .contains(&operation)
+    {
         return Err("未知 Git 操作".into());
     }
     if keep_test_pom && operation != "merge" {
@@ -485,7 +493,15 @@ fn snapshot_with_task(
     if let Some(task) = task {
         task.check()?;
     }
-    if !["switch", "switch-test", "merge", "push-dev"].contains(&operation) {
+    if ![
+        "switch",
+        "switch-test",
+        "switch-master",
+        "merge",
+        "push-dev",
+    ]
+    .contains(&operation)
+    {
         return Err("未知 Git 操作".into());
     }
     let path = Path::new(&repo.path);
@@ -493,8 +509,8 @@ fn snapshot_with_task(
     if status.dirty || status.merging || status.rebasing {
         return Err("仓库有未提交修改或正在 merge/rebase".into());
     }
-    // 测试切换只依赖测试目标，保留真实当前分支作为重验来源。
-    if operation != "switch-test" {
+    // 测试/master 切换只依赖各自目标，保留真实当前分支作为重验来源。
+    if !["switch-test", "switch-master"].contains(&operation) {
         valid_branch(path, &repo.development_branch)?;
     }
     if operation == "push-dev" {
@@ -532,10 +548,10 @@ fn snapshot_with_task(
             remote_identity: remote_identity(repo),
         });
     }
-    let target = if operation == "switch" {
-        &repo.development_branch
-    } else {
-        &repo.test_branch
+    let target = match operation {
+        "switch" => repo.development_branch.as_str(),
+        "switch-master" => "master",
+        _ => repo.test_branch.as_str(),
     };
     valid_branch(path, target)?;
     if operation == "merge"
@@ -572,7 +588,7 @@ fn snapshot_with_task(
         common_dir: canonical(&path.join(common))?,
         current_branch: status.current_branch,
         source_sha: status.head,
-        target_branch: target.clone(),
+        target_branch: target.to_owned(),
         target_sha,
         create_tracking,
         remote_sha,
@@ -970,7 +986,7 @@ fn perform_with_options(
             task,
         )?;
     }
-    if operation == "switch" || operation == "switch-test" {
+    if ["switch", "switch-test", "switch-master"].contains(&operation) {
         run(path, &["switch", "--no-guess", &saved.target_branch], task)?;
         return Ok(());
     }
@@ -2074,6 +2090,187 @@ mod tests {
         assert!(snapshot(&missing, "switch").is_err());
         assert!(preflight(&[repo.clone(), repo], "switch").is_err());
     }
+    #[test]
+    fn switch_master_changes_only_checkout_without_branch_mappings() {
+        for current in ["dev", "feature", "master"] {
+            let (dir, mut repo) = fixture();
+            git(dir.path(), &["branch", "master"]);
+            change(dir.path(), "development only\n");
+            if current == "feature" {
+                git(dir.path(), &["switch", "-c", current]);
+            } else {
+                git(dir.path(), &["switch", current]);
+            }
+            repo.development_branch.clear();
+            repo.test_branch = "invalid test branch".into();
+            let saved = preflight(&[repo.clone()], "switch-master")
+                .unwrap()
+                .remove(0);
+            assert_eq!(saved.current_branch, current);
+            assert_eq!(saved.target_branch, "master");
+            assert_eq!(saved.repository.development_branch, repo.development_branch);
+            assert_eq!(saved.repository.test_branch, repo.test_branch);
+            let tmp = tempdir().unwrap();
+            let worktree = tmp.path().join("unused");
+            perform(&saved, "switch-master", false, &worktree, None, || {
+                panic!("switch-master must not create a merge worktree")
+            })
+            .unwrap();
+            assert_eq!(branch(dir.path()), "master");
+            assert_eq!(sha(dir.path(), "HEAD").unwrap(), saved.target_sha);
+            assert_eq!(git(dir.path(), &["show", "master:file"]), "base");
+            assert_eq!(git(dir.path(), &["show", "dev:file"]), "development only");
+            assert!(!worktree.exists());
+        }
+    }
+
+    #[test]
+    fn switch_master_requires_master_and_creates_remote_tracking() {
+        let (dir, repo, remote) = push_fixture(false);
+        git(dir.path(), &["branch", "main"]);
+        git(dir.path(), &["push", "origin", "main"]);
+        assert!(snapshot(&repo, "switch-master").is_err());
+        git(dir.path(), &["push", "origin", "dev:master"]);
+        fetch_fixture(&repo);
+        let saved = snapshot(&repo, "switch-master").unwrap();
+        assert!(saved.create_tracking);
+        let tmp = tempdir().unwrap();
+        perform(
+            &saved,
+            "switch-master",
+            false,
+            &tmp.path().join("unused"),
+            None,
+            || panic!("tracking switch must not create a merge worktree"),
+        )
+        .unwrap();
+        assert_eq!(branch(dir.path()), "master");
+        assert_eq!(
+            git(dir.path(), &["config", "branch.master.remote"]),
+            "origin"
+        );
+        assert_eq!(
+            git(dir.path(), &["config", "branch.master.merge"]),
+            "refs/heads/master"
+        );
+        assert_eq!(
+            sha(remote.path(), "refs/heads/master").unwrap(),
+            saved.target_sha
+        );
+    }
+
+    #[test]
+    fn switch_master_rejects_dirty_changes_and_occupied_worktrees() {
+        for changed in [
+            "dirty",
+            "source",
+            "target",
+            "remote-sha",
+            "remote-url",
+            "occupied",
+            "MERGE_HEAD",
+            "rebase-merge",
+            "rebase-apply",
+        ] {
+            let (dir, repo, _remote) = push_fixture(false);
+            git(dir.path(), &["branch", "master"]);
+            git(dir.path(), &["push", "origin", "master"]);
+            let saved = snapshot(&repo, "switch-master").unwrap();
+            assert!(preflight(&[repo.clone(), repo.clone()], "switch-master").is_err());
+            let tmp = tempdir().unwrap();
+            let next = git(
+                dir.path(),
+                &[
+                    "commit-tree",
+                    &format!("{}^{{tree}}", saved.source_sha),
+                    "-p",
+                    &saved.source_sha,
+                    "-m",
+                    "next",
+                ],
+            );
+            match changed {
+                "dirty" => fs::write(dir.path().join("file"), "preserve edits").unwrap(),
+                "source" | "target" | "remote-sha" => {
+                    let reference = match changed {
+                        "source" => "refs/heads/dev",
+                        "target" => "refs/heads/master",
+                        _ => "refs/remotes/origin/master",
+                    };
+                    git(dir.path(), &["update-ref", reference, &next]);
+                }
+                "remote-url" => {
+                    git(
+                        dir.path(),
+                        &["remote", "set-url", "origin", tmp.path().to_str().unwrap()],
+                    );
+                }
+                "occupied" => {
+                    git(
+                        dir.path(),
+                        &[
+                            "worktree",
+                            "add",
+                            tmp.path().join("occupied").to_str().unwrap(),
+                            "master",
+                        ],
+                    );
+                }
+                "MERGE_HEAD" => {
+                    fs::write(dir.path().join(".git/MERGE_HEAD"), &saved.source_sha).unwrap()
+                }
+                marker => fs::create_dir(dir.path().join(".git").join(marker)).unwrap(),
+            }
+            if matches!(
+                changed,
+                "dirty" | "occupied" | "MERGE_HEAD" | "rebase-merge" | "rebase-apply"
+            ) {
+                assert!(snapshot(&repo, "switch-master").is_err(), "{changed}");
+            }
+            let worktree = tmp.path().join("unused");
+            assert!(
+                perform(&saved, "switch-master", false, &worktree, None, || panic!(
+                    "must reject before creating worktree"
+                ))
+                .is_err(),
+                "{changed}"
+            );
+            assert_eq!(branch(dir.path()), "dev");
+            assert!(!worktree.exists());
+            if changed == "dirty" {
+                assert_eq!(
+                    fs::read_to_string(dir.path().join("file")).unwrap(),
+                    "preserve edits"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn switch_master_rejects_push_and_pom_before_creating_tracking() {
+        let (dir, repo, _remote) = push_fixture(false);
+        git(dir.path(), &["push", "origin", "dev:master"]);
+        fetch_fixture(&repo);
+        let saved = snapshot(&repo, "switch-master").unwrap();
+        assert!(saved.create_tracking);
+        let tmp = tempdir().unwrap();
+        for (push, pom) in [(true, false), (false, true), (true, true)] {
+            assert!(validate_options("switch-master", push, pom).is_err());
+            assert!(perform_with_options(
+                &saved,
+                "switch-master",
+                push,
+                pom,
+                &tmp.path().join("unused"),
+                None,
+                || panic!("must reject invalid options")
+            )
+            .is_err());
+            assert_eq!(branch(dir.path()), "dev");
+            assert!(sha(dir.path(), "refs/heads/master").is_err());
+        }
+    }
+
     #[test]
     fn switch_test_changes_only_checkout_from_development_other_or_target_branch() {
         for current in ["dev", "feature", "test"] {
