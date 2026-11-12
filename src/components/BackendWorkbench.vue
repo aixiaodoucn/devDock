@@ -1112,7 +1112,20 @@ input:not([type='checkbox']) {
 }
 .mapping-branch code {
   min-width: 0;
+  max-width: 100%;
+  justify-self: start;
+  padding: 3px 7px;
+  border-radius: 4px;
   user-select: text;
+}
+/* 分支角色使用固定配色，切换主题后仍能保持一致的辨识。 */
+.mapping-branch [data-development] {
+  color: #2458ce;
+  background: #edf3ff;
+}
+.mapping-branch [data-test] {
+  color: #a34b0b;
+  background: #fff1df;
 }
 .repository,
 .repository-unlinked {
@@ -1150,8 +1163,8 @@ input:not([type='checkbox']) {
   min-width: 0;
   max-width: 100%;
   white-space: normal;
-  color: var(--accent-text);
-  background: var(--accent-soft);
+  color: var(--success-text);
+  background: var(--success-soft);
   padding: 3px 7px;
   border-radius: 4px;
 }
