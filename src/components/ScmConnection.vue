@@ -114,7 +114,38 @@ onBeforeUnmount(() => {
     </div>
     <p v-if="!desktop" class="hint">浏览器预览：SCM 登录需要桌面应用。</p>
     <p v-if="expired" role="alert">会话已过期，请重新登录。</p>
-    <form @submit.prevent="request('login')">
+    <div v-if="status?.connected && !expired" class="connection-summary">
+      <dl>
+        <div>
+          <dt>SCM URL</dt>
+          <dd>{{ status.baseUrl || '未提供地址' }}</dd>
+        </div>
+        <div>
+          <dt>登录用户</dt>
+          <dd>{{ status.username || '未提供用户名' }}</dd>
+        </div>
+      </dl>
+      <div class="connection-actions">
+        <button
+          class="button small"
+          type="button"
+          :disabled="!desktop || pending || disabled"
+          @click="request('status')"
+        >
+          刷新状态
+        </button>
+        <button
+          class="button small"
+          type="button"
+          :disabled="!desktop || pending || disabled"
+          @click="request('logout')"
+        >
+          退出登录
+        </button>
+      </div>
+    </div>
+    <p v-else-if="pending && !status" class="hint" role="status">正在检查登录状态…</p>
+    <form v-else @submit.prevent="request('login')">
       <fieldset :disabled="!desktop || pending || disabled">
         <label
           >SCM URL<input
@@ -137,15 +168,7 @@ onBeforeUnmount(() => {
         <div class="connection-actions">
           <button class="button small primary" type="submit">
             {{ pending ? '处理中…' : '登录' }}</button
-          ><button class="button small" type="button" @click="request('status')">刷新状态</button
-          ><button
-            class="button small"
-            v-if="status?.connected"
-            type="button"
-            @click="request('logout')"
-          >
-            退出登录
-          </button>
+          ><button class="button small" type="button" @click="request('status')">刷新状态</button>
         </div>
       </fieldset>
     </form>
@@ -175,6 +198,37 @@ onBeforeUnmount(() => {
 .hint {
   color: var(--muted);
   font-size: 12px;
+}
+.connection-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+}
+.connection-summary dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+}
+.connection-summary dl > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.connection-summary dt {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.connection-summary dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
 fieldset {
   display: grid;

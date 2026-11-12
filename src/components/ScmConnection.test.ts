@@ -36,6 +36,67 @@ beforeEach(() => {
   vi.mocked(api.scmStatus).mockResolvedValue({ ...status, connected: false });
   vi.mocked(api.scmLogin).mockResolvedValue(status);
 });
+it('恢复有效会话后仅显示地址、用户名及状态操作，不显示登录表单', async () => {
+  vi.mocked(api.scmStatus).mockResolvedValueOnce(status);
+  const panel = mount();
+  try {
+    await flush();
+    expect(panel.root.querySelector('form')).toBeNull();
+    expect(panel.root.querySelector('input')).toBeNull();
+    expect(panel.root.querySelector('.connection-summary')?.textContent).toContain(status.baseUrl);
+    expect(panel.root.querySelector('.connection-summary')?.textContent).toContain(status.username);
+    expect(
+      [...panel.root.querySelectorAll('button')].map((button) => button.textContent?.trim()),
+    ).toEqual(['刷新状态', '退出登录']);
+    expect(api.scmLogin).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+it('检查初始会话期间不闪现登录表单', async () => {
+  let finish!: (value: typeof status) => void;
+  vi.mocked(api.scmStatus).mockReturnValueOnce(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const panel = mount();
+  try {
+    await nextTick();
+    expect(panel.root.textContent).toContain('正在检查登录状态');
+    expect(panel.root.querySelector('form')).toBeNull();
+    finish(status);
+    await flush();
+    expect(panel.root.querySelector('.connection-summary')).not.toBeNull();
+  } finally {
+    panel.close();
+  }
+});
+it('退出登录后恢复登录表单，保留地址和用户名但不保留密码', async () => {
+  vi.mocked(api.scmStatus).mockResolvedValueOnce(status);
+  vi.mocked(api.scmLogout).mockResolvedValueOnce({ ...status, connected: false });
+  const panel = mount();
+  try {
+    await flush();
+    [...panel.root.querySelectorAll('button')]
+      .find((button) => button.textContent?.trim() === '退出登录')!
+      .click();
+    await flush();
+    expect(api.scmLogout).toHaveBeenCalledOnce();
+    expect(panel.root.querySelector('.connection-summary')).toBeNull();
+    expect(panel.root.querySelector<HTMLInputElement>('[name="baseUrl"]')?.value).toBe(
+      status.baseUrl,
+    );
+    expect(panel.root.querySelector<HTMLInputElement>('[name="username"]')?.value).toBe(
+      status.username,
+    );
+    expect(panel.root.querySelector<HTMLInputElement>('[name="password"]')?.value).toBe('');
+    expect(panel.root.querySelector('button[type="submit"]')?.textContent?.trim()).toBe('登录');
+    expect(api.scmLogin).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
 it('系统凭据失败的安全提示可见，刷新发现过期后清除已连接状态', async () => {
   vi.mocked(api.scmStatus).mockResolvedValueOnce({
     ...status,
@@ -53,6 +114,8 @@ it('系统凭据失败的安全提示可见，刷新发现过期后清除已连�
     expect(panel.root.textContent).toContain('未连接');
     expect(panel.root.textContent).toContain('会话已过期');
     expect(panel.changed).toHaveBeenLastCalledWith(expect.objectContaining({ connected: false }));
+    expect(panel.root.querySelector('.connection-summary')).toBeNull();
+    expect(panel.root.querySelector('[name="password"]')).not.toBeNull();
   } finally {
     panel.close();
   }

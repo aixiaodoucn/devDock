@@ -652,6 +652,13 @@ it('预检不执行，push 默认关闭，确认后执行且与保存互斥', as
   panel.close();
 });
 it('映射字段只读且没有保存映射按钮，SCM 自动保存不导出凭据并等待父回执', async () => {
+  vi.mocked(api.scmStatus).mockResolvedValueOnce({
+    connected: true,
+    baseUrl: 'https://example.invalid',
+    username: 'fixture-user',
+    remembered: false,
+    message: null,
+  });
   const panel = await ready();
   try {
     expect(button(panel.root, '保存映射')).toBeUndefined();
@@ -662,7 +669,8 @@ it('映射字段只读且没有保存映射按钮，SCM 自动保存不导出凭
     expect(panel.root.querySelector('input[data-development], input[data-test]')).toBeNull();
     expect(panel.root.querySelector('code[data-development]')?.textContent).toBe('develop');
     expect(panel.root.querySelector('code[data-test]')?.textContent).toBe('test');
-    input(panel.root, '[name="password"]', 'fixture-secret');
+    expect(panel.root.querySelector('[name="password"]')).toBeNull();
+    expect(panel.root.querySelector('.connection-summary')?.textContent).toContain('fixture-user');
     vi.mocked(api.scmProjectModules).mockResolvedValue([
       { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'feature/new' },
     ]);
@@ -670,7 +678,7 @@ it('映射字段只读且没有保存映射按钮，SCM 自动保存不导出凭
     await flush();
     expect(panel.save).toHaveBeenCalledOnce();
     expect(JSON.stringify(panel.save.mock.calls)).not.toMatch(
-      /password|session|username|fixture-secret/,
+      /password|session|username|fixture-user/,
     );
     expect(panel.root.textContent).toContain('等待保存确认');
     click(panel.root, '切换开发分支');
