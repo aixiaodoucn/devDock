@@ -1307,7 +1307,11 @@ small {
   margin-top: 5px;
 }
 .branch-copyable {
-  cursor: copy;
+  /* 系统 copy 指针在 macOS 显示加号，改用双页图标统一复制提示。 */
+  cursor:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Crect x='3' y='3' width='12' height='14' rx='2' fill='white' stroke='%23333' stroke-width='1.5'/%3E%3Crect x='8' y='7' width='12' height='14' rx='2' fill='white' stroke='%23333' stroke-width='1.5'/%3E%3C/svg%3E")
+      3 3,
+    pointer;
 }
 .branch-copyable:hover {
   text-decoration: underline;
