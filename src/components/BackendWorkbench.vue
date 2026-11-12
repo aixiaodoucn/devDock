@@ -885,15 +885,6 @@ onBeforeUnmount(() => {
           pom.xml 冲突时保留测试分支版本
         </label>
       </div>
-      <p class="hint" data-switch-reason>
-        切换开发分支：{{ switchDisabledReason || '可点击预检，确认计划后执行。' }}
-      </p>
-      <p class="hint" data-switch-test-reason>
-        切换到测试分支：{{ switchTestDisabledReason || '可点击预检，确认计划后执行。' }}
-      </p>
-      <p class="hint" data-merge-reason>
-        合并到测试分支：{{ mergeDisabledReason || '可点击预检，确认计划后执行。' }}
-      </p>
       <div v-if="plan" class="plan">
         <h4>确认 Git 计划</h4>
         <p>
