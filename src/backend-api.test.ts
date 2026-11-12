@@ -51,6 +51,18 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     await api.executeBackendGit('opaque-plan');
     expect(invoke).toHaveBeenLastCalledWith('execute_backend_git', { planId: 'opaque-plan' });
   });
+  it('切换测试分支使用独立操作类型，不改写开发映射且不直接执行', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    await api.prepareBackendGit('group', [repository], 'switch-test');
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('prepare_backend_git', {
+      projectId: 'group',
+      repositories: [repository],
+      operation: 'switch-test',
+      push: false,
+      keepTestPom: false,
+    });
+    expect(repository.developmentBranch).toBe('feature/demo');
+  });
   it('pom 测试版本策略仅在用户显式选择后传入预检', async () => {
     vi.mocked(invoke).mockResolvedValue({});
     await api.prepareBackendGit('group', [repository], 'merge', false, true);

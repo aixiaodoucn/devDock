@@ -65,7 +65,7 @@ export const api = {
   prepareBackendGit(
     projectId: string,
     repositories: BackendRepository[],
-    operation: 'switch' | 'merge',
+    operation: BackendGitPlan['operation'],
     push = false,
     keepTestPom = false,
   ) {

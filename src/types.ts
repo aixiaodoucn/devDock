@@ -56,7 +56,7 @@ export interface BackendGitPlanRepository {
 export interface BackendGitPlan {
   planId: string;
   projectId: string;
-  operation: 'switch' | 'merge';
+  operation: 'switch' | 'switch-test' | 'merge';
   push: boolean;
   keepTestPom?: boolean;
   repositories: BackendGitPlanRepository[];

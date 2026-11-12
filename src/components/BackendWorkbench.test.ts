@@ -67,6 +67,7 @@ async function mount(initial = fixture()) {
   const saving = ref(false);
   const save = vi.fn();
   const edit = vi.fn();
+  const task = vi.fn();
   const root = document.createElement('div');
   const app = createApp({
     render: () =>
@@ -76,11 +77,12 @@ async function mount(initial = fixture()) {
         busy: false,
         onSave: save,
         onEdit: edit,
+        onTask: task,
       }),
   });
   app.mount(root);
   await flush();
-  return { project, saving, save, edit, root, close: () => app.unmount() };
+  return { project, saving, save, edit, task, root, close: () => app.unmount() };
 }
 async function ready(initial = fixture()) {
   const panel = await mount({
@@ -321,7 +323,7 @@ it('连续外部原地更新使用独立快照并移除失效计划', async () =
     await flush();
     panel.project.value.subProjects[0].testBranch = 'external-test';
     await flush();
-    expect(panel.root.querySelector<HTMLInputElement>('[data-test]')!.value).toBe('external-test');
+    expect(panel.root.querySelector<HTMLElement>('[data-test]')!.textContent).toBe('external-test');
   } finally {
     panel.close();
   }
@@ -439,7 +441,7 @@ it('外部结构更新不冒充精确保存回执，失败保留 SCM 草稿和�
     panel.saving.value = false;
     await flush();
     expect(panel.root.textContent).toContain('保存未完成');
-    expect(panel.root.querySelector<HTMLInputElement>('[data-development]')!.value).toBe(
+    expect(panel.root.querySelector<HTMLElement>('[data-development]')!.textContent).toBe(
       'feature/scm',
     );
     expect(panel.root.querySelectorAll('.repository')).toHaveLength(2);
@@ -616,7 +618,7 @@ beforeEach(() => {
         commonDir: '',
         currentBranch: 'main',
         sourceSha: 'abc123',
-        targetBranch: repository.developmentBranch,
+        targetBranch: operation === 'switch' ? repository.developmentBranch : repository.testBranch,
         targetSha: 'def',
         remoteSha: 'def',
         createTracking: false,
@@ -654,14 +656,12 @@ it('映射字段只读且没有保存映射按钮，SCM 自动保存不导出凭
   try {
     expect(button(panel.root, '保存映射')).toBeUndefined();
     expect(panel.root.querySelector('[data-save]')).toBeNull();
-    for (const selector of [
-      '[data-remote]',
-      '[data-scm-git-id]',
-      '[data-development]',
-      '[data-test]',
-    ]) {
+    for (const selector of ['[data-remote]', '[data-scm-git-id]']) {
       expect(panel.root.querySelector<HTMLInputElement>(selector)!.readOnly, selector).toBe(true);
     }
+    expect(panel.root.querySelector('input[data-development], input[data-test]')).toBeNull();
+    expect(panel.root.querySelector('code[data-development]')?.textContent).toBe('develop');
+    expect(panel.root.querySelector('code[data-test]')?.textContent).toBe('test');
     input(panel.root, '[name="password"]', 'fixture-secret');
     vi.mocked(api.scmProjectModules).mockResolvedValue([
       { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'feature/new' },
@@ -993,10 +993,15 @@ it('单一 SCM 项目与仓库按开发范围展示，关联仓库不重复且�
     expect(section.querySelectorAll('.repository-title strong')).toHaveLength(1);
     expect(section.querySelector('.repository-title strong')?.textContent).toBe('Service');
     expect(section.querySelector('.repository')?.textContent).toContain('模块：service');
-    expect(section.querySelector<HTMLInputElement>('.repository [data-development]')?.value).toBe(
+    expect(section.textContent).not.toContain('编辑子项目');
+    expect(section.querySelector('input[data-development], input[data-test]')).toBeNull();
+    click(panel.root, '编辑项目 / 扫描父目录');
+    expect(panel.edit).toHaveBeenCalledOnce();
+    panel.edit.mockClear();
+    expect(section.querySelector<HTMLElement>('.repository [data-development]')?.textContent).toBe(
       'feature/current',
     );
-    expect(section.querySelector<HTMLInputElement>('.repository [data-test]')?.value).toBe(
+    expect(section.querySelector<HTMLElement>('.repository [data-test]')?.textContent).toBe(
       'test/current',
     );
     expect(section.querySelectorAll('[data-local-branch]')).toHaveLength(1);
@@ -1007,10 +1012,10 @@ it('单一 SCM 项目与仓库按开发范围展示，关联仓库不重复且�
     expect(unlinked.textContent).toContain('未关联');
     expect(unlinked.querySelector('[type="checkbox"]')).toBeNull();
     expect(unlinked.querySelector<HTMLInputElement>('[data-scm-git-id]')?.value).toBe('43');
-    expect(unlinked.querySelector<HTMLInputElement>('[data-development]')?.value).toBe(
+    expect(unlinked.querySelector<HTMLElement>('[data-development]')?.textContent).toBe(
       'feature/other',
     );
-    expect(unlinked.querySelector<HTMLInputElement>('[data-test]')?.placeholder).toBe('未配置');
+    expect(unlinked.querySelector<HTMLElement>('[data-test]')?.textContent).toBe('未配置');
     click(unlinked as HTMLElement, '关联本地目录');
     expect(panel.edit).toHaveBeenCalledOnce();
     expect(section.textContent).not.toContain('renamed-service');
@@ -1048,7 +1053,7 @@ it('仓库卡片本地分支随刷新更新，游离 HEAD 不冒充分支', asyn
     expect(local()).not.toContain('尚未切换');
     expect(panel.root.querySelector('.repository-heading [data-remote]')).not.toBeNull();
     expect(panel.root.querySelector('.repository-heading [data-scm-git-id]')).not.toBeNull();
-    expect(panel.root.querySelectorAll('.mapping-fields label')).toHaveLength(2);
+    expect(panel.root.querySelectorAll('.mapping-fields .mapping-branch')).toHaveLength(2);
   } finally {
     panel.close();
   }
@@ -1133,7 +1138,7 @@ it('缺失测试匹配清空目标并警告，开发切换仍可预检', async (
     click(panel.root, '加载模块');
     await flush();
     expect(panel.root.textContent).toContain('已清空旧测试目标');
-    expect(panel.root.querySelector<HTMLInputElement>('[data-test]')!.value).toBe('');
+    expect(panel.root.querySelector<HTMLElement>('[data-test]')!.textContent).toBe('未配置');
     panel.project.value = panel.save.mock.calls[0][0];
     await flush();
     expect(button(panel.root, '切换开发分支').disabled).toBe(false);
@@ -1180,8 +1185,8 @@ it('已加载范围的新增外部仓库自动匹配并保存，普通状态刷�
     };
     await flush();
     expect(
-      [...panel.root.querySelectorAll<HTMLInputElement>('[data-development]')].map(
-        (node) => node.value,
+      [...panel.root.querySelectorAll<HTMLElement>('[data-development]')].map(
+        (node) => node.textContent,
       ),
     ).toEqual(['develop', 'develop']);
     expect(panel.save).toHaveBeenCalledOnce();
@@ -1190,7 +1195,9 @@ it('已加载范围的新增外部仓库自动匹配并保存，普通状态刷�
     await flush();
     click(panel.root, '刷新仓库');
     await flush();
-    expect(panel.root.querySelector<HTMLInputElement>('[data-development]')!.value).toBe('develop');
+    expect(panel.root.querySelector<HTMLElement>('[data-development]')!.textContent).toBe(
+      'develop',
+    );
     expect(api.backendRepositoryStatuses).toHaveBeenLastCalledWith(
       expect.arrayContaining([expect.objectContaining({ id: 'new' })]),
     );
@@ -1248,7 +1255,7 @@ it('加载使用配置 remote 的最新状态，自动保存失败保留分支�
     panel.saving.value = false;
     await flush();
     expect(panel.root.textContent).toContain('保存未完成');
-    expect(panel.root.querySelector<HTMLInputElement>('[data-development]')!.value).toBe(
+    expect(panel.root.querySelector<HTMLElement>('[data-development]')!.textContent).toBe(
       'feature/latest',
     );
     click(panel.root, '切换开发分支');
@@ -1292,6 +1299,8 @@ it.each(['dirty', 'merging', 'rebasing', 'error', 'missing'] as const)(
       click(panel.root, '刷新仓库');
       await flush();
       expect(button(panel.root, '切换开发分支').disabled).toBe(true);
+      expect(button(panel.root, '切换到测试分支').disabled).toBe(true);
+      click(panel.root, '切换到测试分支');
       expect(panel.root.querySelector('[data-local-branch]')?.textContent || '').not.toContain(
         '尚未切换',
       );
@@ -1390,10 +1399,10 @@ it('没有本地配置的开发模块仍显示未关联卡片和同 Git ID 测�
     expect(panel.root.textContent).toContain('关联 0 / 配置 0');
     const card = panel.root.querySelector('.repository-unlinked')!;
     expect(card.textContent).toContain('未关联');
-    expect(card.querySelector<HTMLInputElement>('[data-development]')?.value).toBe(
+    expect(card.querySelector<HTMLElement>('[data-development]')?.textContent).toBe(
       'feature/scm-only',
     );
-    expect(card.querySelector<HTMLInputElement>('[data-test]')?.value).toBe('test/scm-only');
+    expect(card.querySelector<HTMLElement>('[data-test]')?.textContent).toBe('test/scm-only');
     expect(card.querySelector('[type="checkbox"]')).toBeNull();
     click(card as HTMLElement, '关联本地目录');
     expect(panel.edit).toHaveBeenCalledOnce();
@@ -1419,6 +1428,206 @@ it('同一模块匹配多个本地目录时每个仓库只显示一次', async (
       [...panel.root.querySelectorAll('.repository-title strong')].map((node) => node.textContent),
     ).toEqual(['Service', 'Second service']);
     expect(panel.root.querySelector('.repository-unlinked')).toBeNull();
+  } finally {
+    panel.close();
+  }
+});
+
+it.each([
+  ['切换开发分支', 'switch', 'develop'],
+  ['切换到测试分支', 'switch-test', 'test'],
+  ['合并到测试分支', 'merge', 'test'],
+] as const)('%s 的确认操作、目标分支与任务标题准确', async (label, operation, target) => {
+  const panel = await ready();
+  try {
+    click(panel.root, label);
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenCalledWith(
+      'example',
+      expect.any(Array),
+      operation,
+      false,
+      false,
+    );
+    const plan = panel.root.querySelector('.plan')!;
+    expect(plan.querySelector('p')?.textContent).toContain(label);
+    expect(plan.querySelectorAll('.plan-branch code')[1].textContent).toBe(target);
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+    expect(panel.task).not.toHaveBeenCalled();
+    click(panel.root, '确认执行计划');
+    await flush();
+    expect(api.executeBackendGit).toHaveBeenCalledExactlyOnceWith('plan');
+    expect(panel.task).toHaveBeenCalledExactlyOnceWith('task', label);
+  } finally {
+    panel.close();
+  }
+});
+
+it('测试切换仅预检选中仓库，即使勾选推送与 pom 策略仍传 false', async () => {
+  const initial = fixture();
+  initial.subProjects.push({ ...initial.subProjects[0], id: 'other', name: 'Other' });
+  const panel = await ready(initial);
+  try {
+    const excluded = panel.root.querySelectorAll<HTMLInputElement>('.repository-title input')[1];
+    excluded.checked = false;
+    excluded.dispatchEvent(new Event('change'));
+    for (const label of panel.root.querySelectorAll('.toolbar label.checkbox')) {
+      const checkbox = label.querySelector('input')!;
+      checkbox.checked = true;
+      checkbox.dispatchEvent(new Event('change'));
+    }
+    await flush();
+    click(panel.root, '切换到测试分支');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenCalledExactlyOnceWith(
+      'example',
+      [expect.objectContaining({ id: 'repo', testBranch: 'test' })],
+      'switch-test',
+      false,
+      false,
+    );
+    expect(panel.root.querySelector('.plan')?.textContent).toContain('切换到测试分支');
+    expect(panel.root.querySelector('.plan')?.textContent).not.toContain('pom.xml');
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+    excluded.checked = true;
+    excluded.dispatchEvent(new Event('change'));
+    await flush();
+    expect(panel.root.querySelector('.plan')).toBeNull();
+    for (const checkbox of panel.root.querySelectorAll<HTMLInputElement>(
+      '.repository-title input',
+    )) {
+      checkbox.checked = false;
+      checkbox.dispatchEvent(new Event('change'));
+      await flush();
+    }
+    expect(button(panel.root, '切换到测试分支').title).toContain('请至少勾选');
+    click(panel.root, '切换到测试分支');
+    expect(api.prepareBackendGit).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.close();
+  }
+});
+
+it('测试切换允许当前位于其他分支且开发与测试目标相同', async () => {
+  const initial = fixture();
+  initial.subProjects[0].testBranch = 'develop';
+  const readStatus = vi.mocked(api.backendRepositoryStatuses).getMockImplementation()!;
+  vi.mocked(api.backendRepositoryStatuses).mockImplementation(async (repositories) =>
+    (await readStatus(repositories)).map((status) => ({
+      ...status,
+      currentBranch: 'feature/local',
+    })),
+  );
+  const panel = await ready(initial);
+  try {
+    expect(button(panel.root, '合并到测试分支').disabled).toBe(true);
+    expect(button(panel.root, '切换到测试分支').disabled).toBe(false);
+    click(panel.root, '切换到测试分支');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenCalledWith(
+      'example',
+      [expect.objectContaining({ testBranch: 'develop' })],
+      'switch-test',
+      false,
+      false,
+    );
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
+it('缺少测试分支时禁止测试切换，空目标显示未配置', async () => {
+  const initial = fixture();
+  initial.subProjects[0].testBranch = '';
+  const panel = await ready(initial);
+  try {
+    expect(panel.root.querySelector('code[data-test]')?.textContent).toBe('未配置');
+    expect(button(panel.root, '切换到测试分支').disabled).toBe(true);
+    expect(button(panel.root, '切换到测试分支').title).toContain('配置明确的测试分支');
+    click(panel.root, '切换到测试分支');
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
+it('测试源草稿与已保存但未加载的测试源均阻止测试切换', async () => {
+  const panel = await ready();
+  try {
+    input(panel.root, '.scm-projects label:nth-child(2) input', '456');
+    await flush();
+    expect(button(panel.root, '切换到测试分支').title).toContain('请重新加载模块并等待自动保存');
+    click(panel.root, '切换到测试分支');
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
+    panel.project.value = { ...panel.project.value, scmTestProjectId: '456' };
+    await flush();
+    expect(button(panel.root, '切换开发分支').disabled).toBe(false);
+    expect(button(panel.root, '切换到测试分支').title).toContain('请先加载测试目标');
+    click(panel.root, '切换到测试分支');
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
+    vi.mocked(api.scmProjectModules).mockImplementation(async (id) => [
+      {
+        gitId: '42',
+        moduleName: 'service',
+        gitRemoteUrl: null,
+        branch: id === '123' ? 'develop' : 'test/current',
+      },
+    ]);
+    click(panel.root, '加载模块');
+    await flush();
+    expect(button(panel.root, '切换到测试分支').title).toContain('等待保存确认');
+    panel.project.value = panel.save.mock.calls.at(-1)![0];
+    await flush();
+    click(panel.root, '切换到测试分支');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenCalledWith(
+      'example',
+      [expect.objectContaining({ testBranch: 'test/current' })],
+      'switch-test',
+      false,
+      false,
+    );
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
+it('测试切换在保存和预检锁定期间禁止重复操作', async () => {
+  const panel = await ready();
+  try {
+    panel.saving.value = true;
+    await flush();
+    click(panel.root, '切换到测试分支');
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
+    panel.saving.value = false;
+    await flush();
+    vi.mocked(api.prepareBackendGit).mockReturnValueOnce(new Promise(() => {}));
+    click(panel.root, '切换到测试分支');
+    await flush();
+    expect(button(panel.root, '切换到测试分支').disabled).toBe(true);
+    click(panel.root, '切换到测试分支');
+    expect(api.prepareBackendGit).toHaveBeenCalledTimes(1);
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
+it('长分支在关联与未关联卡片保留完整文本且没有分支输入框', async () => {
+  const branch = 'feature/' + 'long-branch/'.repeat(30);
+  vi.mocked(api.scmProjectModules).mockResolvedValue([
+    { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch },
+    { gitId: '43', moduleName: 'unlinked', gitRemoteUrl: null, branch },
+  ]);
+  const panel = await ready();
+  try {
+    expect(
+      [...panel.root.querySelectorAll('code[data-development]')].map((node) => node.textContent),
+    ).toEqual([branch, branch]);
+    expect(panel.root.querySelector('input[data-development], input[data-test]')).toBeNull();
+    expect(panel.root.textContent).not.toContain('编辑子项目');
   } finally {
     panel.close();
   }

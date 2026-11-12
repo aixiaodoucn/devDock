@@ -224,7 +224,12 @@ function localBranch(id: string): string {
     status.currentBranch || (status.head ? `游离 HEAD (${status.head.slice(0, 8)})` : '未创建分支')
   );
 }
-function disabledReason(operationType: 'switch' | 'merge'): string {
+const gitActionLabels = {
+  switch: '切换开发分支',
+  'switch-test': '切换到测试分支',
+  merge: '合并到测试分支',
+};
+function disabledReason(operationType: 'switch' | 'switch-test' | 'merge'): string {
   if (!desktop) return '请在桌面应用中操作。';
   if (locked.value)
     return waiting.value ? '等待保存确认后可操作。' : '加载、保存或执行中，请稍候。';
@@ -243,13 +248,16 @@ function disabledReason(operationType: 'switch' | 'merge'): string {
     })
   )
     return '所选仓库状态未就绪，请刷新并处理未提交更改、合并或变基。';
-  if (operationType === 'merge') {
+  if (operationType !== 'switch') {
     if (
       draft.value.scmTestProjectId.trim() &&
       loadedTestId.value !== sourceId(draft.value.scmTestProjectId)
     )
       return '测试 SCM 项目已变更，请先加载测试目标。';
-    if (
+    if (operationType === 'switch-test') {
+      if (selectedRepositories.value.some((repo) => !repo.testBranch.trim()))
+        return '请为每个仓库配置明确的测试分支。';
+    } else if (
       selectedRepositories.value.some(
         (repo) =>
           !repo.testBranch.trim() || repo.testBranch.trim() === repo.developmentBranch.trim(),
@@ -260,6 +268,7 @@ function disabledReason(operationType: 'switch' | 'merge'): string {
   return '';
 }
 const switchDisabledReason = computed(() => disabledReason('switch'));
+const switchTestDisabledReason = computed(() => disabledReason('switch-test'));
 const mergeDisabledReason = computed(() => disabledReason('merge'));
 function valid(token: number) {
   return !disposed && token === generation;
@@ -534,7 +543,7 @@ async function loadModules() {
   // 保存必须在 perform 释放 activity 锁后触发，父配置回执才表示保存成功。
   if (loaded && valid(token)) saveLoadedMapping();
 }
-function prepare(operationType: 'switch' | 'merge') {
+function prepare(operationType: 'switch' | 'switch-test' | 'merge') {
   if (disabledReason(operationType)) return;
   const repositories = copy(selectedRepositories.value);
   plan.value = null;
@@ -567,7 +576,7 @@ function execute() {
       })),
     };
     plan.value = null;
-    emit('task', taskId, confirmed.operation === 'merge' ? '合并到测试分支' : '切换开发分支');
+    emit('task', taskId, gitActionLabels[confirmed.operation]);
     await refreshState(confirmed.planId);
   });
 }
@@ -683,7 +692,7 @@ onBeforeUnmount(() => {
               list="backend-scm-projects"
               placeholder="数字 ID 或完整项目链接" /></label
           ><label
-            >测试 SCM 项目 ID（可选，仅合并时需要）<input
+            >测试 SCM 项目 ID（可选）<input
               v-model="draft.scmTestProjectId"
               list="backend-scm-projects"
               placeholder="数字 ID 或完整项目链接"
@@ -752,27 +761,19 @@ onBeforeUnmount(() => {
           </div>
           <div class="toolbar">
             <button class="button small" :disabled="!desktop" @click="openPath(repo.path)">
-              打开目录</button
-            ><button class="button small" :disabled="locked" @click="emit('edit')">
-              编辑子项目
+              打开目录
             </button>
           </div>
         </div>
         <p class="repository-path">{{ repo.path }}</p>
-        <fieldset :disabled="locked">
-          <div class="mapping-fields">
-            <label class="mapping-branch"
-              >开发分支<input
-                :value="repo.developmentBranch"
-                data-development
-                readonly
-                :title="repo.developmentBranch"
-            /></label>
-            <label class="mapping-branch"
-              >测试分支<input :value="repo.testBranch" data-test readonly :title="repo.testBranch"
-            /></label>
+        <div class="mapping-fields">
+          <div class="mapping-branch">
+            <span>开发分支</span><code data-development>{{ repo.developmentBranch }}</code>
           </div>
-        </fieldset>
+          <div class="mapping-branch">
+            <span>测试分支</span><code data-test>{{ repo.testBranch || '未配置' }}</code>
+          </div>
+        </div>
         <div class="repository-state" data-local-branch>
           <span>当前本地分支</span><code>{{ localBranch(repo.id) }}</code>
           <span
@@ -817,19 +818,15 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <div class="mapping-fields">
-          <label class="mapping-branch"
-            >开发分支<input :value="module.branch" data-development readonly :title="module.branch"
-          /></label>
-          <label v-for="(target, targetIndex) in targets" :key="targetIndex" class="mapping-branch"
-            >测试分支<input
-              :value="target.branch || ''"
-              data-test
-              readonly
-              :title="target.branch || ''"
-          /></label>
-          <label v-if="!targets.length" class="mapping-branch"
-            >测试分支<input value="" data-test readonly placeholder="未配置"
-          /></label>
+          <div class="mapping-branch">
+            <span>开发分支</span><code data-development>{{ module.branch }}</code>
+          </div>
+          <div v-for="(target, targetIndex) in targets" :key="targetIndex" class="mapping-branch">
+            <span>测试分支</span><code data-test>{{ target.branch || '未配置' }}</code>
+          </div>
+          <div v-if="!targets.length" class="mapping-branch">
+            <span>测试分支</span><code data-test>未配置</code>
+          </div>
         </div>
       </div>
     </section>
@@ -851,6 +848,13 @@ onBeforeUnmount(() => {
           切换开发分支</button
         ><button
           class="button small"
+          :disabled="!!switchTestDisabledReason"
+          :title="switchTestDisabledReason || '获取远端并预检，确认计划后切换到测试分支。'"
+          @click="prepare('switch-test')"
+        >
+          切换到测试分支</button
+        ><button
+          class="button small"
           :disabled="!!mergeDisabledReason"
           :title="mergeDisabledReason || '获取远端并预检，确认计划后合并到测试分支。'"
           @click="prepare('merge')"
@@ -867,13 +871,16 @@ onBeforeUnmount(() => {
       <p class="hint" data-switch-reason>
         切换开发分支：{{ switchDisabledReason || '可点击预检，确认计划后执行。' }}
       </p>
+      <p class="hint" data-switch-test-reason>
+        切换到测试分支：{{ switchTestDisabledReason || '可点击预检，确认计划后执行。' }}
+      </p>
       <p class="hint" data-merge-reason>
         合并到测试分支：{{ mergeDisabledReason || '可点击预检，确认计划后执行。' }}
       </p>
       <div v-if="plan" class="plan">
         <h4>确认 Git 计划</h4>
         <p>
-          {{ plan.operation === 'merge' ? '合并' : '切换分支' }} ·
+          {{ gitActionLabels[plan.operation] }} ·
           {{ plan.push ? '将推送测试分支' : '不推送远端' }}
         </p>
         <p v-if="plan.operation === 'merge'">
@@ -1064,12 +1071,12 @@ input:not([type='checkbox']) {
   gap: 12px;
 }
 .mapping-fields {
-  margin-left: 23px;
+  margin: 0 0 10px 23px;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
-.mapping-fields label {
+.mapping-branch {
   min-width: 0;
 }
 .repository-identity {
@@ -1095,14 +1102,17 @@ input:not([type='checkbox']) {
   font-size: 11px;
 }
 .mapping-branch {
+  display: grid;
+  color: var(--text-secondary);
+  font-size: 12px;
   grid-column: 1 / -1;
   grid-template-columns: 56px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
 }
-.mapping-branch input {
-  font-family: var(--mono);
-  font-size: 11px;
+.mapping-branch code {
+  min-width: 0;
+  user-select: text;
 }
 .repository,
 .repository-unlinked {
