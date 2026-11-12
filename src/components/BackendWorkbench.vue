@@ -171,7 +171,7 @@ function disabledReason(operationType: 'switch' | 'merge'): string {
   if (!developmentLoaded.value) return '请先加载当前开发 SCM 项目并匹配本地仓库。';
   if (!visibleRepositories.value.length) return '没有匹配的本地仓库，请添加路径或核对 SCM Git ID。';
   if (!selectedRepositories.value.length) return '请至少勾选一个关联仓库。';
-  if (dirty.value) return '映射有未保存更改，请先保存映射。';
+  if (dirty.value) return 'SCM 配置有更改，请重新加载模块并等待自动保存。';
   if (
     selectedRepositories.value.some((repo) => !repo.remote.trim() || !repo.developmentBranch.trim())
   )
@@ -230,6 +230,7 @@ async function refreshRepositories(token = generation, fillIds: string[] = []): 
   const sequence = ++repositorySequence;
   repositoryLoading.value = true;
   const repositories = copy(draft.value.subProjects);
+  let synchronized = false;
   try {
     const result = await api.backendRepositoryStatuses(repositories);
     if (valid(token) && sequence === repositorySequence) {
@@ -239,14 +240,20 @@ async function refreshRepositories(token = generation, fillIds: string[] = []): 
       );
       const unavailable = new Set(result.filter((item) => item.error).map((item) => item.id));
       selected.value = selected.value.filter((id) => !unavailable.has(id));
-      // 普通刷新只重算范围；新增或身份改变时才填分支，保留既有手工草稿。
-      if (developmentLoaded.value && fillIds.length) applyLoadedMapping(fillIds);
+      // 普通刷新只更新状态；新增或身份改变时同步已加载的 SCM 分支并自动保存。
+      if (developmentLoaded.value && fillIds.length) {
+        applyLoadedMapping(fillIds);
+        synchronized = true;
+      }
       return true;
     }
   } catch (reason) {
     if (valid(token) && sequence === repositorySequence) failure(reason);
   } finally {
-    if (sequence === repositorySequence) repositoryLoading.value = false;
+    if (sequence === repositorySequence) {
+      repositoryLoading.value = false;
+      if (synchronized && valid(token)) saveLoadedMapping();
+    }
   }
   return false;
 }
@@ -280,7 +287,7 @@ async function refreshState(planId: string) {
     if (valid(token) && sequence === stateSequence) failure(reason);
   }
 }
-function save() {
+function saveLoadedMapping() {
   if (locked.value || !dirty.value) return;
   try {
     const snapshot = {
@@ -307,7 +314,7 @@ watch(
   (value, previous) => {
     if (previous && !value && waiting.value && signature(props.project) !== waiting.value) {
       waiting.value = '';
-      error.value = '保存未完成，请检查提示后重试。';
+      error.value = '自动保存未完成，请检查提示后重新加载模块重试。';
     }
   },
 );
@@ -463,7 +470,7 @@ async function loadModules() {
     loaded = true;
   });
   // 保存必须在 perform 释放 activity 锁后触发，父配置回执才表示保存成功。
-  if (loaded && valid(token)) save();
+  if (loaded && valid(token)) saveLoadedMapping();
 }
 function prepare(operationType: 'switch' | 'merge') {
   if (disabledReason(operationType)) return;
@@ -708,9 +715,7 @@ onBeforeUnmount(() => {
             :disabled="!desktop || locked"
             @click="refreshRepositories()"
           >
-            刷新仓库</button
-          ><button class="button small" data-save :disabled="locked || !dirty" @click="save">
-            保存映射
+            刷新仓库
           </button>
         </div>
       </div>
@@ -735,18 +740,13 @@ onBeforeUnmount(() => {
               /><strong>{{ repo.name }}</strong></label
             >
             <label class="repository-metadata"
-              >Remote<input
-                v-model="repo.remote"
-                data-remote
-                :disabled="locked"
-                :title="repo.remote"
+              >Remote<input :value="repo.remote" data-remote readonly :title="repo.remote"
             /></label>
             <label class="repository-metadata"
               >SCM Git ID<input
-                v-model="repo.scmGitId"
+                :value="repo.scmGitId"
                 data-scm-git-id
-                :disabled="locked"
-                :list="`modules-${repo.id}`"
+                readonly
                 :title="repo.scmGitId"
             /></label>
           </div>
@@ -772,31 +772,16 @@ onBeforeUnmount(() => {
           <div class="mapping-fields">
             <label class="mapping-branch"
               >开发分支<input
-                v-model="repo.developmentBranch"
+                :value="repo.developmentBranch"
                 data-development
+                readonly
                 :title="repo.developmentBranch"
-                :list="`branches-${repo.id}`"
             /></label>
             <label class="mapping-branch"
-              >测试分支<input
-                v-model="repo.testBranch"
-                data-test
-                :title="repo.testBranch"
-                :list="`branches-${repo.id}`"
+              >测试分支<input :value="repo.testBranch" data-test readonly :title="repo.testBranch"
             /></label>
           </div>
         </fieldset>
-        <datalist :id="`branches-${repo.id}`">
-          <option
-            v-for="branch in statusFor(repo.id)?.branches || []"
-            :key="branch"
-            :value="branch"
-          /></datalist
-        ><datalist :id="`modules-${repo.id}`">
-          <option v-for="(module, index) in development" :key="index" :value="module.gitId || ''">
-            {{ module.moduleName }} · {{ module.branch }}
-          </option>
-        </datalist>
       </div>
     </section>
     <section class="workbench-card" aria-label="Git 批量操作">
@@ -805,7 +790,7 @@ onBeforeUnmount(() => {
         <span class="hint">已选 {{ selectedRepositories.length }} 个仓库</span>
       </div>
       <p class="hint">
-        先获取远端并预检，核对计划后执行。{{ dirty ? '映射有未保存更改，请先保存。' : '' }}
+        先获取远端并预检，核对计划后执行。{{ dirty ? 'SCM 配置有更改，请重新加载模块。' : '' }}
       </p>
       <div class="toolbar">
         <button
