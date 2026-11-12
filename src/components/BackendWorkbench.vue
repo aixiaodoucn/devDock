@@ -541,6 +541,16 @@ function connectionChanged(status: ScmStatus) {
   loadedTestId.value = undefined;
   projects.value = [];
 }
+function closeProjectPicker(event: Event) {
+  // 候选选择会触发 change 或替换输入；普通逐字输入不抢走焦点。
+  if (
+    event.type === 'input' &&
+    !(event instanceof InputEvent && event.inputType === 'insertReplacementText')
+  )
+    return;
+  const input = event.target as HTMLInputElement;
+  if (projects.value.some((project) => project.id === input.value.trim())) input.blur();
+}
 function loadProjects() {
   void perform('加载 SCM 项目', async (token) => {
     const result = await api.scmProjects();
@@ -728,11 +738,15 @@ onBeforeUnmount(() => {
             >开发 SCM 项目 ID<input
               v-model="draft.scmDevelopmentProjectId"
               list="backend-scm-projects"
+              @change="closeProjectPicker"
+              @input="closeProjectPicker"
               placeholder="数字 ID 或完整项目链接" /></label
           ><label
             >测试 SCM 项目 ID（可选）<input
               v-model="draft.scmTestProjectId"
               list="backend-scm-projects"
+              @change="closeProjectPicker"
+              @input="closeProjectPicker"
               placeholder="数字 ID 或完整项目链接"
           /></label>
         </div>

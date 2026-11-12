@@ -283,6 +283,45 @@ it('切换master在工作区脏或保存期间不可执行', async () => {
   }
 });
 
+it('开发与测试 SCM 选择候选后收起下拉且保留ID，普通输入不抢焦点', async () => {
+  vi.mocked(api.scmProjects).mockResolvedValueOnce([
+    { id: '101', name: 'Synthetic development', status: '待处理' },
+    { id: '102', name: 'Synthetic testing', status: '测试环境' },
+  ]);
+  const panel = await mount();
+  document.body.append(panel.root);
+  try {
+    click(panel.root, '加载项目列表');
+    await flush();
+    const fields = panel.root.querySelectorAll<HTMLInputElement>('[list="backend-scm-projects"]');
+    fields[0].focus();
+    fields[0].value = '101';
+    fields[0].dispatchEvent(
+      new InputEvent('input', { inputType: 'insertText', data: '1', bubbles: true }),
+    );
+    await flush();
+    expect(document.activeElement).toBe(fields[0]);
+    fields[0].dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+    expect(document.activeElement).not.toBe(fields[0]);
+    expect(fields[0].value).toBe('101');
+    fields[1].focus();
+    fields[1].value = '102';
+    fields[1].dispatchEvent(
+      new InputEvent('input', { inputType: 'insertReplacementText', data: '102', bubbles: true }),
+    );
+    await flush();
+    expect(document.activeElement).not.toBe(fields[1]);
+    expect(fields[1].value).toBe('102');
+    expect(fields[0].value).toBe('101');
+    expect(api.scmProjectModules).not.toHaveBeenCalled();
+    expect(panel.save).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+    panel.root.remove();
+  }
+});
+
 it('待处理和测试项目全部进入开发及测试来源的共享候选列表', async () => {
   const projects = Array.from({ length: 7 }, (_, index) => ({
     id: String(101 + index),
