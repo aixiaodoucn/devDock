@@ -86,6 +86,353 @@ function click(root: HTMLElement, text: string) {
   expect(button, text).toBeTruthy();
   button!.click();
 }
+function input(root: HTMLElement, selector: string, value: string) {
+  const field = root.querySelector<HTMLInputElement>(selector)!;
+  field.value = value;
+  field.dispatchEvent(new Event('input'));
+}
+it('仅开发 SCM ID 可加载、应用并保存，保留已有测试分支', async () => {
+  const initial = fixture();
+  initial.scmDevelopmentProjectId = '123';
+  initial.subProjects[0].scmGitId = '42';
+  vi.mocked(api.scmStatus).mockResolvedValue({
+    connected: true,
+    baseUrl: null,
+    username: null,
+    remembered: false,
+    message: null,
+  });
+  vi.mocked(api.scmProjectModules).mockResolvedValue([
+    { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'feature/new' },
+  ]);
+  const panel = await mount(initial);
+  try {
+    click(panel.root, '加载模块');
+    await flush();
+    expect(api.scmProjectModules).toHaveBeenCalledExactlyOnceWith('123');
+    click(panel.root, '应用映射并保存');
+    await flush();
+    expect(panel.save).toHaveBeenCalledOnce();
+    expect(panel.save.mock.calls[0][0].subProjects[0]).toMatchObject({
+      developmentBranch: 'feature/new',
+      testBranch: 'test',
+    });
+    expect(panel.save.mock.calls[0][0].scmTestProjectId).toBe('');
+    panel.project.value = panel.save.mock.calls[0][0];
+    await flush();
+    expect(panel.root.textContent).toContain('映射已保存');
+  } finally {
+    panel.close();
+  }
+});
+it('外部新增子项目立即显示且保留未保存开发 SCM ID', async () => {
+  const initial = fixture();
+  initial.subProjects = [];
+  const panel = await mount(initial);
+  try {
+    input(panel.root, '[list="backend-scm-projects"]', '123');
+    await flush();
+    panel.project.value = { ...initial, subProjects: fixture().subProjects };
+    await flush();
+    expect(panel.root.querySelector('.repository-title')?.textContent).toContain('Service');
+    expect(panel.root.querySelector<HTMLInputElement>('[list="backend-scm-projects"]')!.value).toBe(
+      '123',
+    );
+    expect(panel.root.querySelector<HTMLInputElement>('.repository-title input')!.checked).toBe(
+      true,
+    );
+    click(panel.root, '保存映射');
+    await flush();
+    expect(panel.save.mock.calls[0][0]).toMatchObject({
+      scmDevelopmentProjectId: '123',
+      subProjects: fixture().subProjects,
+    });
+  } finally {
+    panel.close();
+  }
+});
+it('填写非法测试 ID 时加载和保存均显示明确错误，且不请求模块', async () => {
+  const initial = fixture();
+  initial.scmDevelopmentProjectId = '123';
+  vi.mocked(api.scmStatus).mockResolvedValue({
+    connected: true,
+    baseUrl: null,
+    username: null,
+    remembered: false,
+    message: null,
+  });
+  const panel = await mount(initial);
+  try {
+    input(panel.root, '.scm-projects label:nth-child(2) input', 'invalid');
+    await flush();
+    click(panel.root, '加载模块');
+    await flush();
+    expect(api.scmProjectModules).not.toHaveBeenCalled();
+    expect(panel.root.textContent).toContain('测试 SCM 项目 ID 无效');
+    click(panel.root, '保存映射');
+    await flush();
+    expect(panel.save).not.toHaveBeenCalled();
+    expect(panel.root.textContent).toContain('测试 SCM 项目 ID 无效');
+  } finally {
+    panel.close();
+  }
+});
+it('填写测试 ID 但模块为空时不能按开发-only应用', async () => {
+  const initial = fixture();
+  initial.scmDevelopmentProjectId = '123';
+  initial.scmTestProjectId = '456';
+  initial.subProjects[0].scmGitId = '42';
+  vi.mocked(api.scmStatus).mockResolvedValue({
+    connected: true,
+    baseUrl: null,
+    username: null,
+    remembered: false,
+    message: null,
+  });
+  vi.mocked(api.scmProjectModules).mockImplementation(async (id) =>
+    id === '123'
+      ? [{ gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'feature/new' }]
+      : [],
+  );
+  const panel = await mount(initial);
+  try {
+    click(panel.root, '加载模块');
+    await flush();
+    expect(api.scmProjectModules).toHaveBeenCalledWith('456');
+    click(panel.root, '应用映射并保存');
+    await flush();
+    expect(panel.save).not.toHaveBeenCalled();
+    expect(panel.root.querySelector('[role="alert"]')?.textContent).toContain('测试分支');
+  } finally {
+    panel.close();
+  }
+});
+it.each(['', 'develop'])('测试分支为 %j 时合并仍被拦截，切换无需测试 SCM ID', async (branch) => {
+  const initial = fixture();
+  initial.subProjects[0].testBranch = branch;
+  const panel = await mount(initial);
+  try {
+    click(panel.root, '合并到测试分支');
+    await flush();
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
+    expect(panel.root.textContent).toContain('明确且不同的开发分支和测试分支');
+    click(panel.root, '切换开发分支');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenCalledWith(
+      'example',
+      expect.any(Array),
+      'switch',
+      false,
+    );
+  } finally {
+    panel.close();
+  }
+});
+it('外部增删和重命名以新配置为准，同仓库保留无冲突的草稿字段', async () => {
+  const initial = fixture();
+  initial.subProjects.push({ ...initial.subProjects[0], id: 'removed', name: 'Removed' });
+  const panel = await mount(initial);
+  try {
+    input(panel.root, '.scm-projects label:nth-child(1) input', '123');
+    input(panel.root, '.scm-projects label:nth-child(2) input', '456');
+    input(panel.root, '.repository .mapping-fields label:nth-child(1) input', 'upstream');
+    input(panel.root, '[data-development]', 'local-dev');
+    input(panel.root, '.repository .mapping-fields label:nth-child(3) input', 'local-test');
+    input(panel.root, '.repository .mapping-fields label:nth-child(4) input', '42');
+    await flush();
+    const updated = fixture();
+    updated.scmTestProjectId = '789';
+    updated.subProjects[0].name = 'Renamed';
+    updated.subProjects[0].developmentBranch = 'external-dev';
+    updated.subProjects.push({ ...fixture().subProjects[0], id: 'new', name: 'New' });
+    panel.project.value = updated;
+    await flush();
+    expect(
+      [...panel.root.querySelectorAll('.repository-title strong')].map((node) => node.textContent),
+    ).toEqual(['Renamed', 'New']);
+    expect(
+      [...panel.root.querySelectorAll<HTMLInputElement>('.repository-title input')].every(
+        (node) => node.checked,
+      ),
+    ).toBe(true);
+    click(panel.root, '保存映射');
+    await flush();
+    expect(panel.save.mock.calls[0][0]).toMatchObject({
+      scmDevelopmentProjectId: '123',
+      scmTestProjectId: '789',
+      subProjects: [
+        {
+          id: 'repo',
+          name: 'Renamed',
+          remote: 'upstream',
+          scmGitId: '42',
+          developmentBranch: 'external-dev',
+          testBranch: 'local-test',
+        },
+        { id: 'new', name: 'New' },
+      ],
+    });
+    panel.project.value = panel.save.mock.calls[0][0];
+    await flush();
+    expect(panel.root.textContent).toContain('映射已保存');
+    expect(panel.root.textContent).not.toContain('等待保存确认');
+  } finally {
+    panel.close();
+  }
+});
+it.each(['path', 'remote'] as const)('外部改变仓库 %s 后不保留旧仓库的草稿映射', async (field) => {
+  const panel = await mount();
+  try {
+    input(panel.root, '.scm-projects label:nth-child(1) input', '123');
+    input(panel.root, '.mapping-fields label:nth-child(1) input', 'local-remote');
+    input(panel.root, '[data-development]', 'local-dev');
+    input(panel.root, '.mapping-fields label:nth-child(3) input', 'local-test');
+    input(panel.root, '.mapping-fields label:nth-child(4) input', 'old-git');
+    await flush();
+    const updated = fixture();
+    updated.subProjects[0][field] = field === 'path' ? '/example/another' : 'external-remote';
+    panel.project.value = updated;
+    await flush();
+    click(panel.root, '保存映射');
+    await flush();
+    expect(panel.save.mock.calls[0][0].subProjects).toEqual(updated.subProjects);
+    expect(panel.save.mock.calls[0][0].scmDevelopmentProjectId).toBe('123');
+  } finally {
+    panel.close();
+  }
+});
+it('连续外部更新以独立快照合并，原地变更也能保留草稿并移除失效计划', async () => {
+  const panel = await mount();
+  try {
+    click(panel.root, '切换开发分支');
+    await flush();
+    expect(panel.root.textContent).toContain('确认执行计划');
+    panel.project.value.subProjects[0].name = 'Renamed';
+    await flush();
+    expect(panel.root.textContent).not.toContain('确认执行计划');
+    input(panel.root, '[data-development]', 'local-dev');
+    await flush();
+    panel.project.value.subProjects.push({ ...fixture().subProjects[0], id: 'new', name: 'New' });
+    await flush();
+    panel.project.value.subProjects[0].testBranch = 'external-test';
+    await flush();
+    click(panel.root, '保存映射');
+    await flush();
+    expect(panel.save.mock.calls[0][0].subProjects[0]).toMatchObject({
+      name: 'Renamed',
+      developmentBranch: 'local-dev',
+      testBranch: 'external-test',
+    });
+    expect(panel.save.mock.calls[0][0].subProjects).toHaveLength(2);
+  } finally {
+    panel.close();
+  }
+});
+it('新增仓库加入选择、删除仓库剔除，保留取消选择且排除错误目录', async () => {
+  const initial = fixture();
+  initial.subProjects.push({ ...initial.subProjects[0], id: 'removed', name: 'Removed' });
+  const panel = await mount(initial);
+  try {
+    const checkbox = panel.root.querySelector<HTMLInputElement>('.repository-title input')!;
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event('change'));
+    await flush();
+    vi.mocked(api.backendRepositoryStatuses).mockResolvedValue([
+      {
+        id: 'docs',
+        currentBranch: '',
+        head: '',
+        dirty: false,
+        merging: false,
+        rebasing: false,
+        remoteUrl: '',
+        branches: [],
+        root: '',
+        error: '不是 Git 仓库',
+      },
+    ]);
+    panel.project.value = {
+      ...fixture(),
+      subProjects: [
+        ...fixture().subProjects,
+        { ...fixture().subProjects[0], id: 'new', name: 'New' },
+        { ...fixture().subProjects[0], id: 'docs', name: 'Docs' },
+      ],
+    };
+    await flush();
+    const checkboxes = panel.root.querySelectorAll<HTMLInputElement>('.repository-title input');
+    expect([...checkboxes].map((node) => node.checked)).toEqual([false, true, false]);
+    expect(checkboxes[2].disabled).toBe(true);
+    click(panel.root, '切换开发分支');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenCalledWith(
+      'example',
+      [expect.objectContaining({ id: 'new' })],
+      'switch',
+      false,
+    );
+  } finally {
+    panel.close();
+  }
+});
+it('同项目外部更新后忽略尚未完成的旧预检', async () => {
+  let resolve!: (value: Awaited<ReturnType<typeof api.prepareBackendGit>>) => void;
+  vi.mocked(api.prepareBackendGit).mockReturnValueOnce(
+    new Promise((done) => {
+      resolve = done;
+    }),
+  );
+  const panel = await mount();
+  try {
+    click(panel.root, '切换开发分支');
+    await flush();
+    panel.project.value = { ...fixture(), subProjects: [] };
+    await flush();
+    resolve({
+      planId: 'stale',
+      projectId: 'example',
+      operation: 'switch',
+      push: false,
+      repositories: [],
+    });
+    await flush();
+    expect(panel.root.textContent).not.toContain('确认执行计划');
+    expect(panel.root.querySelector('[role="status"]')).toBeNull();
+    expect(panel.root.querySelectorAll('.repository')).toHaveLength(0);
+  } finally {
+    panel.close();
+  }
+});
+it('外部结构更新不冒充保存回执，保存失败可继续编辑且新仓库仍显示', async () => {
+  const panel = await mount();
+  try {
+    input(panel.root, '[data-development]', 'local-dev');
+    await flush();
+    click(panel.root, '保存映射');
+    await flush();
+    panel.saving.value = true;
+    await flush();
+    panel.project.value = {
+      ...fixture(),
+      subProjects: [
+        ...fixture().subProjects,
+        { ...fixture().subProjects[0], id: 'new', name: 'New' },
+      ],
+    };
+    await flush();
+    expect(panel.root.textContent).toContain('等待保存确认');
+    expect(panel.root.textContent).not.toContain('映射已保存');
+    panel.saving.value = false;
+    await flush();
+    expect(panel.root.textContent).toContain('保存未完成');
+    expect(panel.root.querySelector<HTMLInputElement>('[data-development]')!.value).toBe(
+      'local-dev',
+    );
+    expect(panel.root.querySelectorAll('.repository')).toHaveLength(2);
+  } finally {
+    panel.close();
+  }
+});
 it('普通目录记录不参与 Git 选择，也不阻断其他仓库的 SCM 映射', async () => {
   const initial = fixture();
   initial.scmDevelopmentProjectId = '123';

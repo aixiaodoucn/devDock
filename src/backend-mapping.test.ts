@@ -55,13 +55,31 @@ describe('SCM 映射', () => {
       ),
     ).toThrow('无法唯一匹配');
     expect(
-      mapBackendModules(
-        [repo],
-        { repo: 'ssh://git@example.invalid:22/team/service.git' },
-        [module],
-        [],
-      )[0].scmGitId,
+      mapBackendModules([repo], { repo: 'ssh://git@example.invalid:22/team/service.git' }, [
+        module,
+      ])[0].scmGitId,
     ).toBe('42');
+  });
+  it('只应用开发映射时保留既有测试分支', () => {
+    const result = mapBackendModules(
+      [{ ...repo, testBranch: 'saved-testing' }],
+      { repo: module.gitRemoteUrl! },
+      [module],
+    );
+    expect(result[0]).toMatchObject({ developmentBranch: 'develop', testBranch: 'saved-testing' });
+    expect(repo.testBranch).toBe('');
+  });
+  it('明确加载测试映射时空结果或不匹配不能清空旧目标', () => {
+    expect(() => mapBackendModules([repo], { repo: module.gitRemoteUrl! }, [module], [])).toThrow(
+      '测试分支',
+    );
+    const result = mapBackendModules(
+      [{ ...repo, testBranch: 'saved-testing' }],
+      { repo: module.gitRemoteUrl! },
+      [module],
+      [{ ...module, branch: 'selected-testing' }],
+    );
+    expect(result[0].testBranch).toBe('selected-testing');
   });
   it('仅解析数字或完整项目链接，不请求链接', () => {
     expect(scmProjectId('https://example.invalid/projects/123?tab=modules')).toBe('123');

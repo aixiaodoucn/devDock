@@ -34,7 +34,7 @@ export function mapBackendModules(
   repositories: BackendRepository[],
   remoteUrls: Record<string, string>,
   development: ScmModule[],
-  testing: ScmModule[],
+  testing?: ScmModule[],
 ): BackendRepository[] {
   return repositories.map((repository) => {
     const url = repositoryUrl(remoteUrls[repository.id] ?? '');
@@ -46,17 +46,16 @@ export function mapBackendModules(
     if (matches.length !== 1 || !matches[0].gitId || !matches[0].branch.trim())
       throw new Error(`「${repository.name}」无法唯一匹配 SCM 模块，请手动选择 SCM Git ID。`);
     const module = matches[0];
-    const paired = testing.filter((item) => item.gitId === module.gitId);
-    if (testing.length && (paired.length !== 1 || !paired[0].branch.trim()))
+    const paired = testing?.filter((item) => item.gitId === module.gitId);
+    if (paired && (paired.length !== 1 || !paired[0].branch.trim()))
       throw new Error(`「${repository.name}」没有同 Git ID 的唯一测试分支。`);
-    if (!testing.length && repository.testBranch)
-      throw new Error(`「${repository.name}」请加载测试项目后再确认测试分支。`);
     return {
       ...repository,
       scmGitId: module.gitId!,
       scmModuleName: module.moduleName,
       developmentBranch: module.branch,
-      testBranch: paired[0]?.branch ?? '',
+      // 未请求测试映射时保留已有目标，不能因只更新开发分支而清空。
+      testBranch: paired ? paired[0].branch : repository.testBranch,
     };
   });
 }

@@ -45,7 +45,39 @@ let disposed = false;
 let unlisten: UnlistenFn | undefined;
 const signature = (value: Project) =>
   JSON.stringify([value.subProjects, value.scmDevelopmentProjectId, value.scmTestProjectId]);
-let persistedSignature = signature(props.project);
+let persisted = copy(props.project);
+function mergeDraft(project: Project): Project {
+  const merged = copy(project);
+  for (const field of ['scmDevelopmentProjectId', 'scmTestProjectId'] as const) {
+    if (project[field] === persisted[field]) merged[field] = draft.value[field];
+  }
+  merged.subProjects = merged.subProjects.map((repo) => {
+    const previous = persisted.subProjects.find((item) => item.id === repo.id);
+    const local = draft.value.subProjects.find((item) => item.id === repo.id);
+    // 路径或外部 remote 改变代表仓库身份改变，不能沿用旧仓库的草稿映射。
+    if (!previous || !local || previous.path !== repo.path || previous.remote !== repo.remote)
+      return repo;
+    for (const field of [
+      'remote',
+      'scmGitId',
+      'scmModuleName',
+      'developmentBranch',
+      'testBranch',
+    ] as const) {
+      if (repo[field] === previous[field]) repo[field] = local[field];
+    }
+    return repo;
+  });
+  return merged;
+}
+function testProjectId(): string | undefined {
+  if (!draft.value.scmTestProjectId.trim()) return undefined;
+  try {
+    return scmProjectId(draft.value.scmTestProjectId);
+  } catch {
+    throw new Error('测试 SCM 项目 ID 无效：请输入纯数字 SCM 项目 ID 或含项目 ID 的完整链接。');
+  }
+}
 const dirty = computed(() => signature(draft.value) !== signature(props.project));
 const running = computed(
   () =>
@@ -146,9 +178,7 @@ function save() {
       scmDevelopmentProjectId: draft.value.scmDevelopmentProjectId.trim()
         ? scmProjectId(draft.value.scmDevelopmentProjectId)
         : '',
-      scmTestProjectId: draft.value.scmTestProjectId.trim()
-        ? scmProjectId(draft.value.scmTestProjectId)
-        : '',
+      scmTestProjectId: testProjectId() ?? '',
     };
     // 保存与回执使用同一规范快照，链接只作为输入，不能进入项目配置。
     draft.value = copy(snapshot);
@@ -172,15 +202,16 @@ watch(
 );
 watch(
   () => props.project,
-  (project, previous) => {
+  (project) => {
+    const changed = signature(project) !== signature(persisted);
     // 同一项目的映射从外部更新时，正在准备的旧计划也必须失效。
-    if (project.id === previous.id && signature(project) !== persistedSignature) {
+    if (project.id === persisted.id && changed) {
       ++generation;
       ++stateSequence;
       plan.value = null;
       activity.value = '';
     }
-    if (project.id !== previous.id) {
+    if (project.id !== persisted.id) {
       ++generation;
       ++stateSequence;
       draft.value = copy(project);
@@ -203,16 +234,29 @@ watch(
       draft.value = copy(project);
       waiting.value = '';
       notice.value = '映射已保存';
-      void refreshRepositories();
-    } else if (signature(draft.value) === persistedSignature && !waiting.value) {
-      draft.value = copy(project);
-      selected.value = selected.value.filter((id) =>
-        project.subProjects.some((repo) => repo.id === id),
-      );
-      plan.value = null;
+    } else if (changed) {
+      draft.value = mergeDraft(project);
+    }
+    if (changed && project.id === persisted.id) {
+      const previousIds = new Set(persisted.subProjects.map((repo) => repo.id));
+      // 新仓库默认选中，旧仓库保留用户选择；移除已删除或读取失败的仓库。
+      selected.value = project.subProjects
+        .filter((repo) => selected.value.includes(repo.id) || !previousIds.has(repo.id))
+        .map((repo) => repo.id);
+      statuses.value = statuses.value.filter((status) => {
+        const previous = persisted.subProjects.find((repo) => repo.id === status.id);
+        const current = project.subProjects.find((repo) => repo.id === status.id);
+        return (
+          previous &&
+          current &&
+          previous.path === current.path &&
+          previous.remote === current.remote
+        );
+      });
+      selected.value = selected.value.filter((id) => !statusFor(id)?.error);
       void refreshRepositories();
     }
-    persistedSignature = signature(project);
+    persisted = copy(project);
   },
   { deep: true },
 );
@@ -254,10 +298,10 @@ function loadModules() {
   if (!connected.value) return;
   void perform('加载 SCM 模块', async (token) => {
     const devId = scmProjectId(draft.value.scmDevelopmentProjectId);
-    const testId = scmProjectId(draft.value.scmTestProjectId);
+    const testId = testProjectId();
     const [dev, test] = await Promise.all([
       api.scmProjectModules(devId),
-      api.scmProjectModules(testId),
+      testId ? api.scmProjectModules(testId) : Promise.resolve([]),
     ]);
     if (!valid(token)) return;
     development.value = dev;
@@ -265,8 +309,9 @@ function loadModules() {
   });
 }
 function applyMapping() {
-  if (locked.value || !development.value.length || !testing.value.length) return;
+  if (locked.value || !development.value.length) return;
   try {
+    const testId = testProjectId();
     const urls = Object.fromEntries(
       statuses.value
         .filter((status) => {
@@ -279,12 +324,17 @@ function applyMapping() {
     );
     const eligible = draft.value.subProjects.filter((repo) => !statusFor(repo.id)?.error);
     if (!eligible.length) throw new Error('没有可匹配的 Git 仓库，请先检查子项目目录。');
-    const mapped = mapBackendModules(eligible, urls, development.value, testing.value);
+    const mapped = mapBackendModules(
+      eligible,
+      urls,
+      development.value,
+      testId ? testing.value : undefined,
+    );
     draft.value.subProjects = draft.value.subProjects.map(
       (repo) => mapped.find((item) => item.id === repo.id) ?? repo,
     );
     draft.value.scmDevelopmentProjectId = scmProjectId(draft.value.scmDevelopmentProjectId);
-    draft.value.scmTestProjectId = scmProjectId(draft.value.scmTestProjectId);
+    draft.value.scmTestProjectId = testId ?? '';
     save();
   } catch (reason) {
     failure(reason);
@@ -446,7 +496,7 @@ onBeforeUnmount(() => {
               list="backend-scm-projects"
               placeholder="数字 ID 或完整项目链接" /></label
           ><label
-            >测试 SCM 项目 ID<input
+            >测试 SCM 项目 ID（可选，仅合并时需要）<input
               v-model="draft.scmTestProjectId"
               list="backend-scm-projects"
               placeholder="数字 ID 或完整项目链接"
@@ -467,7 +517,7 @@ onBeforeUnmount(() => {
           加载模块</button
         ><button
           class="button small"
-          :disabled="locked || !development.length || !testing.length"
+          :disabled="locked || !development.length"
           @click="applyMapping"
         >
           应用映射并保存
