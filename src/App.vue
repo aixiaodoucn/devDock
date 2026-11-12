@@ -1048,6 +1048,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
           @save="saveProject"
           @edit="editProject"
           @task="trackBackendTask"
+          @notice="notify"
         />
         <section
           v-if="project.type !== 'backend' && (selectedPlatform !== 'app' || actions.length)"

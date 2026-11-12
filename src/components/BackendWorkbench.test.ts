@@ -69,6 +69,7 @@ async function mount(initial = fixture()) {
   const save = vi.fn();
   const edit = vi.fn();
   const task = vi.fn();
+  const notice = vi.fn();
   const root = document.createElement('div');
   const app = createApp({
     render: () =>
@@ -79,11 +80,12 @@ async function mount(initial = fixture()) {
         onSave: save,
         onEdit: edit,
         onTask: task,
+        onNotice: notice,
       }),
   });
   app.mount(root);
   await flush();
-  return { project, saving, busy, save, edit, task, root, close: () => app.unmount() };
+  return { project, saving, busy, save, edit, task, notice, root, close: () => app.unmount() };
 }
 async function ready(initial = fixture()) {
   const panel = await mount({
@@ -112,6 +114,115 @@ function input(root: HTMLElement, selector: string, value: string) {
   field.value = value;
   field.dispatchEvent(new Event('input'));
 }
+it('开发、测试、当前及未关联模块分支支持点击或键盘复制完整名称', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  const branch = 'feature/' + 'example-branch_'.repeat(20);
+  vi.mocked(api.scmProjectModules).mockResolvedValue([
+    { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch },
+    { gitId: '43', moduleName: 'unlinked', gitRemoteUrl: null, branch: 'feature/unlinked' },
+  ]);
+  const panel = await ready();
+  try {
+    const development = panel.root.querySelector<HTMLElement>('.repository [data-development]')!;
+    expect(development.getAttribute('role')).toBe('button');
+    expect(development.tabIndex).toBe(0);
+    development.click();
+    await flush();
+    expect(writeText).toHaveBeenLastCalledWith(branch);
+    expect(panel.notice).toHaveBeenLastCalledWith('分支名已复制');
+    const testing = panel.root.querySelector<HTMLElement>('.repository [data-test]')!;
+    const space = new KeyboardEvent('keydown', { key: ' ', cancelable: true });
+    testing.dispatchEvent(space);
+    await flush();
+    expect(space.defaultPrevented).toBe(true);
+    expect(writeText).toHaveBeenLastCalledWith('test');
+    panel.root.querySelector<HTMLElement>('[data-local-branch] code')!.click();
+    await flush();
+    expect(writeText).toHaveBeenLastCalledWith('develop');
+    panel.root
+      .querySelector<HTMLElement>('.repository-unlinked [data-development]')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    await flush();
+    expect(writeText).toHaveBeenLastCalledWith('feature/unlinked');
+    expect(panel.save).not.toHaveBeenCalled();
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+    vi.unstubAllGlobals();
+  }
+});
+
+it('推送确认计划中的远端分支复制完整目标，不触发执行', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  const panel = await ready();
+  try {
+    click(panel.root, '推送开发分支到远程');
+    await flush();
+    const branches = panel.root.querySelectorAll<HTMLElement>('.plan-branch code');
+    branches[0].click();
+    await flush();
+    expect(writeText).toHaveBeenLastCalledWith('develop');
+    branches[branches.length - 1].click();
+    await flush();
+    expect(writeText).toHaveBeenLastCalledWith('origin/develop');
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+    vi.unstubAllGlobals();
+  }
+});
+
+it('未配置和游离 HEAD 等占位状态不提供复制入口', async () => {
+  const writeText = vi.fn();
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  const initial = fixture();
+  initial.subProjects[0].testBranch = '';
+  const panel = await ready(initial);
+  try {
+    const statuses = await vi.mocked(api.backendRepositoryStatuses).mock.results.at(-1)!.value;
+    vi.mocked(api.backendRepositoryStatuses).mockResolvedValueOnce(
+      statuses.map((status: Awaited<ReturnType<typeof api.backendRepositoryStatuses>>[number]) => ({
+        ...status,
+        currentBranch: '',
+      })),
+    );
+    click(panel.root, '刷新仓库');
+    await flush();
+    const testing = panel.root.querySelector<HTMLElement>('[data-test]')!;
+    const current = panel.root.querySelector<HTMLElement>('[data-local-branch] code')!;
+    expect(testing.textContent).toBe('未配置');
+    expect(current.textContent).toContain('游离 HEAD');
+    for (const element of [testing, current]) {
+      expect(element.getAttribute('role')).toBeNull();
+      expect(element.getAttribute('tabindex')).toBeNull();
+      element.click();
+    }
+    await flush();
+    expect(writeText).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+    vi.unstubAllGlobals();
+  }
+});
+
+it('剪贴板拒绝时提示手动复制，不把失败报告为成功', async () => {
+  const writeText = vi.fn().mockRejectedValue(new Error('permission denied'));
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  const panel = await ready();
+  try {
+    panel.root.querySelector<HTMLElement>('[data-development]')!.click();
+    await flush();
+    expect(panel.notice).toHaveBeenCalledExactlyOnceWith('复制失败，请手动选择分支名复制。', true);
+    expect(panel.save).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+    vi.unstubAllGlobals();
+  }
+});
+
 it('待处理和测试项目全部进入开发及测试来源的共享候选列表', async () => {
   const projects = Array.from({ length: 7 }, (_, index) => ({
     id: String(101 + index),

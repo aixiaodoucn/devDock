@@ -18,6 +18,7 @@ const emit = defineEmits<{
   save: [project: Project];
   edit: [];
   task: [taskId: string, title: string];
+  notice: [message: string, error?: boolean];
 }>();
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const draft = ref<Project>(copy(props.project));
@@ -223,6 +224,32 @@ function localBranch(id: string): string {
   return (
     status.currentBranch || (status.head ? `游离 HEAD (${status.head.slice(0, 8)})` : '未创建分支')
   );
+}
+async function copyBranch(value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+    if (!disposed) emit('notice', '分支名已复制');
+  } catch {
+    if (!disposed) emit('notice', '复制失败，请手动选择分支名复制。', true);
+  }
+}
+// 仅真实分支提供鼠标和键盘复制，状态占位文字保持普通文本。
+function branchCopyProps(value?: string) {
+  if (!value?.trim()) return {};
+  return {
+    class: 'branch-copyable',
+    role: 'button',
+    tabindex: 0,
+    title: `点击复制分支名：${value}`,
+    'aria-label': `复制分支 ${value}`,
+    onClick: () => void copyBranch(value),
+    onKeydown: (event: KeyboardEvent) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        void copyBranch(value);
+      }
+    },
+  };
 }
 const gitActionLabels = {
   switch: '切换开发分支',
@@ -777,14 +804,26 @@ onBeforeUnmount(() => {
         <p class="repository-path">{{ repo.path }}</p>
         <div class="mapping-fields">
           <div class="mapping-branch">
-            <span>开发分支</span><code data-development>{{ repo.developmentBranch }}</code>
+            <span>开发分支</span
+            ><code v-bind="branchCopyProps(repo.developmentBranch)" data-development>{{
+              repo.developmentBranch
+            }}</code>
           </div>
           <div class="mapping-branch">
-            <span>测试分支</span><code data-test>{{ repo.testBranch || '未配置' }}</code>
+            <span>测试分支</span
+            ><code v-bind="branchCopyProps(repo.testBranch)" data-test>{{
+              repo.testBranch || '未配置'
+            }}</code>
           </div>
         </div>
         <div class="repository-state" data-local-branch>
-          <span>当前本地分支</span><code>{{ localBranch(repo.id) }}</code>
+          <span>当前本地分支</span
+          ><code
+            v-bind="
+              branchCopyProps(statusFor(repo.id)?.error ? '' : statusFor(repo.id)?.currentBranch)
+            "
+            >{{ localBranch(repo.id) }}</code
+          >
           <span
             v-if="
               statusFor(repo.id)?.currentBranch &&
@@ -828,10 +867,16 @@ onBeforeUnmount(() => {
         </div>
         <div class="mapping-fields">
           <div class="mapping-branch">
-            <span>开发分支</span><code data-development>{{ module.branch }}</code>
+            <span>开发分支</span
+            ><code v-bind="branchCopyProps(module.branch)" data-development>{{
+              module.branch
+            }}</code>
           </div>
           <div v-for="(target, targetIndex) in targets" :key="targetIndex" class="mapping-branch">
-            <span>测试分支</span><code data-test>{{ target.branch || '未配置' }}</code>
+            <span>测试分支</span
+            ><code v-bind="branchCopyProps(target.branch)" data-test>{{
+              target.branch || '未配置'
+            }}</code>
           </div>
           <div v-if="!targets.length" class="mapping-branch">
             <span>测试分支</span><code data-test>未配置</code>
@@ -904,18 +949,31 @@ onBeforeUnmount(() => {
           <li v-for="item in plan.repositories" :key="item.repository.id">
             <strong>{{ item.repository.name }}</strong>
             <div class="plan-branch">
-              当前分支：<code>{{ item.currentBranch }}</code>
+              当前分支：<code v-bind="branchCopyProps(item.currentBranch)">{{
+                item.currentBranch
+              }}</code>
             </div>
             <div v-if="plan.operation === 'push-dev'" class="plan-branch">
-              本地开发分支：<code>{{ item.repository.developmentBranch }}</code>
+              本地开发分支：<code v-bind="branchCopyProps(item.repository.developmentBranch)">{{
+                item.repository.developmentBranch
+              }}</code>
             </div>
             <div class="plan-branch">
               {{ plan.operation === 'push-dev' ? '目标远程分支：' : '目标分支：'
-              }}<code>{{
-                plan.operation === 'push-dev'
-                  ? `${item.repository.remote}/${item.targetBranch}`
-                  : item.targetBranch
-              }}</code>
+              }}<code
+                v-bind="
+                  branchCopyProps(
+                    plan.operation === 'push-dev'
+                      ? `${item.repository.remote}/${item.targetBranch}`
+                      : item.targetBranch,
+                  )
+                "
+                >{{
+                  plan.operation === 'push-dev'
+                    ? `${item.repository.remote}/${item.targetBranch}`
+                    : item.targetBranch
+                }}</code
+              >
             </div>
             <span
               v-if="
@@ -1224,6 +1282,17 @@ small,
 small {
   display: block;
   margin-top: 5px;
+}
+.branch-copyable {
+  cursor: copy;
+}
+.branch-copyable:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.branch-copyable:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
 }
 code {
   font-family: var(--mono);
