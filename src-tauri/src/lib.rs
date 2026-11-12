@@ -1,5 +1,6 @@
 mod accessibility;
 mod ai;
+mod backend_git;
 mod build_history;
 mod config;
 mod environment;
@@ -8,6 +9,7 @@ mod hbuilder_owner;
 mod manifest;
 mod nvm;
 mod paths;
+mod scm;
 mod system_tools;
 mod tasks;
 mod tray;
@@ -118,6 +120,127 @@ async fn read_git_branch(path: String) -> Result<String> {
     tauri::async_runtime::spawn_blocking(move || git::read_branch(Path::new(&path)))
         .await
         .map_err(|e| e.to_string())?
+}
+fn ensure_backend_window(window: &tauri::WebviewWindow) -> Result<()> {
+    if window.label() != "main" {
+        return Err("请在 DevDock 主窗口操作后端项目和 SCM".into());
+    }
+    Ok(())
+}
+#[tauri::command]
+async fn scan_backend_children(parent_path: String) -> Result<Vec<backend_git::Candidate>> {
+    tauri::async_runtime::spawn_blocking(move || backend_git::scan(parent_path))
+        .await
+        .map_err(|_| "扫描子项目任务异常".to_owned())?
+}
+#[tauri::command]
+async fn backend_repository_statuses(
+    repositories: Vec<backend_git::Repository>,
+) -> Result<Vec<backend_git::RepositoryStatus>> {
+    tauri::async_runtime::spawn_blocking(move || backend_git::statuses(repositories))
+        .await
+        .map_err(|_| "读取子仓库状态任务异常".to_owned())
+}
+#[tauri::command]
+async fn prepare_backend_git(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    project_id: String,
+    repositories: Vec<backend_git::Repository>,
+    operation: String,
+    push: bool,
+) -> Result<backend_git::Plan> {
+    ensure_backend_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_git::prepare(&app, project_id, repositories, operation, push)
+    })
+    .await
+    .map_err(|_| "Git 预检任务异常".to_owned())?
+}
+#[tauri::command]
+fn execute_backend_git(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    plan_id: String,
+) -> Result<String> {
+    ensure_backend_window(&window)?;
+    backend_git::execute(app, plan_id)
+}
+#[tauri::command]
+fn backend_git_state(app: AppHandle, plan_id: String) -> Result<backend_git::OperationState> {
+    backend_git::state(&app, plan_id)
+}
+#[tauri::command]
+async fn backend_git_operations(
+    app: AppHandle,
+    project_id: String,
+) -> Result<Vec<backend_git::OperationState>> {
+    tauri::async_runtime::spawn_blocking(move || backend_git::list_operations(&app, project_id))
+        .await
+        .map_err(|_| "读取 Git 操作记录异常".to_owned())?
+}
+#[tauri::command]
+async fn complete_backend_git(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    plan_id: String,
+    repo_id: String,
+) -> Result<()> {
+    ensure_backend_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || backend_git::complete(&app, plan_id, repo_id))
+        .await
+        .map_err(|_| "完成合并处理任务异常".to_owned())?
+}
+#[tauri::command]
+async fn abort_backend_git(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    plan_id: String,
+    repo_id: String,
+) -> Result<()> {
+    ensure_backend_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || backend_git::abort(&app, plan_id, repo_id))
+        .await
+        .map_err(|_| "中止合并任务异常".to_owned())?
+}
+#[tauri::command]
+async fn scm_status(app: AppHandle, window: tauri::WebviewWindow) -> Result<scm::Status> {
+    ensure_backend_window(&window)?;
+    scm::status(&app).await
+}
+#[tauri::command]
+async fn scm_login(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    base_url: String,
+    username: String,
+    password: String,
+    remember: bool,
+) -> Result<scm::Status> {
+    ensure_backend_window(&window)?;
+    scm::login(&app, base_url, username, password, remember).await
+}
+#[tauri::command]
+async fn scm_logout(app: AppHandle, window: tauri::WebviewWindow) -> Result<scm::Status> {
+    ensure_backend_window(&window)?;
+    scm::logout(&app).await
+}
+#[tauri::command]
+async fn scm_projects(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Vec<scm::ScmProject>> {
+    ensure_backend_window(&window)?;
+    scm::projects(&app).await
+}
+#[tauri::command]
+async fn scm_project_modules(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    project_id: String,
+) -> Result<Vec<scm::ScmModule>> {
+    ensure_backend_window(&window)?;
+    scm::project_modules(&app, project_id).await
 }
 #[tauri::command]
 async fn check_environment(
@@ -668,6 +791,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updater::UpdateState::default())
         .manage(build_history::Store::default())
+        .manage(backend_git::Runtime::default())
+        .manage(scm::Runtime::default())
         .manage(tasks::Runtime::default())
         .manage(StartupLogs::default())
         .setup(|app| {
@@ -707,6 +832,19 @@ pub fn run() {
             updater::check_update,
             updater::download_update,
             updater::install_update,
+            scan_backend_children,
+            backend_repository_statuses,
+            prepare_backend_git,
+            execute_backend_git,
+            backend_git_state,
+            backend_git_operations,
+            abort_backend_git,
+            complete_backend_git,
+            scm_status,
+            scm_login,
+            scm_logout,
+            scm_projects,
+            scm_project_modules,
             check_environment,
             request_accessibility_permission,
             get_build_history_settings,

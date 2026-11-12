@@ -22,6 +22,8 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
 libc = "0.2"
+reqwest = { version = "0.13.5", default-features = false, features = ["cookies", "rustls", "form", "query", "charset"] }
+scraper = "0.24"
 tauri-plugin-updater = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -29,6 +31,14 @@ objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSGeometry", "NSArray", "NSObject"] }
 block2 = "0.6.2"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWindow", "NSResponder", "NSPanel", "NSGraphics", "NSView", "NSScreen", "NSEvent", "NSApplication", "block2"] }
+
+[target.'cfg(target_os = "macos")'.dependencies.keyring]
+version = "3"
+features = ["apple-native"]
+
+[target.'cfg(target_os = "windows")'.dependencies.keyring]
+version = "3"
+features = ["windows-native"]
 
 [dev-dependencies]
 tempfile = "3"

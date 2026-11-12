@@ -12,6 +12,83 @@ export interface Action {
   command: string;
   envVars: string;
 }
+export interface BackendRepository {
+  id: string;
+  name: string;
+  path: string;
+  remote: string;
+  scmGitId: string;
+  scmModuleName: string;
+  developmentBranch: string;
+  testBranch: string;
+}
+export interface BackendCandidate {
+  id: string;
+  name: string;
+  path: string;
+  isGit: boolean;
+  currentBranch: string;
+  error: string;
+}
+export interface BackendRepositoryStatus {
+  id: string;
+  currentBranch: string;
+  head: string;
+  dirty: boolean;
+  merging: boolean;
+  rebasing: boolean;
+  remoteUrl: string;
+  branches: string[];
+  root: string;
+  error: string;
+}
+export interface BackendGitPlanRepository {
+  repository: BackendRepository;
+  root: string;
+  commonDir: string;
+  currentBranch: string;
+  sourceSha: string;
+  targetBranch: string;
+  targetSha: string;
+  createTracking: boolean;
+  remoteSha: string;
+}
+export interface BackendGitPlan {
+  planId: string;
+  projectId: string;
+  operation: 'switch' | 'merge';
+  push: boolean;
+  repositories: BackendGitPlanRepository[];
+}
+export interface BackendGitOperation {
+  planId: string;
+  taskId: string;
+  status: 'prepared' | 'running' | 'success' | 'paused' | 'cancelled' | 'aborting';
+  repositories: {
+    repoId: string;
+    status: 'pending' | 'running' | 'success' | 'error' | 'cancelled' | 'aborted';
+    message: string;
+    worktreePath: string;
+  }[];
+}
+export interface ScmStatus {
+  connected: boolean;
+  baseUrl: string | null;
+  username: string | null;
+  remembered: boolean;
+  message: string | null;
+}
+export interface ScmProject {
+  id: string;
+  name: string;
+  status: string | null;
+}
+export interface ScmModule {
+  gitId: string | null;
+  moduleName: string;
+  gitRemoteUrl: string | null;
+  branch: string;
+}
 export interface Project {
   id: string;
   name: string;
@@ -33,6 +110,9 @@ export interface Project {
   envVars: string;
   aiToolId: string;
   commands: Action[];
+  subProjects: BackendRepository[];
+  scmDevelopmentProjectId: string;
+  scmTestProjectId: string;
 }
 export interface NodeVersion {
   version: string;
@@ -224,6 +304,9 @@ export function newProject(): Project {
     envVars: '',
     aiToolId: '',
     commands: [],
+    subProjects: [],
+    scmDevelopmentProjectId: '',
+    scmTestProjectId: '',
   };
 }
 
@@ -236,6 +319,18 @@ export function normalizeProjectPlatforms(project: Project): Project {
   // 仅合并用途分类，具体菜单、命令和操作 ID 均保留。
   return {
     ...project,
+    subProjects: (project.subProjects ?? []).map((repository) => ({
+      id: repository.id,
+      name: repository.name,
+      path: repository.path,
+      remote: repository.remote ?? 'origin',
+      scmGitId: repository.scmGitId ?? '',
+      scmModuleName: repository.scmModuleName ?? '',
+      developmentBranch: repository.developmentBranch ?? '',
+      testBranch: repository.testBranch ?? '',
+    })),
+    scmDevelopmentProjectId: project.scmDevelopmentProjectId ?? '',
+    scmTestProjectId: project.scmTestProjectId ?? '',
     platforms: [...new Set(project.platforms.map(normalizePlatform))],
     commands: project.commands.map((action) => ({
       ...action,

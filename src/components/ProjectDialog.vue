@@ -5,6 +5,10 @@ import type { Project, Tools, Action, NodeVersion, UniappScript } from '../types
 import { PLATFORM_LABELS, normalizeProjectPlatforms } from '../types';
 import { api, desktop } from '../api';
 import PathInput from './PathInput.vue';
+import BackendRepositoriesEditor, {
+  backendRepositoriesError,
+  repositoryMetadata,
+} from './BackendRepositoriesEditor.vue';
 import { isWindows, isAbsolutePath, pathKey } from '../platform';
 const props = defineProps<{
   project: Project;
@@ -16,6 +20,9 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ close: []; save: [project: Project]; detect: [] }>();
 const draft = ref<Project>(normalizeProjectPlatforms(JSON.parse(JSON.stringify(props.project))));
+draft.value.subProjects = (draft.value.subProjects ?? []).map(repositoryMetadata);
+draft.value.scmDevelopmentProjectId ??= '';
+draft.value.scmTestProjectId ??= '';
 const tab = ref('general');
 const error = ref('');
 const hbuilderMenus = ref<string[][]>([]);
@@ -410,6 +417,28 @@ function submit() {
     tab.value = 'general';
     return;
   }
+  // 切换类型保留草稿元数据，必须显式清理后才能保存为其他项目类型。
+  if (
+    item.type !== 'backend' &&
+    (item.subProjects.length || item.scmDevelopmentProjectId || item.scmTestProjectId)
+  ) {
+    error.value =
+      '仍有后端子项目或 SCM 配置，请切回后端，显式移除子项目并清空 SCM 项目 ID 后再切换类型。';
+    tab.value = 'general';
+    return;
+  }
+  if (item.type === 'backend') {
+    const metadataError = backendRepositoriesError(item.subProjects);
+    if (
+      metadataError ||
+      !/^[0-9]*$/.test(item.scmDevelopmentProjectId) ||
+      !/^[0-9]*$/.test(item.scmTestProjectId)
+    ) {
+      error.value = metadataError || 'SCM 项目 ID 必须为空或纯数字。';
+      tab.value = 'general';
+      return;
+    }
+  }
   // 环境变量属于单条终端命令，逐项校验并定位到运行与发行。
   for (const action of item.commands) {
     if (action.kind !== 'shell') continue;
@@ -467,7 +496,7 @@ function submit() {
         <select id="project-type" v-model="draft.type" :disabled="saving" @change="changeType">
           <option value="uniapp">uni-app</option>
           <option value="nodejs">Node.js</option>
-          <option value="backend">后端项目（预留）</option>
+          <option value="backend">后端项目</option>
         </select>
       </div>
       <nav class="tabs modal-tabs" aria-label="项目设置分类">
@@ -497,6 +526,25 @@ function submit() {
               label="项目目录"
               @error="error = $event"
           /></label>
+          <template v-if="draft.type === 'backend'">
+            <div class="form-grid">
+              <label
+                >SCM 开发项目 ID<input
+                  v-model="draft.scmDevelopmentProjectId"
+                  aria-label="SCM 开发项目 ID"
+                  inputmode="numeric"
+                  placeholder="可选，纯数字"
+              /></label>
+              <label
+                >SCM 测试项目 ID<input
+                  v-model="draft.scmTestProjectId"
+                  aria-label="SCM 测试项目 ID"
+                  inputmode="numeric"
+                  placeholder="可选，纯数字"
+              /></label>
+            </div>
+            <BackendRepositoriesEditor v-model="draft.subProjects" :parent-path="draft.path" />
+          </template>
           <div v-if="availablePlatforms.length">
             <span class="field-label">支持平台</span>
             <div class="platform-options">

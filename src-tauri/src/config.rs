@@ -113,6 +113,13 @@ pub struct Project {
     #[serde(default)]
     pub env_vars: String,
     pub commands: Vec<Action>,
+    // 后端项目组只保存仓库元数据，旧配置默认不包含子项目或 SCM 映射。
+    #[serde(default)]
+    pub sub_projects: Vec<crate::backend_git::Repository>,
+    #[serde(default)]
+    pub scm_development_project_id: String,
+    #[serde(default)]
+    pub scm_test_project_id: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -238,6 +245,49 @@ impl AppConfig {
                     .any(|x| !allowed.contains(&x.as_str()) || !platforms.insert(x))
             {
                 return Err("项目平台为空、重复或不适用于当前项目类型".into());
+            }
+            if p.project_type != "backend"
+                && (!p.sub_projects.is_empty()
+                    || !p.scm_development_project_id.is_empty()
+                    || !p.scm_test_project_id.is_empty())
+            {
+                return Err("非后端项目不能包含子项目或 SCM 项目配置".into());
+            }
+            for id in [&p.scm_development_project_id, &p.scm_test_project_id] {
+                if !id.bytes().all(|ch| ch.is_ascii_digit()) {
+                    return Err("SCM 项目 ID 必须为空或纯数字".into());
+                }
+            }
+            let mut repository_ids = HashSet::new();
+            let mut repository_paths = HashSet::new();
+            for repository in &p.sub_projects {
+                if [
+                    &repository.id,
+                    &repository.name,
+                    &repository.path,
+                    &repository.remote,
+                    &repository.scm_git_id,
+                    &repository.scm_module_name,
+                    &repository.development_branch,
+                    &repository.test_branch,
+                ]
+                .iter()
+                .any(|value| value.contains('\0'))
+                {
+                    return Err("子项目字段不能含 NUL".into());
+                }
+                if repository.id.trim().is_empty() || repository.name.trim().is_empty() {
+                    return Err("子项目 id/name 不能为空".into());
+                }
+                if !repository_ids.insert(&repository.id) {
+                    return Err("同组子项目 id 重复".into());
+                }
+                if !crate::paths::is_absolute(&repository.path) {
+                    return Err("子项目必须使用完整的绝对路径".into());
+                }
+                if !repository_paths.insert(crate::paths::key(&repository.path)) {
+                    return Err("同组子项目目录重复".into());
+                }
             }
             terminal(&p.terminal)?;
             if p.ai_tool_id.contains('\0') {
@@ -406,6 +456,100 @@ pub fn manifest_path(p: &Project) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn backend_fixture() -> serde_json::Value {
+        let mut value = platform_fixture();
+        value["projects"][0]["type"] = "backend".into();
+        value["projects"][0]["platforms"] = serde_json::json!([]);
+        value["projects"][0]["commands"] = serde_json::json!([]);
+        value
+    }
+    #[test]
+    fn backend_legacy_defaults_and_metadata_roundtrip() {
+        let old = parse(&backend_fixture().to_string()).unwrap();
+        let mut value = serde_json::to_value(old).unwrap();
+        assert_eq!(value["projects"][0]["subProjects"], serde_json::json!([]));
+        assert_eq!(value["projects"][0]["scmDevelopmentProjectId"], "");
+        assert_eq!(value["projects"][0]["scmTestProjectId"], "");
+        for path in ["/tmp/repo", r"C:\repo", r"\\server\share\repo"] {
+            value["projects"][0]["subProjects"] =
+                serde_json::json!([{"id":"child","name":"服务","path":path}]);
+            value["projects"][0]["scmDevelopmentProjectId"] = "00123".into();
+            let parsed = parse(&value.to_string()).unwrap();
+            let output: serde_json::Value =
+                serde_json::from_str(&serialize(&parsed).unwrap()).unwrap();
+            assert_eq!(output["schemaVersion"], 1);
+            assert_eq!(output["projects"][0]["subProjects"][0]["remote"], "origin");
+            assert_eq!(output["projects"][0]["subProjects"][0]["scmGitId"], "");
+            assert_eq!(
+                output,
+                serde_json::to_value(parse(&output.to_string()).unwrap()).unwrap()
+            );
+        }
+    }
+    #[test]
+    fn backend_rejects_invalid_metadata_duplicates_and_non_backend_config() {
+        let repo = serde_json::json!({"id":"child","name":"服务","path":"C:/repo","remote":"origin","scmGitId":"","scmModuleName":"","developmentBranch":"","testBranch":""});
+        let mut value = backend_fixture();
+        value["projects"][0]["subProjects"] = serde_json::json!([repo.clone()]);
+        assert!(parse(&value.to_string()).is_ok());
+        for field in [
+            "id",
+            "name",
+            "path",
+            "remote",
+            "scmGitId",
+            "scmModuleName",
+            "developmentBranch",
+            "testBranch",
+        ] {
+            let mut invalid = value.clone();
+            invalid["projects"][0]["subProjects"][0][field] = "bad\0value".into();
+            assert!(parse(&invalid.to_string()).is_err(), "{field}");
+        }
+        for (field, text) in [("id", " "), ("name", ""), ("path", "relative")] {
+            let mut invalid = value.clone();
+            invalid["projects"][0]["subProjects"][0][field] = text.into();
+            assert!(parse(&invalid.to_string()).is_err(), "{field}");
+        }
+        for (id, path) in [("other", "c:/REPO/"), ("child", "C:/other")] {
+            let mut invalid = value.clone();
+            let mut other = repo.clone();
+            other["id"] = id.into();
+            other["path"] = path.into();
+            invalid["projects"][0]["subProjects"]
+                .as_array_mut()
+                .unwrap()
+                .push(other);
+            assert!(parse(&invalid.to_string()).is_err());
+        }
+        for field in ["scmDevelopmentProjectId", "scmTestProjectId"] {
+            for text in ["-1", "1a", "１２", " 1", "x\0"] {
+                let mut invalid = value.clone();
+                invalid["projects"][0][field] = text.into();
+                assert!(parse(&invalid.to_string()).is_err());
+            }
+        }
+        value["projects"][0]["type"] = "nodejs".into();
+        value["projects"][0]["platforms"] = serde_json::json!(["web"]);
+        assert!(parse(&value.to_string()).is_err());
+        value["projects"][0]["subProjects"] = serde_json::json!([]);
+        value["projects"][0]["scmTestProjectId"] = "1".into();
+        assert!(parse(&value.to_string()).is_err());
+    }
+    #[test]
+    fn backend_does_not_echo_credentials() {
+        let mut value = backend_fixture();
+        value["projects"][0]["subProjects"] = serde_json::json!([{"id":"r","name":"repo","path":"/tmp/repo","password":"secret","cookie":"session=secret"}]);
+        match parse(&value.to_string()) {
+            Ok(config) => {
+                let output = serialize(&config).unwrap();
+                assert!(!output.contains("secret"));
+                assert!(!output.contains("password"));
+                assert!(!output.contains("cookie"));
+            }
+            Err(error) => assert!(!error.contains("secret")),
+        }
+    }
     #[test]
     fn portable_paths_terminals_and_duplicate_validation() {
         for path in [

@@ -14,6 +14,14 @@ import type {
   BuildRecord,
   BuildHistorySettings,
   BuildHistorySettingsUpdate,
+  BackendCandidate,
+  BackendRepository,
+  BackendRepositoryStatus,
+  BackendGitPlan,
+  BackendGitOperation,
+  ScmStatus,
+  ScmProject,
+  ScmModule,
 } from './types';
 import { defaultConfig, normalizeProjectPlatforms } from './types';
 
@@ -45,6 +53,57 @@ export const api = {
   async persist(config: AppConfig) {
     if (desktop) await invoke('save_config', { config });
     else localStorage.setItem(PREVIEW_KEY, JSON.stringify(config));
+  },
+  scanBackendChildren(parentPath: string) {
+    return native<BackendCandidate[]>('scan_backend_children', { parentPath });
+  },
+  backendRepositoryStatuses(repositories: BackendRepository[]) {
+    return native<BackendRepositoryStatus[]>('backend_repository_statuses', {
+      repositories: JSON.parse(JSON.stringify(repositories)),
+    });
+  },
+  prepareBackendGit(
+    projectId: string,
+    repositories: BackendRepository[],
+    operation: 'switch' | 'merge',
+    push = false,
+  ) {
+    return native<BackendGitPlan>('prepare_backend_git', {
+      projectId,
+      repositories: JSON.parse(JSON.stringify(repositories)),
+      operation,
+      push,
+    });
+  },
+  executeBackendGit(planId: string) {
+    return native<string>('execute_backend_git', { planId });
+  },
+  backendGitState(planId: string) {
+    return native<BackendGitOperation>('backend_git_state', { planId });
+  },
+  backendGitOperations(projectId: string) {
+    return native<BackendGitOperation[]>('backend_git_operations', { projectId });
+  },
+  completeBackendGit(planId: string, repoId: string) {
+    return native<void>('complete_backend_git', { planId, repoId });
+  },
+  abortBackendGit(planId: string, repoId: string) {
+    return native<void>('abort_backend_git', { planId, repoId });
+  },
+  scmStatus() {
+    return native<ScmStatus>('scm_status');
+  },
+  scmLogin(baseUrl: string, username: string, password: string, remember: boolean) {
+    return native<ScmStatus>('scm_login', { baseUrl, username, password, remember });
+  },
+  scmLogout() {
+    return native<ScmStatus>('scm_logout');
+  },
+  scmProjects() {
+    return native<ScmProject[]>('scm_projects');
+  },
+  scmProjectModules(projectId: string) {
+    return native<ScmModule[]>('scm_project_modules', { projectId });
   },
   checkEnvironment(project: Project, settings: Settings) {
     return native<EnvironmentReport>('check_environment', {

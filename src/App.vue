@@ -39,6 +39,7 @@ import AiLauncher from './components/AiLauncher.vue';
 import AppUpdater from './components/AppUpdater.vue';
 import EnvironmentCheck from './components/EnvironmentCheck.vue';
 import BuildHistory from './components/BuildHistory.vue';
+import BackendWorkbench from './components/BackendWorkbench.vue';
 import { api, desktop } from './api';
 import { applyTheme } from './theme';
 import { stopMenuAction } from './actions';
@@ -99,6 +100,7 @@ let dragOrderBefore: string[] = [];
 let dragCommitted = false;
 let unlisten: UnlistenFn | undefined;
 let projectSelectionUnlisten: UnlistenFn | undefined;
+let backendGitNoticeUnlisten: UnlistenFn | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let manifestRequest = 0;
 const project = computed(() => config.value.projects.find((item) => item.id === selectedId.value));
@@ -366,6 +368,22 @@ function handleEvent(event: TaskEvent) {
     if (logElement.value) logElement.value.scrollTop = logElement.value.scrollHeight;
   });
 }
+function trackBackendTask(id: string, title: string) {
+  const item = project.value;
+  if (!item) return;
+  const existing = tasks.value.find((task) => task.id === id);
+  if (existing) existing.title = title;
+  else
+    tasks.value.unshift({
+      id,
+      projectId: item.id,
+      title,
+      status: 'running',
+      logs: [],
+      artifacts: [],
+    });
+  selectedTaskId.value = id;
+}
 async function execute(title: string, run: () => Promise<string>) {
   const item = project.value;
   if (!item || busy.value) return;
@@ -529,6 +547,9 @@ onMounted(async () => {
   if (desktop) {
     try {
       unlisten = await listen<TaskEvent>('task-event', (event) => handleEvent(event.payload));
+      backendGitNoticeUnlisten = await listen<string>('backend-git-notice', (event) =>
+        notify(event.payload, true),
+      );
       projectSelectionUnlisten = await listen<string>('open-project', async (event) => {
         if (!config.value.projects.some((item) => item.id === event.payload)) await load();
         const selected = config.value.projects.find((item) => item.id === event.payload);
@@ -550,6 +571,7 @@ onMounted(async () => {
 onUnmounted(() => {
   unlisten?.();
   projectSelectionUnlisten?.();
+  backendGitNoticeUnlisten?.();
   if (noticeTimer) clearTimeout(noticeTimer);
   document.removeEventListener('click', closeProjectMenuOutside);
   document.removeEventListener('keydown', closeProjectMenuOnEscape);
@@ -797,7 +819,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
             <div class="project-heading-line">
               <h1>{{ project.name }}<span class="heading-dot">.</span></h1>
               <span class="project-type-tag">{{ TYPE_LABELS[project.type] }}</span>
-              <GitBranch :path="project.path" />
+              <GitBranch v-if="project.type !== 'backend'" :path="project.path" />
             </div>
             <button class="project-path" @click="openPath(project.path)">
               <FolderOpen :size="14" />{{ project.path }}<ArrowUpRight :size="13" />
@@ -847,6 +869,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
           </div>
         </div>
         <AiLauncher
+          v-if="project.type !== 'backend'"
           :tools="config.settings.aiTools"
           :default-tool-id="config.settings.defaultAiToolId"
           :project-tool-id="project.aiToolId"
@@ -1016,14 +1039,16 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
             </aside>
           </div>
         </template>
-        <section v-else-if="project.type === 'backend'" class="panel backend-placeholder">
-          <Cpu :size="32" />
-          <h2>为后端项目留一个位置</h2>
-          <p>已保存项目目录。运行与发布能力将在后续版本提供。</p>
-          <button class="button" @click="openPath(project.path)">
-            <FolderOpen :size="16" />打开项目目录
-          </button>
-        </section>
+        <BackendWorkbench
+          v-else-if="project.type === 'backend'"
+          :key="project.id"
+          :project="project"
+          :saving="saving"
+          :busy="busy"
+          @save="saveProject"
+          @edit="editProject"
+          @task="trackBackendTask"
+        />
         <section
           v-if="project.type !== 'backend' && (selectedPlatform !== 'app' || actions.length)"
           class="actions-section"

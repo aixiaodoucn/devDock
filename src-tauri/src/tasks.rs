@@ -297,6 +297,15 @@ pub fn recover_inner(app: &AppHandle) -> Result<Vec<String>> {
     }
     Ok(logs)
 }
+// 后台 Git 任务共享退出/更新等待和取消机制，不获取构建独占锁或 AX 权限。
+pub(crate) fn run_backend(
+    app: AppHandle,
+    project_id: String,
+    work: impl FnOnce(&Task) -> Result<&'static str> + Send + 'static,
+) -> Result<String> {
+    spawn(app, project_id, false, work)
+}
+
 fn spawn(
     app: AppHandle,
     project: String,
