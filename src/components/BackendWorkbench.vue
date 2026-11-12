@@ -119,6 +119,16 @@ const developmentLoaded = computed(
     !!loadedDevelopmentId.value &&
     loadedDevelopmentId.value === sourceId(draft.value.scmDevelopmentProjectId),
 );
+// 以开发模块为展示范围，按仓库编号配对测试分支，不按名称猜测。
+const moduleRows = computed(() =>
+  development.value.map((module) => {
+    const gitId = module.gitId?.trim();
+    return {
+      module,
+      testing: gitId ? testing.value.filter((candidate) => candidate.gitId?.trim() === gitId) : [],
+    };
+  }),
+);
 const mapping = computed(() => {
   const result = syncBackendModules(
     draft.value.subProjects.filter((repo) => !statusFor(repo.id)?.error),
@@ -618,52 +628,53 @@ onBeforeUnmount(() => {
       >
         {{ warning }}
       </p>
-      <div v-if="development.length || testing.length" class="table-wrap">
+      <div v-if="moduleRows.length" class="table-wrap">
         <table>
           <colgroup>
-            <col class="environment-column" />
             <col class="module-column" />
             <col class="branch-column" />
             <col class="mapping-column" />
           </colgroup>
           <thead>
             <tr>
-              <th>环境</th>
               <th>模块 / Git ID</th>
-              <th>分支</th>
+              <th>开发 / 测试分支</th>
               <th>本地映射</th>
             </tr>
           </thead>
           <tbody>
-            <template
-              v-for="group in [
-                { name: '开发', modules: development },
-                { name: '测试', modules: testing },
-              ]"
-              :key="group.name"
-              ><tr v-for="(module, index) in group.modules" :key="index">
-                <td>{{ group.name }}</td>
-                <td>
-                  {{ module.moduleName }}<small>{{ module.gitId || '缺少 Git ID' }}</small>
-                </td>
-                <td>
-                  <code>{{ module.branch }}</code>
-                </td>
-                <td>
-                  {{
-                    draft.subProjects
-                      .filter(
-                        (repo) =>
-                          visibleRepositories.some((item) => item.id === repo.id) &&
-                          !!repo.scmGitId &&
-                          repo.scmGitId === module.gitId,
-                      )
-                      .map((repo) => repo.name)
-                      .join('、') || '尚未映射，请添加本地路径或核对 SCM Git ID / 仓库 URL'
-                  }}
-                </td>
-              </tr></template
-            >
+            <tr v-for="({ module, testing: targets }, index) in moduleRows" :key="index">
+              <td>
+                {{ module.moduleName }}<small>{{ module.gitId || '缺少 Git ID' }}</small>
+              </td>
+              <td>
+                <div class="module-branch">
+                  <span>开发</span><code>{{ module.branch }}</code>
+                </div>
+                <div class="module-branch">
+                  <span>测试</span>
+                  <div v-if="targets.length" class="test-branches">
+                    <code v-for="(target, targetIndex) in targets" :key="targetIndex">{{
+                      target.branch || '未配置'
+                    }}</code>
+                  </div>
+                  <span v-else class="hint">未配置</span>
+                </div>
+              </td>
+              <td>
+                {{
+                  draft.subProjects
+                    .filter(
+                      (repo) =>
+                        visibleRepositories.some((item) => item.id === repo.id) &&
+                        !!repo.scmGitId &&
+                        repo.scmGitId === module.gitId,
+                    )
+                    .map((repo) => repo.name)
+                    .join('、') || '尚未映射，请添加本地路径或核对 SCM Git ID / 仓库 URL'
+                }}
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -1068,14 +1079,28 @@ table {
   border-collapse: collapse;
   font-size: 12px;
 }
-.environment-column {
-  width: 8%;
-}
 .module-column {
-  width: 22%;
+  width: 26%;
 }
 .branch-column {
-  width: 48%;
+  width: 52%;
+}
+.module-branch {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+}
+.module-branch + .module-branch {
+  margin-top: 7px;
+}
+.module-branch > span:first-child {
+  color: var(--muted);
+  font-size: 11px;
+}
+.test-branches {
+  display: grid;
+  gap: 5px;
 }
 .mapping-column {
   width: 22%;

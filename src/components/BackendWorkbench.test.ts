@@ -858,6 +858,52 @@ it('预检失败可重试，恢复 paused 只显示结果不直接执行', async
   panel.close();
 });
 
+it('模块按开发范围合并展示，同 Git ID 的测试分支位于开发分支下方', async () => {
+  const initial = fixture();
+  initial.scmTestProjectId = '456';
+  vi.mocked(api.scmProjectModules).mockImplementation(async (id) =>
+    id === '123'
+      ? [
+          { gitId: '42', moduleName: 'service', branch: 'feature/current', gitRemoteUrl: null },
+          { gitId: '43', moduleName: 'missing-test', branch: 'feature/other', gitRemoteUrl: null },
+        ]
+      : [
+          {
+            gitId: '42',
+            moduleName: 'renamed-service',
+            branch: 'test/current',
+            gitRemoteUrl: null,
+          },
+          { gitId: '99', moduleName: 'service', branch: 'test/unrelated', gitRemoteUrl: null },
+          { gitId: null, moduleName: 'unknown', branch: 'test/unknown', gitRemoteUrl: null },
+        ],
+  );
+  const panel = await ready(initial);
+  try {
+    expect([...panel.root.querySelectorAll('th')].map((cell) => cell.textContent?.trim())).toEqual([
+      '模块 / Git ID',
+      '开发 / 测试分支',
+      '本地映射',
+    ]);
+    const rows = [...panel.root.querySelectorAll('tbody tr')];
+    expect(rows).toHaveLength(2);
+    expect(rows[0].querySelectorAll('td')).toHaveLength(3);
+    expect(rows[0].textContent).toContain('service');
+    expect([...rows[0].querySelectorAll('code')].map((code) => code.textContent)).toEqual([
+      'feature/current',
+      'test/current',
+    ]);
+    expect(rows[0].querySelector('td:last-child')?.textContent).toContain('Service');
+    expect(rows[1].textContent).toContain('missing-test');
+    expect(rows[1].textContent).toContain('未配置');
+    expect(panel.root.querySelector('tbody')?.textContent).not.toContain('test/unrelated');
+    expect(panel.root.querySelector('tbody')?.textContent).not.toContain('test/unknown');
+    expect(panel.project.value.subProjects[0].testBranch).toBe('test/current');
+  } finally {
+    panel.close();
+  }
+});
+
 it('开发源子集只展示与预检关联仓库，自动保存保留全部配置', async () => {
   const initial = fixture();
   const unrelated = { ...initial.subProjects[0], id: 'other', name: 'Other', scmGitId: '99' };
