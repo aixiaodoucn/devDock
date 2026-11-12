@@ -21,6 +21,8 @@ async function mountDialog() {
           name: '后端',
           path: '/parent',
           platforms: [],
+          scmDevelopmentProjectId: '123',
+          scmTestProjectId: '456',
           subProjects: [
             {
               id: 'r',
@@ -72,7 +74,7 @@ describe('后端项目保存', () => {
     vi.mocked(api.gitBranch).mockResolvedValue('dev');
     vi.mocked(api.nodeVersions).mockResolvedValue([]);
   });
-  it('显示元数据和当前分支，拒绝无效子项目及SCM项目ID', async () => {
+  it('隐藏SCM输入并保留已有配置，拒绝无效子项目', async () => {
     const dialog = await mountDialog();
     try {
       expect(dialog.root.textContent).not.toContain('预留');
@@ -82,16 +84,56 @@ describe('后端项目保存', () => {
       expect(dialog.save).not.toHaveBeenCalled();
       expect(dialog.root.querySelector('[role="alert"]')?.textContent).toContain('子项目');
       await input(dialog.root, '子项目 1 名称', '服务');
-      await input(dialog.root, 'SCM 开发项目 ID', 'abc');
-      await dialog.submit();
-      expect(dialog.save).not.toHaveBeenCalled();
-      expect(dialog.root.querySelector('[role="alert"]')?.textContent).toContain('纯数字');
-      await input(dialog.root, 'SCM 开发项目 ID', '123');
+      expect(dialog.root.querySelector('[aria-label="SCM 开发项目 ID"]')).toBeNull();
+      expect(dialog.root.querySelector('[aria-label="SCM 测试项目 ID"]')).toBeNull();
+      expect(dialog.root.querySelector('[aria-label="子项目 1 SCM Git ID"]')).toBeNull();
       await dialog.submit();
       expect(dialog.save).toHaveBeenCalledWith(
         expect.objectContaining({
           scmDevelopmentProjectId: '123',
           subProjects: [expect.objectContaining({ name: '服务' })],
+        }),
+      );
+    } finally {
+      dialog.dispose();
+    }
+  });
+  it('勾选候选后直接保存，校验失败后取消勾选不添加目录', async () => {
+    vi.mocked(api.scanBackendChildren).mockResolvedValue([
+      {
+        id: 'new',
+        name: '新服务',
+        path: '/parent/new',
+        isGit: true,
+        currentBranch: 'dev',
+        error: '',
+      },
+      {
+        id: 'docs',
+        name: '文档',
+        path: '/parent/docs',
+        isGit: false,
+        currentBranch: '',
+        error: '',
+      },
+    ]);
+    const dialog = await mountDialog();
+    try {
+      expect(dialog.root.textContent).not.toContain('添加选中子项目');
+      await input(dialog.root, '候选 1 名称', '');
+      await dialog.submit();
+      expect(dialog.save).not.toHaveBeenCalled();
+      const checks = dialog.root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+      checks[0].click();
+      checks[1].click();
+      await nextTick();
+      await dialog.submit();
+      expect(dialog.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          subProjects: [
+            expect.objectContaining({ name: '服务', path: '/repo' }),
+            expect.objectContaining({ name: '文档', path: '/parent/docs' }),
+          ],
         }),
       );
     } finally {

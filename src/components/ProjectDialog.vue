@@ -24,6 +24,7 @@ draft.value.subProjects = (draft.value.subProjects ?? []).map(repositoryMetadata
 draft.value.scmDevelopmentProjectId ??= '';
 draft.value.scmTestProjectId ??= '';
 const tab = ref('general');
+const repositoriesEditor = ref<InstanceType<typeof BackendRepositoriesEditor> | null>(null);
 const error = ref('');
 const hbuilderMenus = ref<string[][]>([]);
 const loadingHbuilderMenus = ref(false);
@@ -427,8 +428,13 @@ function submit() {
     tab.value = 'general';
     return;
   }
+  // 扫描候选仅在明确保存时合并，校验失败时仍可继续勾选或取消。
+  const subProjects =
+    item.type === 'backend'
+      ? (repositoriesEditor.value?.collectRepositories() ?? item.subProjects)
+      : item.subProjects;
   if (item.type === 'backend') {
-    const metadataError = backendRepositoriesError(item.subProjects);
+    const metadataError = backendRepositoriesError(subProjects);
     if (
       metadataError ||
       !/^[0-9]*$/.test(item.scmDevelopmentProjectId) ||
@@ -466,13 +472,14 @@ function submit() {
     tab.value = 'actions';
     return;
   }
-  emit('save', JSON.parse(JSON.stringify(item)));
+  emit('save', JSON.parse(JSON.stringify({ ...item, subProjects })));
 }
 </script>
 <template>
   <div class="modal-backdrop" @click.self="!saving && emit('close')">
     <section
       class="modal project-modal"
+      :class="{ 'backend-project-modal': draft.type === 'backend' }"
       role="dialog"
       aria-modal="true"
       aria-labelledby="project-dialog-title"
@@ -518,32 +525,22 @@ function submit() {
       <form id="project-form" class="modal-body" @submit.prevent="submit">
         <div v-if="error" class="inline-message error" role="alert">{{ error }}</div>
         <div v-show="tab === 'general'" class="form-stack">
-          <label>项目名称<input v-model="draft.name" placeholder="例如：门店管理 App" /></label>
-          <label
-            >项目目录<PathInput
-              v-model="draft.path"
-              placeholder="选择本机项目文件夹"
-              label="项目目录"
-              @error="error = $event"
-          /></label>
+          <div :class="draft.type === 'backend' ? 'project-location-row' : 'form-stack'">
+            <label>项目名称<input v-model="draft.name" placeholder="例如：门店管理 App" /></label>
+            <label
+              >项目目录<PathInput
+                v-model="draft.path"
+                placeholder="选择本机项目文件夹"
+                label="项目目录"
+                @error="error = $event"
+            /></label>
+          </div>
           <template v-if="draft.type === 'backend'">
-            <div class="form-grid">
-              <label
-                >SCM 开发项目 ID<input
-                  v-model="draft.scmDevelopmentProjectId"
-                  aria-label="SCM 开发项目 ID"
-                  inputmode="numeric"
-                  placeholder="可选，纯数字"
-              /></label>
-              <label
-                >SCM 测试项目 ID<input
-                  v-model="draft.scmTestProjectId"
-                  aria-label="SCM 测试项目 ID"
-                  inputmode="numeric"
-                  placeholder="可选，纯数字"
-              /></label>
-            </div>
-            <BackendRepositoriesEditor v-model="draft.subProjects" :parent-path="draft.path" />
+            <BackendRepositoriesEditor
+              ref="repositoriesEditor"
+              v-model="draft.subProjects"
+              :parent-path="draft.path"
+            />
           </template>
           <div v-if="availablePlatforms.length">
             <span class="field-label">支持平台</span>
@@ -963,6 +960,22 @@ function submit() {
 </template>
 
 <style scoped>
+.backend-project-modal {
+  width: 900px;
+}
+.project-location-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 2.5fr);
+  gap: 12px;
+}
+.project-location-row label {
+  min-width: 0;
+}
+@media (max-width: 600px) {
+  .project-location-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .env-hint {
   display: grid;
   gap: 5px;

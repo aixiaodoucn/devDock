@@ -28,9 +28,11 @@ function mountEditor(saved: BackendRepository[] = []) {
   const repos = ref(saved);
   const root = document.createElement('div');
   document.body.append(root);
+  const component = ref<InstanceType<typeof BackendRepositoriesEditor> | null>(null);
   const app = createApp({
     render: () =>
       h(BackendRepositoriesEditor, {
+        ref: component,
         parentPath: parent.value,
         modelValue: repos.value,
         'onUpdate:modelValue': (value: BackendRepository[]) => {
@@ -43,6 +45,7 @@ function mountEditor(saved: BackendRepository[] = []) {
     root,
     parent,
     repos,
+    collect: () => component.value!.collectRepositories(),
     dispose() {
       app.unmount();
       root.remove();
@@ -103,19 +106,20 @@ describe('后端子项目编辑', () => {
       await input(editor.root, '候选 1 目录', '/elsewhere/service');
       checks[1].click();
       await nextTick();
-      click(editor.root, '添加选中子项目');
-      await flush();
-      expect(editor.repos.value).toEqual([
+      expect(editor.collect()).toEqual([
         expect.objectContaining({ name: 'renamed', path: '/elsewhere/service', remote: 'origin' }),
         expect.objectContaining({ name: 'docs' }),
       ]);
+      expect(editor.repos.value).toEqual([]);
+      expect(editor.root.textContent).not.toContain('添加选中子项目');
+      editor.repos.value = editor.collect();
+      await flush();
       await input(editor.root, '子项目 1 名称', 'manual');
       await input(editor.root, '子项目 1 目录', '/manual');
-      await input(editor.root, '子项目 1 Remote', 'upstream');
       expect(editor.repos.value[0]).toMatchObject({
         name: 'manual',
         path: '/manual',
-        remote: 'upstream',
+        remote: 'origin',
       });
       expect(api.gitBranch).toHaveBeenCalledWith('/manual');
       expect(editor.root.textContent).not.toContain('运行项目');
@@ -145,12 +149,11 @@ describe('后端子项目编辑', () => {
     const editor = mountEditor([saved]);
     try {
       await flush();
-      click(editor.root, '添加选中子项目');
-      await flush();
+      expect(editor.collect()).toEqual([saved]);
+      expect(editor.root.querySelectorAll('.candidate-card')).toHaveLength(0);
       click(editor.root, '重新扫描');
       await flush();
-      click(editor.root, '添加选中子项目');
-      await flush();
+      expect(editor.collect()).toEqual([saved]);
       expect(editor.repos.value).toEqual([saved]);
       expect(editor.root.textContent).not.toContain('secret');
     } finally {
@@ -178,7 +181,7 @@ describe('后端子项目编辑', () => {
       expect(editor.root.querySelector<HTMLInputElement>('[aria-label="候选 1 名称"]')?.value).toBe(
         'new',
       );
-      click(editor.root, '添加选中子项目');
+      editor.repos.value = editor.collect();
       await flush();
       editor.parent.value = '';
       await flush();

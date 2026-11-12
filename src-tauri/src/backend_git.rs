@@ -286,7 +286,8 @@ pub fn scan(parent: String) -> Result<Vec<Candidate>> {
     let mut seen = HashSet::new();
     for entry in fs::read_dir(&parent).map_err(|_| "无法读取父目录".to_string())? {
         let entry = entry.map_err(|_| "无法读取子目录".to_string())?;
-        if !entry.path().is_dir() || entry.file_name() == ".git" {
+        // 仅扫描一级可见目录，跳过 .git、IDE 配置等所有隐藏目录。
+        if !entry.path().is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
         let path = match canonical(&entry.path()) {
@@ -1535,8 +1536,17 @@ mod tests {
     #[test]
     fn scan_does_not_promote_parent_repository_children() {
         let (dir, _) = fixture();
-        fs::create_dir(dir.path().join("ordinary")).unwrap();
+        // .git 由 fixture 创建，其余隐藏目录也应被排除，名称中间的点不受影响。
+        for name in ["ordinary", "service.api", ".idea", ".claude", ".custom"] {
+            fs::create_dir(dir.path().join(name)).unwrap();
+        }
         let list = scan(dir.path().to_string_lossy().into()).unwrap();
+        assert_eq!(
+            list.iter()
+                .map(|candidate| candidate.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ordinary", "service.api"]
+        );
         assert!(!list.iter().find(|r| r.name == "ordinary").unwrap().is_git);
         let external = tempdir().unwrap();
         git(
