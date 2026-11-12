@@ -227,9 +227,10 @@ function localBranch(id: string): string {
 const gitActionLabels = {
   switch: '切换开发分支',
   'switch-test': '切换到测试分支',
+  'push-dev': '推送开发分支到远程',
   merge: '合并到测试分支',
-};
-function disabledReason(operationType: 'switch' | 'switch-test' | 'merge'): string {
+} satisfies Record<BackendGitPlan['operation'], string>;
+function disabledReason(operationType: BackendGitPlan['operation']): string {
   if (!desktop) return '请在桌面应用中操作。';
   if (locked.value)
     return waiting.value ? '等待保存确认后可操作。' : '加载、保存或执行中，请稍候。';
@@ -248,7 +249,14 @@ function disabledReason(operationType: 'switch' | 'switch-test' | 'merge'): stri
     })
   )
     return '所选仓库状态未就绪，请刷新并处理未提交更改、合并或变基。';
-  if (operationType !== 'switch') {
+  if (
+    operationType === 'push-dev' &&
+    selectedRepositories.value.some(
+      (repo) => statusFor(repo.id)?.currentBranch !== repo.developmentBranch,
+    )
+  )
+    return '请先切换开发分支，再推送开发分支到远程。';
+  if (operationType === 'switch-test' || operationType === 'merge') {
     if (
       draft.value.scmTestProjectId.trim() &&
       loadedTestId.value !== sourceId(draft.value.scmTestProjectId)
@@ -269,6 +277,7 @@ function disabledReason(operationType: 'switch' | 'switch-test' | 'merge'): stri
 }
 const switchDisabledReason = computed(() => disabledReason('switch'));
 const switchTestDisabledReason = computed(() => disabledReason('switch-test'));
+const pushDevDisabledReason = computed(() => disabledReason('push-dev'));
 const mergeDisabledReason = computed(() => disabledReason('merge'));
 function valid(token: number) {
   return !disposed && token === generation;
@@ -543,7 +552,7 @@ async function loadModules() {
   // 保存必须在 perform 释放 activity 锁后触发，父配置回执才表示保存成功。
   if (loaded && valid(token)) saveLoadedMapping();
 }
-function prepare(operationType: 'switch' | 'switch-test' | 'merge') {
+function prepare(operationType: BackendGitPlan['operation']) {
   if (disabledReason(operationType)) return;
   const repositories = copy(selectedRepositories.value);
   plan.value = null;
@@ -552,7 +561,7 @@ function prepare(operationType: 'switch' | 'switch-test' | 'merge') {
       props.project.id,
       repositories,
       operationType,
-      operationType === 'merge' && push.value,
+      operationType === 'push-dev' || (operationType === 'merge' && push.value),
       operationType === 'merge' && keepTestPom.value,
     );
     if (valid(token) && result.projectId === props.project.id) plan.value = result;
@@ -831,13 +840,14 @@ onBeforeUnmount(() => {
       </div>
     </section>
     <section class="workbench-card" aria-label="Git 批量操作">
-      <div class="section-heading">
-        <h3>Git 批量操作</h3>
+      <div class="section-heading git-actions-heading">
+        <div class="git-actions-title">
+          <h3>Git 批量操作</h3>
+          <span class="hint">先获取远端并预检，核对计划后执行。</span>
+        </div>
         <span class="hint">已选 {{ selectedRepositories.length }} 个仓库</span>
       </div>
-      <p class="hint">
-        先获取远端并预检，核对计划后执行。{{ dirty ? 'SCM 配置有更改，请重新加载模块。' : '' }}
-      </p>
+      <p v-if="dirty" class="hint" data-scm-unsaved>SCM 配置有更改，请重新加载模块。</p>
       <div class="toolbar">
         <button
           class="button small"
@@ -846,6 +856,13 @@ onBeforeUnmount(() => {
           @click="prepare('switch')"
         >
           切换开发分支</button
+        ><button
+          class="button small"
+          :disabled="!!pushDevDisabledReason"
+          :title="pushDevDisabledReason || '获取远端并预检，确认计划后推送开发分支到远程。'"
+          @click="prepare('push-dev')"
+        >
+          推送开发分支到远程</button
         ><button
           class="button small"
           :disabled="!!switchTestDisabledReason"
@@ -881,7 +898,13 @@ onBeforeUnmount(() => {
         <h4>确认 Git 计划</h4>
         <p>
           {{ gitActionLabels[plan.operation] }} ·
-          {{ plan.push ? '将推送测试分支' : '不推送远端' }}
+          {{
+            plan.operation === 'push-dev'
+              ? '将推送开发分支'
+              : plan.push
+                ? '将推送测试分支'
+                : '不推送远端'
+          }}
         </p>
         <p v-if="plan.operation === 'merge'">
           pom.xml 冲突处理：{{ plan.keepTestPom ? '保留测试分支版本' : '暂停并手动处理' }}
@@ -892,8 +915,16 @@ onBeforeUnmount(() => {
             <div class="plan-branch">
               当前分支：<code>{{ item.currentBranch }}</code>
             </div>
+            <div v-if="plan.operation === 'push-dev'" class="plan-branch">
+              本地开发分支：<code>{{ item.repository.developmentBranch }}</code>
+            </div>
             <div class="plan-branch">
-              目标分支：<code>{{ item.targetBranch }}</code>
+              {{ plan.operation === 'push-dev' ? '目标远程分支：' : '目标分支：'
+              }}<code>{{
+                plan.operation === 'push-dev'
+                  ? `${item.repository.remote}/${item.targetBranch}`
+                  : item.targetBranch
+              }}</code>
             </div>
             <span
               v-if="
@@ -1039,6 +1070,19 @@ h3 span {
 }
 .section-heading {
   margin-bottom: 12px;
+}
+.git-actions-heading,
+.git-actions-title {
+  flex-wrap: wrap;
+}
+.git-actions-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px 12px;
+  min-width: 0;
+}
+.git-actions-title h3 {
+  flex-shrink: 0;
 }
 .toolbar {
   display: flex;

@@ -398,8 +398,94 @@ fn occupied(path: &Path, target: &str, allow_current: bool) -> Result<()> {
     }
     Ok(())
 }
+// 比较 Git 展开 insteadOf/pushInsteadOf 后的真实地址，不绕过用户的远端配置。
+fn validate_push_remote(repo: &Repository) -> Result<()> {
+    validate_remote(repo)?;
+    let path = Path::new(&repo.path);
+    if run(
+        path,
+        &[
+            "config",
+            "--bool",
+            "--get",
+            &format!("remote.{}.mirror", repo.remote),
+        ],
+        None,
+    )
+    .unwrap_or_default()
+        == "true"
+    {
+        return Err("远端配置了 mirror 推送，无法保证只推送开发分支，请先整理远端配置".into());
+    }
+    let fetch = run(path, &["remote", "get-url", "--all", &repo.remote], None)?;
+    let push = run(
+        path,
+        &["remote", "get-url", "--push", "--all", &repo.remote],
+        None,
+    )?;
+    if fetch.lines().count() != 1 || push.lines().count() != 1 || fetch.is_empty() || fetch != push
+    {
+        return Err(
+            "推送开发分支要求唯一且一致的 fetch/push URL；请先整理远端 pushurl 配置".into(),
+        );
+    }
+    Ok(())
+}
+fn push_remote_sha(repo: &Repository, check: impl Fn() -> Result<()>) -> Result<String> {
+    check()?;
+    validate_push_remote(repo)?;
+    let reference = format!("refs/heads/{}", repo.development_branch);
+    // 与 Task::check 共用取消回调，取消时 run_checked 会终止整个 Git 进程组。
+    let output = run_checked(
+        Path::new(&repo.path),
+        &["ls-remote", "--refs", "--", &repo.remote, &reference],
+        check,
+    )?;
+    if output.is_empty() {
+        return Ok(String::new());
+    }
+    let mut lines = output.lines();
+    let (oid, name) = lines
+        .next()
+        .and_then(|line| line.split_once('\t'))
+        .ok_or("远端开发分支响应无效")?;
+    if lines.next().is_some()
+        || name != reference
+        || ![40, 64].contains(&oid.len())
+        || !oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("远端开发分支响应无效".into());
+    }
+    Ok(oid.into())
+}
+fn validate_options(operation: &str, push: bool, keep_test_pom: bool) -> Result<()> {
+    if !["switch", "switch-test", "merge", "push-dev"].contains(&operation) {
+        return Err("未知 Git 操作".into());
+    }
+    if keep_test_pom && operation != "merge" {
+        return Err("仅合并计划支持保留测试分支 pom.xml".into());
+    }
+    if operation == "push-dev" && !push {
+        return Err("推送开发分支必须显式确认 push=true".into());
+    }
+    if push && !["merge", "push-dev"].contains(&operation) {
+        return Err("仅合并或推送开发分支计划支持显式推送".into());
+    }
+    Ok(())
+}
+#[cfg(test)]
 fn snapshot(repo: &Repository, operation: &str) -> Result<PlanRepository> {
-    if !["switch", "switch-test", "merge"].contains(&operation) {
+    snapshot_with_task(repo, operation, None)
+}
+fn snapshot_with_task(
+    repo: &Repository,
+    operation: &str,
+    task: Option<&tasks::Task>,
+) -> Result<PlanRepository> {
+    if let Some(task) = task {
+        task.check()?;
+    }
+    if !["switch", "switch-test", "merge", "push-dev"].contains(&operation) {
         return Err("未知 Git 操作".into());
     }
     let path = Path::new(&repo.path);
@@ -410,6 +496,41 @@ fn snapshot(repo: &Repository, operation: &str) -> Result<PlanRepository> {
     // 测试切换只依赖测试目标，保留真实当前分支作为重验来源。
     if operation != "switch-test" {
         valid_branch(path, &repo.development_branch)?;
+    }
+    if operation == "push-dev" {
+        if status.current_branch != repo.development_branch {
+            return Err("推送开发分支要求当前就在配置的开发分支".into());
+        }
+        let source_sha = sha(path, &format!("refs/heads/{}", repo.development_branch))
+            .map_err(|_| "本地开发分支不存在".to_string())?;
+        if source_sha != status.head {
+            return Err("开发分支与当前 HEAD 不一致，请重新准备".into());
+        }
+        // 每次重验查询实际远端，避免仅依赖可能过期的 remote-tracking ref。
+        let remote_sha = push_remote_sha(repo, || task.map_or(Ok(()), tasks::Task::check))?;
+        if !remote_sha.is_empty()
+            && run(
+                path,
+                &["merge-base", "--is-ancestor", &remote_sha, &source_sha],
+                None,
+            )
+            .is_err()
+        {
+            return Err("远端开发分支领先或已分叉，请先同步或处理分支后重新准备".into());
+        }
+        let common = run(path, &["rev-parse", "--git-common-dir"], None)?;
+        return Ok(PlanRepository {
+            repository: repo.clone(),
+            root: status.root,
+            common_dir: canonical(&path.join(common))?,
+            current_branch: status.current_branch,
+            source_sha,
+            target_branch: repo.development_branch.clone(),
+            target_sha: remote_sha.clone(),
+            create_tracking: false,
+            remote_sha,
+            remote_identity: remote_identity(repo),
+        });
     }
     let target = if operation == "switch" {
         &repo.development_branch
@@ -471,7 +592,15 @@ fn remote_identity(repo: &Repository) -> u64 {
     }
     hash.finish()
 }
+#[cfg(test)]
 fn preflight(repos: &[Repository], operation: &str) -> Result<Vec<PlanRepository>> {
+    preflight_with_task(repos, operation, None)
+}
+fn preflight_with_task(
+    repos: &[Repository],
+    operation: &str,
+    task: Option<&tasks::Task>,
+) -> Result<Vec<PlanRepository>> {
     if repos.is_empty() {
         return Err("请选择仓库".into());
     }
@@ -480,7 +609,10 @@ fn preflight(repos: &[Repository], operation: &str) -> Result<Vec<PlanRepository
     let mut result = Vec::new();
     let mut errors = Vec::new();
     for repo in repos {
-        match snapshot(repo, operation) {
+        if let Some(task) = task {
+            task.check()?;
+        }
+        match snapshot_with_task(repo, operation, task) {
             Ok(saved) if roots.insert(saved.common_dir.clone()) && ids.insert(repo.id.clone()) => {
                 result.push(saved)
             }
@@ -488,14 +620,25 @@ fn preflight(repos: &[Repository], operation: &str) -> Result<Vec<PlanRepository
             Err(error) => errors.push(format!("{}: {error}", repo.id)),
         }
     }
+    if let Some(task) = task {
+        task.check()?;
+    }
     if errors.is_empty() {
         Ok(result)
     } else {
         Err(errors.join("；"))
     }
 }
+#[cfg(test)]
 fn revalidate(saved: &PlanRepository, operation: &str) -> Result<()> {
-    let now = snapshot(&saved.repository, operation)?;
+    revalidate_with_task(saved, operation, None)
+}
+fn revalidate_with_task(
+    saved: &PlanRepository,
+    operation: &str,
+    task: Option<&tasks::Task>,
+) -> Result<()> {
+    let now = snapshot_with_task(&saved.repository, operation, task)?;
     if now.root != saved.root
         || now.common_dir != saved.common_dir
         || now.current_branch != saved.current_branch
@@ -517,14 +660,8 @@ pub fn prepare(
     push: bool,
     keep_test_pom: bool,
 ) -> Result<Plan> {
-    if keep_test_pom && operation != "merge" {
-        return Err("仅合并计划支持保留测试分支 pom.xml".into());
-    }
-    if push && operation != "merge" {
-        return Err("仅合并计划支持显式推送".into());
-    }
-    if !["switch", "switch-test", "merge"].contains(&operation.as_str()) || repositories.is_empty()
-    {
+    validate_options(&operation, push, keep_test_pom)?;
+    if repositories.is_empty() {
         return Err("无效操作或未选择仓库".into());
     }
     let mut fetch_repositories = Vec::new();
@@ -535,10 +672,14 @@ pub fn prepare(
             continue;
         }
         validate_remote(repo)?;
+        if operation == "push-dev" {
+            validate_push_remote(repo)?;
+        }
         fetch_repositories.push(repo.clone());
     }
-    // 显式 prepare 的 fetch 也进入 Runtime.tasks，更新/退出必须等待其取消收尾。
+    // fetch 和后续预检共用受管任务，新增远端查询也必须响应取消及更新/退出等待。
     let (sender, receiver) = std::sync::mpsc::channel();
+    let preflight_operation = operation.clone();
     tasks::run_backend(app.clone(), project_id.clone(), move |task| {
         let result = (|| {
             for repo in &fetch_repositories {
@@ -556,12 +697,12 @@ pub fn prepare(
                     Some(task),
                 )?;
             }
-            Ok(())
+            preflight_with_task(&repositories, &preflight_operation, Some(task))
         })();
         let _ = sender.send(result.clone());
         result.map(|_| "success")
     })?;
-    receiver
+    let prepared_repositories = receiver
         .recv()
         .map_err(|_| "Git 准备任务异常".to_string())??;
     let plan = Plan {
@@ -570,7 +711,7 @@ pub fn prepare(
         operation: operation.clone(),
         push,
         keep_test_pom,
-        repositories: preflight(&repositories, &operation)?,
+        repositories: prepared_repositories,
     };
     let state = OperationState {
         plan_id: plan.plan_id.clone(),
@@ -787,18 +928,36 @@ fn perform_with_options(
     task: Option<&tasks::Task>,
     on_worktree: impl Fn() -> Result<()>,
 ) -> Result<()> {
-    if keep_test_pom && operation != "merge" {
-        return Err("仅合并计划支持保留测试分支 pom.xml".into());
-    }
-    if push && operation != "merge" {
-        return Err("仅合并计划支持显式推送".into());
-    }
+    validate_options(&operation, push, keep_test_pom)?;
     if let Some(task) = task {
         task.check()?;
     }
-    revalidate(saved, operation)?;
+    revalidate_with_task(saved, operation, task)?;
     let repo = &saved.repository;
     let path = Path::new(&saved.root);
+    if operation == "push-dev" {
+        // 固定已确认的提交；即使之后本地 ref 更新也绝不推送未经确认的提交。
+        // 禁止配置附带 tags、mirror 或递归推送其他仓库；不跳过 hooks/签名/SSH。
+        return run(
+            path,
+            &[
+                "push",
+                "--porcelain",
+                "--no-force",
+                "--no-mirror",
+                "--no-follow-tags",
+                "--recurse-submodules=no",
+                "--",
+                &repo.remote,
+                &format!(
+                    "{}:refs/heads/{}",
+                    saved.source_sha, repo.development_branch
+                ),
+            ],
+            task,
+        )
+        .map(|_| ());
+    }
     if saved.create_tracking {
         run(
             path,
@@ -888,7 +1047,9 @@ pub fn execute(app: AppHandle, plan_id: String) -> Result<String> {
         let base = tasks::data_dir(&task.app)
             .map(|dir| dir.join("backend-worktrees").join(&plan.plan_id))
             .and_then(|base| {
-                fs::create_dir_all(&base).map_err(|_| "无法创建 Git 工作区目录".to_string())?;
+                if plan.operation == "merge" {
+                    fs::create_dir_all(&base).map_err(|_| "无法创建 Git 工作区目录".to_string())?;
+                }
                 Ok(base)
             });
         let base = match base {
@@ -1191,6 +1352,341 @@ mod tests {
         (dir, repo)
     }
     // 所有分支及远端均为本地临时 fixture，不触及用户仓库。
+    fn push_fixture(existing: bool) -> (TempDir, Repository, TempDir) {
+        let (dir, repo) = fixture();
+        let remote = tempdir().unwrap();
+        git(remote.path(), &["init", "--bare", "--template="]);
+        git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        if existing {
+            git(dir.path(), &["push", "origin", "dev", "test"]);
+        }
+        fetch_fixture(&repo);
+        (dir, repo, remote)
+    }
+    fn fetch_fixture(repo: &Repository) {
+        git(
+            Path::new(&repo.path),
+            &[
+                "fetch",
+                "--prune",
+                "--no-tags",
+                "origin",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+        );
+    }
+    fn push_saved(saved: &PlanRepository, worktree: &Path) -> Result<()> {
+        perform(saved, "push-dev", true, worktree, None, || {
+            panic!("push-dev must not create a worktree")
+        })
+    }
+    #[test]
+    fn push_dev_updates_only_confirmed_development_and_creates_missing_remote_branch() {
+        for existing in [false, true] {
+            let (dir, repo, remote) = push_fixture(existing);
+            let old_test = sha(dir.path(), "refs/heads/test").unwrap();
+            change(dir.path(), "development\n");
+            git(
+                dir.path(),
+                &["tag", "-a", "extra-tag", "-m", "must not push"],
+            );
+            git(dir.path(), &["config", "push.followTags", "true"]);
+            git(
+                dir.path(),
+                &[
+                    "config",
+                    "remote.origin.push",
+                    "refs/heads/test:refs/heads/unwanted",
+                ],
+            );
+            git(dir.path(), &["config", "push.autoSetupRemote", "true"]);
+            let before_worktrees = git(dir.path(), &["worktree", "list", "--porcelain"]);
+            let saved = preflight(&[repo.clone()], "push-dev").unwrap().remove(0);
+            assert_eq!(saved.target_branch, "dev");
+            assert_eq!(saved.remote_sha.is_empty(), !existing);
+            assert_eq!(saved.target_sha, saved.remote_sha);
+            assert_eq!(saved.source_sha, sha(dir.path(), "HEAD").unwrap());
+            assert!(!saved.create_tracking);
+            let worktree = dir.path().join("must-not-exist");
+            push_saved(&saved, &worktree).unwrap();
+            assert!(!worktree.exists());
+            assert_eq!(branch(dir.path()), "dev");
+            assert_eq!(
+                git(dir.path(), &["worktree", "list", "--porcelain"]),
+                before_worktrees
+            );
+            assert_eq!(
+                sha(remote.path(), "refs/heads/dev").unwrap(),
+                saved.source_sha
+            );
+            assert_eq!(
+                git(remote.path(), &["for-each-ref", "--format=%(refname)"]),
+                if existing {
+                    "refs/heads/dev\nrefs/heads/test"
+                } else {
+                    "refs/heads/dev"
+                }
+            );
+            if existing {
+                assert_eq!(sha(remote.path(), "refs/heads/test").unwrap(), old_test);
+            }
+            assert!(run(dir.path(), &["config", "--get", "branch.dev.remote"], None).is_err());
+        }
+    }
+    #[test]
+    fn push_dev_rejects_invalid_repository_states_and_duplicate_identity() {
+        let (dir, mut repo, _remote) = push_fixture(true);
+        let mut duplicate = repo.clone();
+        duplicate.id = "duplicate".into();
+        assert!(preflight(&[repo.clone(), duplicate], "push-dev").is_err());
+        git(dir.path(), &["switch", "test"]);
+        assert!(snapshot(&repo, "push-dev").is_err());
+        git(dir.path(), &["branch", "-D", "dev"]);
+        assert!(snapshot(&repo, "push-dev").is_err());
+        git(dir.path(), &["switch", "-c", "dev"]);
+        fs::write(dir.path().join("untracked"), "dirty").unwrap();
+        assert!(snapshot(&repo, "push-dev").is_err());
+        fs::remove_file(dir.path().join("untracked")).unwrap();
+        for marker in ["MERGE_HEAD", "rebase-merge", "rebase-apply"] {
+            let path = dir.path().join(".git").join(marker);
+            fs::write(&path, "busy").unwrap();
+            assert!(snapshot(&repo, "push-dev").is_err());
+            fs::remove_file(path).unwrap();
+        }
+        repo.remote = "missing".into();
+        assert!(snapshot(&repo, "push-dev").is_err());
+        repo.remote = "../invalid".into();
+        assert!(snapshot(&repo, "push-dev").is_err());
+        repo.remote = "origin".into();
+        git(dir.path(), &["remote", "remove", "origin"]);
+        assert!(snapshot(&repo, "push-dev").is_err());
+    }
+    #[test]
+    fn push_dev_rejects_remote_ahead_and_divergence() {
+        for diverged in [false, true] {
+            let (dir, repo, remote) = push_fixture(true);
+            let base = sha(dir.path(), "HEAD").unwrap();
+            change(dir.path(), "remote commit\n");
+            git(dir.path(), &["push", "origin", "dev"]);
+            git(dir.path(), &["reset", "--hard", &base]);
+            if diverged {
+                change(dir.path(), "local commit\n");
+            }
+            fetch_fixture(&repo);
+            assert!(snapshot(&repo, "push-dev")
+                .unwrap_err()
+                .contains("领先或已分叉"));
+            assert_ne!(
+                sha(remote.path(), "refs/heads/dev").unwrap(),
+                sha(dir.path(), "HEAD").unwrap()
+            );
+        }
+    }
+    #[test]
+    fn push_dev_revalidates_edits_source_remote_and_root_identity() {
+        for mutation in [
+            "dirty",
+            "source",
+            "remote-ref",
+            "remote-url",
+            "push-url",
+            "root",
+        ] {
+            let (dir, repo, remote) = push_fixture(true);
+            change(dir.path(), "approved\n");
+            let saved = snapshot(&repo, "push-dev").unwrap();
+            let remote_before = sha(remote.path(), "refs/heads/dev").unwrap();
+            let other = tempdir().unwrap();
+            match mutation {
+                "dirty" => fs::write(dir.path().join("untracked"), "new edits").unwrap(),
+                "source" => change(dir.path(), "unapproved\n"),
+                "remote-ref" => {
+                    git(dir.path(), &["push", "origin", "dev"]);
+                }
+                "remote-url" => {
+                    git(
+                        dir.path(),
+                        &[
+                            "remote",
+                            "set-url",
+                            "origin",
+                            other.path().to_str().unwrap(),
+                        ],
+                    );
+                }
+                "push-url" => {
+                    git(
+                        dir.path(),
+                        &[
+                            "remote",
+                            "set-url",
+                            "--push",
+                            "origin",
+                            other.path().to_str().unwrap(),
+                        ],
+                    );
+                }
+                "root" => {
+                    fs::rename(dir.path().join(".git"), other.path().join("original-git")).unwrap();
+                    git(dir.path(), &["init", "--initial-branch=dev", "--template="]);
+                    git(dir.path(), &["add", "file"]);
+                    git(dir.path(), &["commit", "-m", "replacement"]);
+                    git(
+                        dir.path(),
+                        &["remote", "add", "origin", remote.path().to_str().unwrap()],
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                push_saved(&saved, &dir.path().join("no-worktree")).is_err(),
+                "{mutation}"
+            );
+            let expected = if mutation == "remote-ref" {
+                &saved.source_sha
+            } else {
+                &remote_before
+            };
+            assert_eq!(&sha(remote.path(), "refs/heads/dev").unwrap(), expected);
+            assert!(!dir.path().join("no-worktree").exists());
+        }
+    }
+    #[test]
+    fn push_dev_rejects_options_before_any_repository_change() {
+        let (dir, repo, remote) = push_fixture(false);
+        let saved = snapshot(&repo, "push-dev").unwrap();
+        for (push, pom) in [(false, false), (false, true), (true, true)] {
+            assert!(validate_options("push-dev", push, pom).is_err());
+            assert!(perform_with_options(
+                &saved,
+                "push-dev",
+                push,
+                pom,
+                &dir.path().join("no-worktree"),
+                None,
+                || panic!("no worktree")
+            )
+            .is_err());
+        }
+        assert!(validate_options("switch", true, false).is_err());
+        assert!(validate_options("switch-test", true, false).is_err());
+        assert!(sha(remote.path(), "refs/heads/dev").is_err());
+        assert_eq!(branch(dir.path()), "dev");
+    }
+    #[test]
+    fn push_dev_rejects_multiple_and_inconsistent_push_urls() {
+        let (dir, repo, remote) = push_fixture(true);
+        let other = tempdir().unwrap();
+        git(
+            dir.path(),
+            &[
+                "config",
+                "remote.origin.pushurl",
+                other.path().to_str().unwrap(),
+            ],
+        );
+        assert!(snapshot(&repo, "push-dev")
+            .unwrap_err()
+            .contains("fetch/push URL"));
+        git(
+            dir.path(),
+            &[
+                "config",
+                "remote.origin.pushurl",
+                remote.path().to_str().unwrap(),
+            ],
+        );
+        assert!(snapshot(&repo, "push-dev").is_ok());
+        git(
+            dir.path(),
+            &[
+                "config",
+                "--add",
+                "remote.origin.pushurl",
+                remote.path().to_str().unwrap(),
+            ],
+        );
+        assert!(snapshot(&repo, "push-dev")
+            .unwrap_err()
+            .contains("fetch/push URL"));
+    }
+    #[test]
+    fn push_dev_remote_query_cancels_before_and_after_git_starts() {
+        use std::cell::Cell;
+        let (dir, repo, remote) = push_fixture(true);
+        let expected = sha(remote.path(), "refs/heads/dev").unwrap();
+        // 第一次检查在读取配置前，第三次检查在 ls-remote 进程启动后的轮询中。
+        for cancel_at in [1, 3] {
+            let checks = Cell::new(0);
+            let started = Instant::now();
+            let result = push_remote_sha(&repo, || {
+                checks.set(checks.get() + 1);
+                if checks.get() >= cancel_at {
+                    Err("任务已取消".into())
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result.unwrap_err(), "任务已取消");
+            assert_eq!(checks.get(), cancel_at);
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert_eq!(sha(remote.path(), "refs/heads/dev").unwrap(), expected);
+            assert!(git(dir.path(), &["status", "--porcelain=v1"]).is_empty());
+        }
+    }
+    #[test]
+    fn push_dev_rejects_mirror_remote_configuration() {
+        let (dir, repo, remote) = push_fixture(true);
+        git(dir.path(), &["config", "remote.origin.mirror", "true"]);
+        assert!(snapshot(&repo, "push-dev").unwrap_err().contains("mirror"));
+        assert_eq!(
+            sha(remote.path(), "refs/heads/dev").unwrap(),
+            sha(dir.path(), "HEAD").unwrap()
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn push_dev_preserves_pre_push_hook_and_pins_confirmed_sha() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, repo, remote) = push_fixture(true);
+        change(dir.path(), "approved\n");
+        let saved = snapshot(&repo, "push-dev").unwrap();
+        let hooks = dir.path().join("custom-hooks");
+        fs::create_dir(&hooks).unwrap();
+        git(
+            dir.path(),
+            &["config", "core.hooksPath", hooks.to_str().unwrap()],
+        );
+        // hooks 目录位于仓库内但必须不影响干净状态。
+        fs::create_dir_all(dir.path().join(".git/info")).unwrap();
+        fs::write(dir.path().join(".git/info/exclude"), "custom-hooks/\n").unwrap();
+        let hook = hooks.join("pre-push");
+        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(push_saved(&saved, &dir.path().join("no-worktree")).is_err());
+        assert_eq!(
+            sha(remote.path(), "refs/heads/dev").unwrap(),
+            saved.remote_sha
+        );
+        change(dir.path(), "later commit\n");
+        let later = sha(dir.path(), "HEAD").unwrap();
+        git(dir.path(), &["reset", "--hard", &saved.source_sha]);
+        // 在最后一次重验后更新本地 ref，远端仍只能收到计划确认的 SHA。
+        fs::write(
+            &hook,
+            format!("#!/bin/sh\ngit update-ref refs/heads/dev {later}\n"),
+        )
+        .unwrap();
+        push_saved(&saved, &dir.path().join("no-worktree")).unwrap();
+        assert_eq!(sha(dir.path(), "HEAD").unwrap(), later);
+        assert_eq!(
+            sha(remote.path(), "refs/heads/dev").unwrap(),
+            saved.source_sha
+        );
+    }
     fn pom_fixture(
         paths: &[&str],
         code_conflict: bool,

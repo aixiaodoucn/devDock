@@ -63,6 +63,18 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     });
     expect(repository.developmentBranch).toBe('feature/demo');
   });
+  it('开发分支推送显式标识远端写入，预检不会直接执行', async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    await api.prepareBackendGit('group', [repository], 'push-dev', true, false);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('prepare_backend_git', {
+      projectId: 'group',
+      repositories: [repository],
+      operation: 'push-dev',
+      push: true,
+      keepTestPom: false,
+    });
+    expect(invoke).not.toHaveBeenCalledWith('execute_backend_git', expect.anything());
+  });
   it('pom 测试版本策略仅在用户显式选择后传入预检', async () => {
     vi.mocked(invoke).mockResolvedValue({});
     await api.prepareBackendGit('group', [repository], 'merge', false, true);

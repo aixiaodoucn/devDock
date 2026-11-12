@@ -65,6 +65,7 @@ function fixture(): Project {
 async function mount(initial = fixture()) {
   const project = ref(initial);
   const saving = ref(false);
+  const busy = ref(false);
   const save = vi.fn();
   const edit = vi.fn();
   const task = vi.fn();
@@ -74,7 +75,7 @@ async function mount(initial = fixture()) {
       h(BackendWorkbench, {
         project: project.value,
         saving: saving.value,
-        busy: false,
+        busy: busy.value,
         onSave: save,
         onEdit: edit,
         onTask: task,
@@ -82,7 +83,7 @@ async function mount(initial = fixture()) {
   });
   app.mount(root);
   await flush();
-  return { project, saving, save, edit, task, root, close: () => app.unmount() };
+  return { project, saving, busy, save, edit, task, root, close: () => app.unmount() };
 }
 async function ready(initial = fixture()) {
   const panel = await mount({
@@ -233,7 +234,7 @@ it.each(['', 'develop'])('测试分支为 %j 时合并仍被拦截，切换无�
     click(panel.root, '合并到测试分支');
     await flush();
     expect(api.prepareBackendGit).not.toHaveBeenCalled();
-    expect(panel.root.textContent).toContain('明确且不同的开发分支和测试分支');
+    expect(button(panel.root, '合并到测试分支').title).toContain('明确且不同的开发分支和测试分支');
     click(panel.root, '切换开发分支');
     await flush();
     expect(api.prepareBackendGit).toHaveBeenCalledWith(
@@ -616,9 +617,12 @@ beforeEach(() => {
         repository,
         root: repository.path,
         commonDir: '',
-        currentBranch: 'main',
+        currentBranch: operation === 'push-dev' ? repository.developmentBranch : 'main',
         sourceSha: 'abc123',
-        targetBranch: operation === 'switch' ? repository.developmentBranch : repository.testBranch,
+        targetBranch:
+          operation === 'switch' || operation === 'push-dev'
+            ? repository.developmentBranch
+            : repository.testBranch,
         targetSha: 'def',
         remoteSha: 'def',
         createTracking: false,
@@ -1116,9 +1120,7 @@ it('修改测试源保留开发范围并要求加载测试目标，修改开发�
     expect(panel.root.querySelector('.plan')).toBeNull();
     expect(panel.root.querySelectorAll('.repository')).toHaveLength(1);
     expect(panel.save).not.toHaveBeenCalled();
-    expect(panel.root.querySelector('[data-merge-reason]')?.textContent).toContain(
-      '请重新加载模块并等待自动保存',
-    );
+    expect(button(panel.root, '合并到测试分支').title).toContain('请重新加载模块并等待自动保存');
     expect(button(panel.root, '切换开发分支').disabled).toBe(true);
     click(panel.root, '加载模块');
     await flush();
@@ -1313,9 +1315,8 @@ it.each(['dirty', 'merging', 'rebasing', 'error', 'missing'] as const)(
         '尚未切换',
       );
       expect(button(panel.root, '切换开发分支').title).not.toBe('');
-      expect(panel.root.querySelector('[data-switch-reason]')?.textContent).toContain(
-        button(panel.root, '切换开发分支').title,
-      );
+      expect(button(panel.root, '推送开发分支到远程').disabled).toBe(true);
+      click(panel.root, '推送开发分支到远程');
       click(panel.root, '切换开发分支');
       expect(api.prepareBackendGit).not.toHaveBeenCalled();
     } finally {
@@ -1444,6 +1445,7 @@ it('同一模块匹配多个本地目录时每个仓库只显示一次', async (
 it.each([
   ['切换开发分支', 'switch', 'develop'],
   ['切换到测试分支', 'switch-test', 'test'],
+  ['推送开发分支到远程', 'push-dev', 'origin/develop'],
   ['合并到测试分支', 'merge', 'test'],
 ] as const)('%s 的确认操作、目标分支与任务标题准确', async (label, operation, target) => {
   const panel = await ready();
@@ -1454,12 +1456,17 @@ it.each([
       'example',
       expect.any(Array),
       operation,
-      false,
+      operation === 'push-dev',
       false,
     );
     const plan = panel.root.querySelector('.plan')!;
     expect(plan.querySelector('p')?.textContent).toContain(label);
-    expect(plan.querySelectorAll('.plan-branch code')[1].textContent).toBe(target);
+    expect([...plan.querySelectorAll('.plan-branch code')].at(-1)?.textContent).toBe(target);
+    if (operation === 'push-dev') {
+      expect(plan.textContent).toContain('本地开发分支：develop');
+      expect(plan.querySelector('.plan-branch')?.textContent).toContain('develop');
+      expect(plan.textContent).not.toContain('将推送测试分支');
+    }
     expect(api.executeBackendGit).not.toHaveBeenCalled();
     expect(panel.task).not.toHaveBeenCalled();
     click(panel.root, '确认执行计划');
@@ -1618,6 +1625,188 @@ it('测试切换在保存和预检锁定期间禁止重复操作', async () => {
     click(panel.root, '切换到测试分支');
     expect(api.prepareBackendGit).toHaveBeenCalledTimes(1);
     expect(api.executeBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
+it.each([false, true])('开发推送仅包含选中可见仓库且不受合并选项 %s 影响', async (checked) => {
+  const initial = fixture();
+  initial.subProjects.push(
+    { ...initial.subProjects[0], id: 'excluded', name: 'Excluded' },
+    { ...initial.subProjects[0], id: 'hidden', name: 'Hidden', scmGitId: '99' },
+  );
+  const panel = await ready(initial);
+  try {
+    const excluded = panel.root.querySelectorAll<HTMLInputElement>('.repository-title input')[1];
+    excluded.checked = false;
+    excluded.dispatchEvent(new Event('change'));
+    for (const checkbox of panel.root.querySelectorAll<HTMLInputElement>(
+      '.toolbar label.checkbox input',
+    )) {
+      checkbox.checked = checked;
+      checkbox.dispatchEvent(new Event('change'));
+    }
+    await flush();
+    const before = JSON.stringify(panel.project.value);
+    click(panel.root, '推送开发分支到远程');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenCalledExactlyOnceWith(
+      'example',
+      [expect.objectContaining({ id: 'repo', developmentBranch: 'develop' })],
+      'push-dev',
+      true,
+      false,
+    );
+    expect(panel.root.querySelector('.plan')?.textContent).not.toContain('pom.xml');
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+    expect(panel.save).not.toHaveBeenCalled();
+    expect(JSON.stringify(panel.project.value)).toBe(before);
+    excluded.checked = true;
+    excluded.dispatchEvent(new Event('change'));
+    await flush();
+    expect(panel.root.querySelector('.plan')).toBeNull();
+    for (const checkbox of panel.root.querySelectorAll<HTMLInputElement>(
+      '.repository-title input',
+    )) {
+      checkbox.checked = false;
+      checkbox.dispatchEvent(new Event('change'));
+      await flush();
+    }
+    expect(button(panel.root, '推送开发分支到远程').title).toContain('请至少勾选');
+    click(panel.root, '推送开发分支到远程');
+    expect(api.prepareBackendGit).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.close();
+  }
+});
+
+it.each(['feature/local', '', 'test'])(
+  '当前分支 %j 不在开发分支时禁止推送且不切分支',
+  async (currentBranch) => {
+    const readStatus = vi.mocked(api.backendRepositoryStatuses).getMockImplementation()!;
+    vi.mocked(api.backendRepositoryStatuses).mockImplementation(async (repositories) =>
+      (await readStatus(repositories)).map((status) => ({ ...status, currentBranch })),
+    );
+    const panel = await ready();
+    try {
+      expect(button(panel.root, '推送开发分支到远程').disabled).toBe(true);
+      expect(button(panel.root, '推送开发分支到远程').title).toContain('请先切换开发分支');
+      click(panel.root, '推送开发分支到远程');
+      expect(api.prepareBackendGit).not.toHaveBeenCalled();
+      expect(panel.save).not.toHaveBeenCalled();
+      expect(panel.project.value.subProjects[0].developmentBranch).toBe('develop');
+    } finally {
+      panel.close();
+    }
+  },
+);
+
+it.each(['absent', 'empty-modules', 'unloaded'] as const)(
+  '测试来源 %s 不阻止开发推送',
+  async (source) => {
+    const initial = fixture();
+    initial.subProjects[0].testBranch = '';
+    if (source === 'empty-modules') {
+      initial.scmTestProjectId = '456';
+      vi.mocked(api.scmProjectModules).mockImplementation(async (id) =>
+        id === '123'
+          ? [{ gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'develop' }]
+          : [],
+      );
+    }
+    const panel = await ready(initial);
+    try {
+      if (source === 'unloaded') {
+        panel.project.value = { ...panel.project.value, scmTestProjectId: '456' };
+        await flush();
+      }
+      expect(button(panel.root, '推送开发分支到远程').disabled).toBe(false);
+      click(panel.root, '推送开发分支到远程');
+      await flush();
+      expect(api.prepareBackendGit).toHaveBeenCalledWith(
+        'example',
+        expect.any(Array),
+        'push-dev',
+        true,
+        false,
+      );
+      expect(api.executeBackendGit).not.toHaveBeenCalled();
+    } finally {
+      panel.close();
+    }
+  },
+);
+
+it('开发推送在开发源加载、精确保存、保存及 busy、预检和运行锁下均禁止操作', async () => {
+  const panel = await mount();
+  try {
+    expect(button(panel.root, '推送开发分支到远程').disabled).toBe(true);
+    vi.mocked(api.scmProjectModules).mockResolvedValue([
+      { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'develop' },
+    ]);
+    // 首次填充映射必须等父组件精确回执。
+    panel.project.value.subProjects[0].scmModuleName = 'old-name';
+    await flush();
+    click(panel.root, '加载模块');
+    await flush();
+    expect(button(panel.root, '推送开发分支到远程').title).toContain('等待保存确认');
+    click(panel.root, '推送开发分支到远程');
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
+    panel.project.value = panel.save.mock.calls.at(-1)![0];
+    await flush();
+    for (const lock of [panel.saving, panel.busy]) {
+      lock.value = true;
+      await flush();
+      click(panel.root, '推送开发分支到远程');
+      expect(api.prepareBackendGit).not.toHaveBeenCalled();
+      lock.value = false;
+      await flush();
+    }
+    const prepare = vi.mocked(api.prepareBackendGit).getMockImplementation()!;
+    let release!: (plan: Awaited<ReturnType<typeof api.prepareBackendGit>>) => void;
+    vi.mocked(api.prepareBackendGit).mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    click(panel.root, '推送开发分支到远程');
+    await flush();
+    click(panel.root, '推送开发分支到远程');
+    expect(api.prepareBackendGit).toHaveBeenCalledTimes(1);
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+    release(await prepare('example', panel.project.value.subProjects, 'push-dev', true, false));
+    await flush();
+    click(panel.root, '确认执行计划');
+    await flush();
+    expect(button(panel.root, '推送开发分支到远程').disabled).toBe(true);
+    click(panel.root, '推送开发分支到远程');
+    expect(api.prepareBackendGit).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.close();
+  }
+});
+
+it('批量操作说明紧邻标题、保留选中数量且仅有未保存配置时显示独立提醒', async () => {
+  const panel = await ready();
+  try {
+    const section = panel.root.querySelector('section[aria-label="Git 批量操作"]')!;
+    const heading = section.querySelector('.section-heading')!;
+    expect(heading.querySelector('h3')?.textContent).toBe('Git 批量操作');
+    expect(heading.querySelector('.git-actions-title .hint')?.textContent).toBe(
+      '先获取远端并预检，核对计划后执行。',
+    );
+    expect(heading.textContent).toContain('已选 1 个仓库');
+    expect(section.querySelector('[data-scm-unsaved]')).toBeNull();
+    expect(
+      [...section.querySelectorAll(':scope > p')].some((node) =>
+        node.textContent?.includes('先获取远端并预检，核对计划后执行。'),
+      ),
+    ).toBe(false);
+    input(panel.root, '.scm-projects label:nth-child(2) input', '456');
+    await flush();
+    expect(section.querySelector('[data-scm-unsaved]')?.textContent).toContain('SCM 配置有更改');
+    expect(button(panel.root, '推送开发分支到远程').disabled).toBe(true);
   } finally {
     panel.close();
   }
