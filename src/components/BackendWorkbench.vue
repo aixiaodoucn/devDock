@@ -126,6 +126,9 @@ const moduleRows = computed(() =>
     return {
       module,
       testing: gitId ? testing.value.filter((candidate) => candidate.gitId?.trim() === gitId) : [],
+      repositories: gitId
+        ? visibleRepositories.value.filter((repo) => repo.scmGitId.trim() === gitId)
+        : [],
     };
   }),
 );
@@ -153,6 +156,14 @@ const visibleRepositories = computed(() =>
 const selectedRepositories = computed(() =>
   visibleRepositories.value.filter((repo) => selected.value.includes(repo.id)),
 );
+function localBranch(id: string): string {
+  const status = statusFor(id);
+  if (!status) return '分支待刷新';
+  if (status.error) return '读取失败';
+  return (
+    status.currentBranch || (status.head ? `游离 HEAD (${status.head.slice(0, 8)})` : '未创建分支')
+  );
+}
 function disabledReason(operationType: 'switch' | 'merge'): string {
   if (!desktop) return '请在桌面应用中操作。';
   if (locked.value)
@@ -643,7 +654,10 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="({ module, testing: targets }, index) in moduleRows" :key="index">
+            <tr
+              v-for="({ module, testing: targets, repositories }, index) in moduleRows"
+              :key="index"
+            >
               <td>
                 {{ module.moduleName }}<small>{{ module.gitId || '缺少 Git ID' }}</small>
               </td>
@@ -660,18 +674,21 @@ onBeforeUnmount(() => {
                   </div>
                   <span v-else class="hint">未配置</span>
                 </div>
+                <div class="module-branch" data-local-branch>
+                  <span>本地</span>
+                  <div v-if="repositories.length" class="test-branches">
+                    <code v-for="repo in repositories" :key="repo.id" :title="repo.path">
+                      {{ repositories.length > 1 ? `${repo.name}：` : ''
+                      }}{{ localBranch(repo.id) }}
+                    </code>
+                  </div>
+                  <span v-else class="hint">未映射本地仓库</span>
+                </div>
               </td>
               <td>
                 {{
-                  draft.subProjects
-                    .filter(
-                      (repo) =>
-                        visibleRepositories.some((item) => item.id === repo.id) &&
-                        !!repo.scmGitId &&
-                        repo.scmGitId === module.gitId,
-                    )
-                    .map((repo) => repo.name)
-                    .join('、') || '尚未映射，请添加本地路径或核对 SCM Git ID / 仓库 URL'
+                  repositories.map((repo) => repo.name).join('、') ||
+                  '尚未映射，请添加本地路径或核对 SCM Git ID / 仓库 URL'
                 }}
               </td>
             </tr>
@@ -708,14 +725,31 @@ onBeforeUnmount(() => {
       </p>
       <div v-for="repo in visibleRepositories" :key="repo.id" class="repository">
         <div class="repository-heading">
-          <label class="repository-title"
-            ><input
-              v-model="selected"
-              type="checkbox"
-              :value="repo.id"
-              :disabled="locked || !!statusFor(repo.id)?.error"
-            /><strong>{{ repo.name }}</strong></label
-          >
+          <div class="repository-identity">
+            <label class="repository-title"
+              ><input
+                v-model="selected"
+                type="checkbox"
+                :value="repo.id"
+                :disabled="locked || !!statusFor(repo.id)?.error"
+              /><strong>{{ repo.name }}</strong></label
+            >
+            <label class="repository-metadata"
+              >Remote<input
+                v-model="repo.remote"
+                data-remote
+                :disabled="locked"
+                :title="repo.remote"
+            /></label>
+            <label class="repository-metadata"
+              >SCM Git ID<input
+                v-model="repo.scmGitId"
+                data-scm-git-id
+                :disabled="locked"
+                :list="`modules-${repo.id}`"
+                :title="repo.scmGitId"
+            /></label>
+          </div>
           <div class="toolbar">
             <button class="button small" :disabled="!desktop" @click="openPath(repo.path)">
               打开目录</button
@@ -736,7 +770,6 @@ onBeforeUnmount(() => {
         </div>
         <fieldset :disabled="locked">
           <div class="mapping-fields">
-            <label class="mapping-metadata">Remote<input v-model="repo.remote" /></label>
             <label class="mapping-branch"
               >开发分支<input
                 v-model="repo.developmentBranch"
@@ -747,11 +780,9 @@ onBeforeUnmount(() => {
             <label class="mapping-branch"
               >测试分支<input
                 v-model="repo.testBranch"
+                data-test
                 :title="repo.testBranch"
                 :list="`branches-${repo.id}`"
-            /></label>
-            <label class="mapping-metadata"
-              >SCM Git ID<input v-model="repo.scmGitId" :list="`modules-${repo.id}`"
             /></label>
           </div>
         </fieldset>
@@ -995,18 +1026,33 @@ input:not([type='checkbox']) {
 }
 .mapping-fields {
   display: grid;
-  grid-template-columns: minmax(0, 160px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 .mapping-fields label {
   min-width: 0;
 }
-.mapping-metadata {
-  grid-row: 1;
-  max-width: 240px;
+.repository-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  min-width: 0;
 }
-.mapping-metadata:last-child {
-  grid-column: 2;
+.repository-metadata {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.repository-metadata input {
+  width: 88px;
+  height: 26px;
+  padding: 3px 7px;
+  font-family: var(--mono);
+  font-size: 11px;
 }
 .mapping-branch {
   grid-column: 1 / -1;
@@ -1188,10 +1234,6 @@ code {
   .mapping-fields,
   .scm-projects {
     grid-template-columns: 1fr;
-  }
-  .mapping-metadata:last-child {
-    grid-column: 1;
-    grid-row: 2;
   }
 }
 </style>

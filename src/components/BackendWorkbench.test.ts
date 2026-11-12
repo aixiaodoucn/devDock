@@ -252,10 +252,10 @@ it('外部增删和重命名以新配置为准，同仓库保留无冲突的草�
   try {
     input(panel.root, '.scm-projects label:nth-child(1) input', '123');
     input(panel.root, '.scm-projects label:nth-child(2) input', '456');
-    input(panel.root, '.repository .mapping-fields label:nth-child(1) input', 'upstream');
+    input(panel.root, '[data-remote]', 'upstream');
     input(panel.root, '[data-development]', 'local-dev');
-    input(panel.root, '.repository .mapping-fields label:nth-child(3) input', 'local-test');
-    input(panel.root, '.repository .mapping-fields label:nth-child(4) input', '42');
+    input(panel.root, '[data-test]', 'local-test');
+    input(panel.root, '[data-scm-git-id]', '42');
     await flush();
     const updated = fixture();
     updated.scmTestProjectId = '789';
@@ -301,10 +301,10 @@ it.each(['path', 'remote'] as const)('外部改变仓库 %s 后不保留旧仓�
   const panel = await ready();
   try {
     input(panel.root, '.scm-projects label:nth-child(1) input', '123');
-    input(panel.root, '.mapping-fields label:nth-child(1) input', 'local-remote');
+    input(panel.root, '[data-remote]', 'local-remote');
     input(panel.root, '[data-development]', 'local-dev');
-    input(panel.root, '.mapping-fields label:nth-child(3) input', 'local-test');
-    input(panel.root, '.mapping-fields label:nth-child(4) input', 'old-git');
+    input(panel.root, '[data-test]', 'local-test');
+    input(panel.root, '[data-scm-git-id]', 'old-git');
     await flush();
     const updated = fixture();
     updated.subProjects[0][field] = field === 'path' ? '/example/another' : 'external-remote';
@@ -313,12 +313,8 @@ it.each(['path', 'remote'] as const)('外部改变仓库 %s 后不保留旧仓�
     click(panel.root, '保存映射');
     await flush();
     expect(panel.root.querySelector<HTMLInputElement>('[data-development]')!.value).toBe('develop');
-    expect(
-      panel.root.querySelector<HTMLInputElement>('.mapping-fields label:nth-child(3) input')!.value,
-    ).toBe('test');
-    expect(
-      panel.root.querySelector<HTMLInputElement>('.mapping-fields label:nth-child(4) input')!.value,
-    ).toBe('42');
+    expect(panel.root.querySelector<HTMLInputElement>('[data-test]')!.value).toBe('test');
+    expect(panel.root.querySelector<HTMLInputElement>('[data-scm-git-id]')!.value).toBe('42');
   } finally {
     panel.close();
   }
@@ -889,16 +885,46 @@ it('模块按开发范围合并展示，同 Git ID 的测试分支位于开发�
     expect(rows).toHaveLength(2);
     expect(rows[0].querySelectorAll('td')).toHaveLength(3);
     expect(rows[0].textContent).toContain('service');
-    expect([...rows[0].querySelectorAll('code')].map((code) => code.textContent)).toEqual([
+    expect([...rows[0].querySelectorAll('code')].map((code) => code.textContent?.trim())).toEqual([
       'feature/current',
       'test/current',
+      'develop',
     ]);
+    expect(rows[1].querySelector('[data-local-branch]')?.textContent).toContain('未映射本地仓库');
     expect(rows[0].querySelector('td:last-child')?.textContent).toContain('Service');
     expect(rows[1].textContent).toContain('missing-test');
     expect(rows[1].textContent).toContain('未配置');
     expect(panel.root.querySelector('tbody')?.textContent).not.toContain('test/unrelated');
     expect(panel.root.querySelector('tbody')?.textContent).not.toContain('test/unknown');
     expect(panel.project.value.subProjects[0].testBranch).toBe('test/current');
+  } finally {
+    panel.close();
+  }
+});
+
+it('模块表本地分支随仓库刷新更新，游离 HEAD 不冒充分支', async () => {
+  const panel = await ready();
+  try {
+    const local = () => panel.root.querySelector('[data-local-branch]')?.textContent;
+    expect(local()).toContain('develop');
+    const statuses: Awaited<ReturnType<typeof api.backendRepositoryStatuses>> = await vi
+      .mocked(api.backendRepositoryStatuses)
+      .mock.results.at(-1)!.value;
+    vi.mocked(api.backendRepositoryStatuses).mockResolvedValueOnce(
+      statuses.map((status) => ({ ...status, currentBranch: 'feature/local-current' })),
+    );
+    click(panel.root, '刷新仓库');
+    await flush();
+    expect(local()).toContain('feature/local-current');
+    vi.mocked(api.backendRepositoryStatuses).mockResolvedValueOnce(
+      statuses.map((status) => ({ ...status, currentBranch: '', head: 'abc123456789' })),
+    );
+    click(panel.root, '刷新仓库');
+    await flush();
+    expect(local()).toContain('游离 HEAD (abc12345)');
+    expect(panel.root.querySelector('.repository-heading [data-remote]')).not.toBeNull();
+    expect(panel.root.querySelector('.repository-heading [data-scm-git-id]')).not.toBeNull();
+    expect(panel.root.querySelectorAll('.mapping-fields label')).toHaveLength(2);
   } finally {
     panel.close();
   }
@@ -981,9 +1007,7 @@ it('缺失测试匹配清空目标并警告，开发切换仍可预检', async (
     click(panel.root, '加载模块');
     await flush();
     expect(panel.root.textContent).toContain('已清空旧测试目标');
-    expect(
-      panel.root.querySelector<HTMLInputElement>('.mapping-fields label:nth-child(3) input')!.value,
-    ).toBe('');
+    expect(panel.root.querySelector<HTMLInputElement>('[data-test]')!.value).toBe('');
     panel.project.value = panel.save.mock.calls[0][0];
     await flush();
     expect(button(panel.root, '切换开发分支').disabled).toBe(false);
@@ -1079,8 +1103,8 @@ it('加载使用草稿 remote 的最新状态，自动保存失败保留分支�
         gitRemoteUrl: 'https://example.invalid/team/new.git',
       },
     ]);
-    input(panel.root, '.mapping-fields label:nth-child(1) input', 'upstream');
-    input(panel.root, '.mapping-fields label:nth-child(4) input', '');
+    input(panel.root, '[data-remote]', 'upstream');
+    input(panel.root, '[data-scm-git-id]', '');
     await flush();
     click(panel.root, '加载模块');
     await flush();
