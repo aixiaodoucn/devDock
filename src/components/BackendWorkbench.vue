@@ -528,6 +528,12 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="development.length || testing.length" class="table-wrap">
         <table>
+          <colgroup>
+            <col class="environment-column" />
+            <col class="module-column" />
+            <col class="branch-column" />
+            <col class="mapping-column" />
+          </colgroup>
           <thead>
             <tr>
               <th>环境</th>
@@ -615,14 +621,23 @@ onBeforeUnmount(() => {
         </div>
         <fieldset :disabled="locked">
           <div class="mapping-fields">
-            <label>Remote<input v-model="repo.remote" /></label
-            ><label
+            <label class="mapping-metadata">Remote<input v-model="repo.remote" /></label>
+            <label class="mapping-branch"
               >开发分支<input
                 v-model="repo.developmentBranch"
                 data-development
-                :list="`branches-${repo.id}`" /></label
-            ><label>测试分支<input v-model="repo.testBranch" :list="`branches-${repo.id}`" /></label
-            ><label>SCM Git ID<input v-model="repo.scmGitId" :list="`modules-${repo.id}`" /></label>
+                :title="repo.developmentBranch"
+                :list="`branches-${repo.id}`"
+            /></label>
+            <label class="mapping-branch"
+              >测试分支<input
+                v-model="repo.testBranch"
+                :title="repo.testBranch"
+                :list="`branches-${repo.id}`"
+            /></label>
+            <label class="mapping-metadata"
+              >SCM Git ID<input v-model="repo.scmGitId" :list="`modules-${repo.id}`"
+            /></label>
           </div>
         </fieldset>
         <datalist :id="`branches-${repo.id}`">
@@ -671,8 +686,13 @@ onBeforeUnmount(() => {
         <ul>
           <li v-for="item in plan.repositories" :key="item.repository.id">
             <strong>{{ item.repository.name }}</strong>
-            <code>{{ item.currentBranch }} → {{ item.targetBranch }}</code
-            ><small>来源提交：{{ item.sourceSha }}</small>
+            <div class="plan-branch">
+              来源分支：<code>{{ item.currentBranch }}</code>
+            </div>
+            <div class="plan-branch">
+              目标分支：<code>{{ item.targetBranch }}</code>
+            </div>
+            <small>来源提交：{{ item.sourceSha }}</small>
             <small>目标提交：{{ item.targetSha }}</small>
             <span
               v-if="
@@ -844,8 +864,25 @@ input:not([type='checkbox']) {
 }
 .mapping-fields {
   display: grid;
-  grid-template-columns: 0.7fr 1fr 1fr 1fr;
+  grid-template-columns: minmax(0, 160px) minmax(0, 1fr);
   gap: 10px;
+}
+.mapping-fields label {
+  min-width: 0;
+}
+.mapping-metadata {
+  grid-row: 1;
+  max-width: 240px;
+}
+.mapping-metadata:last-child {
+  grid-column: 2;
+}
+.mapping-branch {
+  grid-column: 1 / -1;
+}
+.mapping-branch input {
+  font-family: var(--mono);
+  font-size: 11px;
 }
 .repository {
   border-top: 1px solid var(--line);
@@ -875,6 +912,9 @@ input:not([type='checkbox']) {
   margin: 0 0 12px 23px;
 }
 .repository-state code {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
   color: var(--accent-text);
   background: var(--accent-soft);
   padding: 3px 7px;
@@ -904,14 +944,28 @@ small,
 }
 table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 12px;
+}
+.environment-column {
+  width: 8%;
+}
+.module-column {
+  width: 22%;
+}
+.branch-column {
+  width: 48%;
+}
+.mapping-column {
+  width: 22%;
 }
 th,
 td {
   text-align: left;
   padding: 9px 8px;
   border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
 }
 th {
   color: var(--muted);
@@ -924,6 +978,7 @@ small {
 code {
   font-family: var(--mono);
   font-size: 11px;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 .plan {
@@ -942,8 +997,13 @@ code {
 .plan li {
   margin-bottom: 10px;
 }
-.plan li code {
-  margin-left: 8px;
+.plan-branch {
+  margin-top: 5px;
+  font-size: 12px;
+}
+.plan-branch code {
+  display: block;
+  margin-top: 3px;
 }
 .history-toolbar {
   margin-top: 16px;
@@ -983,6 +1043,10 @@ code {
   .mapping-fields,
   .scm-projects {
     grid-template-columns: 1fr;
+  }
+  .mapping-metadata:last-child {
+    grid-column: 1;
+    grid-row: 2;
   }
 }
 </style>

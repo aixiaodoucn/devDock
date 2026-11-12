@@ -46,10 +46,11 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  max-width: 240px;
+  max-width: min(100%, 960px);
   min-width: 0;
-  height: 24px;
-  padding: 0 8px;
+  min-height: 24px;
+  height: auto;
+  padding: 3px 8px;
   border: 1px solid var(--accent-border);
   border-radius: 5px;
   background: var(--accent-soft);
@@ -64,8 +65,8 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 .git-branch span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 </style>
