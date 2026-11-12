@@ -785,7 +785,8 @@ it('事件乱序响应不会把成功覆盖为旧的运行状态', async () => {
   await flush();
   older({ planId: 'plan', taskId: 'task', status: 'running', repositories: [] });
   await flush();
-  expect(panel.root.textContent).toContain('操作状态 · success');
+  expect(panel.root.textContent).toContain('执行结果 · 已完成');
+  expect(panel.root.querySelector('.history-toolbar')).toBeNull();
   panel.close();
 });
 it('保存中与预检中均禁止重复提交操作，合并默认不推送', async () => {
@@ -823,6 +824,109 @@ it('保存中与预检中均禁止重复提交操作，合并默认不推送', a
   await flush();
   panel.close();
 });
+it.each(['prepared', 'paused'] as const)(
+  '未启动任务的 %s 预检记录不显示为历史操作',
+  async (status) => {
+    vi.mocked(api.backendGitOperations).mockResolvedValue([
+      {
+        planId: 'unstarted-plan',
+        taskId: '',
+        status,
+        repositories: [{ repoId: 'repo', status: 'pending', message: '', worktreePath: '' }],
+      },
+    ]);
+    const panel = await ready();
+    try {
+      expect(panel.root.querySelector('.history-toolbar')).toBeNull();
+      expect(panel.root.querySelector('.operation')).toBeNull();
+      expect(panel.root.textContent).not.toContain('读取历史操作');
+      expect(api.executeBackendGit).not.toHaveBeenCalled();
+    } finally {
+      panel.close();
+    }
+  },
+);
+
+it('暂停批次显示中文结果、仓库统计和未执行原因，记录名称不显示计划编号', async () => {
+  const initial = fixture();
+  initial.subProjects.push({ ...initial.subProjects[0], id: 'next', name: 'Next service' });
+  vi.mocked(api.backendGitOperations).mockResolvedValue([
+    {
+      planId: 'opaque-plan-id',
+      taskId: 'task',
+      status: 'paused',
+      repositories: [
+        { repoId: 'repo', status: 'error', message: '目标分支检查失败', worktreePath: '' },
+        { repoId: 'next', status: 'pending', message: '', worktreePath: '' },
+      ],
+    },
+  ]);
+  const panel = await ready(initial);
+  try {
+    const result = panel.root.querySelector('.operation')!;
+    expect(result.textContent).toContain('执行结果 · 已暂停，需处理');
+    expect(result.textContent).toContain('共 2 个仓库 · 成功 0 · 失败 1 · 未执行 1');
+    expect(result.textContent).toContain('目标分支检查失败');
+    expect(result.textContent).toContain('批次已暂停，该仓库尚未执行；请重新预检后操作。');
+    expect(
+      [...result.querySelectorAll('.result-heading span')].map((el) => el.textContent),
+    ).toEqual(['失败', '未执行']);
+    expect(result.textContent).not.toMatch(/pending|paused/);
+    const options = panel.root.querySelector('.history-toolbar select')!.textContent;
+    expect(options).toContain('Service、Next service · 已暂停，需处理');
+    expect(options).not.toContain('opaque-plan-id');
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
+it('执行中的仓库显示等待执行说明，不显示内部 pending 状态', async () => {
+  vi.mocked(api.backendGitState).mockResolvedValue({
+    planId: 'plan',
+    taskId: 'task',
+    status: 'running',
+    repositories: [{ repoId: 'repo', status: 'pending', message: '', worktreePath: '' }],
+  });
+  const panel = await ready();
+  try {
+    click(panel.root, '切换开发分支');
+    await flush();
+    click(panel.root, '确认执行计划');
+    await flush();
+    const result = panel.root.querySelector('.operation')!;
+    expect(result.textContent).toContain('执行结果 · 执行中');
+    expect(result.textContent).toContain('等待执行');
+    expect(result.textContent).toContain('正在等待执行，尚未修改该仓库。');
+    expect(result.textContent).not.toContain('pending');
+  } finally {
+    panel.close();
+  }
+});
+
+it('已取消但保留工作树的操作仍提供处理入口', async () => {
+  vi.mocked(api.backendGitOperations).mockResolvedValue([
+    {
+      planId: 'cancelled-plan',
+      taskId: 'task',
+      status: 'cancelled',
+      repositories: [
+        { repoId: 'repo', status: 'cancelled', message: '', worktreePath: '/example/worktree' },
+      ],
+    },
+  ]);
+  const panel = await ready();
+  try {
+    expect(panel.root.textContent).toContain('执行结果 · 已取消');
+    expect(panel.root.textContent).toContain('有保留的工作树');
+    expect(button(panel.root, '打开工作树')).toBeTruthy();
+    expect(button(panel.root, '中止该次合并')).toBeTruthy();
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
 it('预检失败可重试，恢复 paused 只显示结果不直接执行', async () => {
   vi.mocked(api.backendGitOperations).mockResolvedValue([
     {

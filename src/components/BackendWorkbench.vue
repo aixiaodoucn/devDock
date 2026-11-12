@@ -31,6 +31,66 @@ const waiting = ref('');
 const plan = ref<BackendGitPlan | null>(null);
 const operation = ref<BackendGitOperation | null>(null);
 const history = ref<BackendGitOperation[]>([]);
+const operationLabels: Record<BackendGitOperation['status'], string> = {
+  prepared: '等待执行',
+  running: '执行中',
+  success: '已完成',
+  paused: '已暂停，需处理',
+  cancelled: '已取消',
+  aborting: '正在中止',
+};
+function repositoryName(id: string): string {
+  return draft.value.subProjects.find((repo) => repo.id === id)?.name || '已移除的仓库';
+}
+function operationSummary(item: BackendGitOperation): string {
+  const success = item.repositories.filter((repo) => repo.status === 'success').length;
+  const failed = item.repositories.filter((repo) => repo.status === 'error').length;
+  const pending = item.repositories.filter((repo) => repo.status === 'pending').length;
+  return `共 ${item.repositories.length} 个仓库 · 成功 ${success} · 失败 ${failed} · 未执行 ${pending}`;
+}
+function historyLabel(item: BackendGitOperation): string {
+  return `${item.repositories.map((repo) => repositoryName(repo.repoId)).join('、')} · ${operationLabels[item.status]}`;
+}
+function repositoryStatus(item: BackendGitOperation['repositories'][number]): string {
+  return {
+    pending: ['paused', 'cancelled'].includes(operation.value?.status || '')
+      ? '未执行'
+      : '等待执行',
+    running: '执行中',
+    success: '成功',
+    error: '失败',
+    cancelled: '已取消',
+    aborted: '已中止',
+  }[item.status];
+}
+function repositoryMessage(item: BackendGitOperation['repositories'][number]): string {
+  if (item.message) return item.message;
+  if (item.status === 'pending') {
+    if (operation.value?.status === 'paused')
+      return '批次已暂停，该仓库尚未执行；请重新预检后操作。';
+    if (operation.value?.status === 'cancelled') return '任务已取消，该仓库尚未执行。';
+    return '正在等待执行，尚未修改该仓库。';
+  }
+  return {
+    running: '正在执行 Git 操作，请稍候。',
+    success: '操作已完成。',
+    error: '执行失败，请检查仓库状态后重新预检。',
+    cancelled: '任务已取消，请刷新仓库确认当前状态。',
+    aborted: '本次合并已中止。',
+  }[item.status];
+}
+// 预检也会持久化计划，但未启动任务的记录不属于需要恢复的实际操作。
+function needsRecovery(item: BackendGitOperation): boolean {
+  return (
+    item.repositories.some((repo) => !!repo.worktreePath) ||
+    (item.status !== 'success' &&
+      item.status !== 'cancelled' &&
+      (item.status === 'running' ||
+        item.status === 'aborting' ||
+        !!item.taskId ||
+        item.repositories.some((repo) => repo.status !== 'pending')))
+  );
+}
 const push = ref(false);
 const keepTestPom = ref(false);
 const cleanConfirmed = ref<Record<string, boolean>>({});
@@ -263,11 +323,11 @@ async function refreshHistory(token = generation) {
   try {
     const result = await api.backendGitOperations(props.project.id);
     if (!valid(token) || sequence !== historySequence) return;
-    history.value = result;
+    history.value = result.filter(needsRecovery);
     if (!operation.value)
       operation.value =
-        result.find((item) => ['running', 'aborting'].includes(item.status)) ??
-        result.find((item) => item.status !== 'success' && item.status !== 'cancelled') ??
+        history.value.find((item) => ['running', 'aborting'].includes(item.status)) ??
+        history.value[0] ??
         null;
   } catch (reason) {
     if (valid(token) && sequence === historySequence) failure(reason);
@@ -281,7 +341,9 @@ async function refreshState(planId: string) {
     if (!valid(token) || sequence !== stateSequence || operation.value?.planId !== planId) return;
     operation.value = state;
     ++historySequence;
-    history.value = [...history.value.filter((item) => item.planId !== planId), state];
+    history.value = [...history.value.filter((item) => item.planId !== planId), state].filter(
+      needsRecovery,
+    );
     if (!['running', 'aborting'].includes(state.status)) void refreshRepositories(token);
   } catch (reason) {
     if (valid(token) && sequence === stateSequence) failure(reason);
@@ -855,11 +917,9 @@ onBeforeUnmount(() => {
           ><button class="button small" :disabled="locked" @click="plan = null">取消计划</button>
         </div>
       </div>
-      <div class="toolbar history-toolbar">
-        <button class="button small" :disabled="!desktop || locked" @click="refreshHistory()">
-          读取历史操作</button
-        ><label v-if="history.length"
-          >操作记录<select
+      <div v-if="history.length" class="toolbar history-toolbar">
+        <label
+          >待处理操作<select
             :value="operation?.planId || ''"
             :disabled="locked"
             @change="
@@ -872,14 +932,17 @@ onBeforeUnmount(() => {
           >
             <option value="">选择操作</option>
             <option v-for="item in history" :key="item.planId" :value="item.planId">
-              {{ item.planId }} · {{ item.status }}
+              {{ historyLabel(item) }}
             </option>
           </select></label
         >
+        <button class="button small" :disabled="!desktop || locked" @click="refreshHistory()">
+          刷新记录
+        </button>
       </div>
       <div v-if="operation" class="operation">
         <div class="section-heading">
-          <h4>操作状态 · {{ operation.status }}</h4>
+          <h4>执行结果 · {{ operationLabels[operation.status] }}</h4>
           <button
             class="button small"
             v-if="operation.status === 'running'"
@@ -889,15 +952,21 @@ onBeforeUnmount(() => {
             取消任务
           </button>
         </div>
+        <p class="hint">{{ operationSummary(operation) }}</p>
         <p v-if="operation.status === 'paused'" class="warning">
-          遇错暂停；尚未执行的仓库保持 pending。请先处理保留的工作树。
+          操作已暂停，已成功的仓库不会回滚；未执行的仓库需重新预检后操作。
+        </p>
+        <p v-if="operation.repositories.some((item) => item.worktreePath)" class="warning">
+          有保留的工作树，请按下方提示处理；完成处理不会自动推送。
         </p>
         <div v-for="item in operation.repositories" :key="item.repoId" class="result">
-          <strong>{{
-            draft.subProjects.find((repo) => repo.id === item.repoId)?.name || item.repoId
-          }}</strong
-          ><span :class="item.status === 'error' ? 'error' : ''">{{ item.status }}</span>
-          <p>{{ item.message }}</p>
+          <div class="result-heading">
+            <strong>{{ repositoryName(item.repoId) }}</strong>
+            <span :class="item.status === 'error' ? 'error' : 'hint'">{{
+              repositoryStatus(item)
+            }}</span>
+          </div>
+          <p>{{ repositoryMessage(item) }}</p>
           <template v-if="item.worktreePath"
             ><code>{{ item.worktreePath }}</code>
             <label class="checkbox"
@@ -1189,7 +1258,12 @@ code {
   border-top: 1px solid var(--line);
 }
 .history-toolbar label {
-  min-width: 150px;
+  min-width: 0;
+  flex: 1;
+}
+.history-toolbar select {
+  width: 100%;
+  min-width: 0;
 }
 .operation {
   margin-top: 16px;
@@ -1199,8 +1273,21 @@ code {
   padding: 12px 0;
   font-size: 12px;
 }
-.result > span {
-  margin-left: 12px;
+.result-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.result-heading strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.result-heading > span {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
 }
 .result .toolbar {
   margin-top: 8px;
