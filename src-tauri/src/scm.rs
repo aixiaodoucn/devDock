@@ -109,12 +109,17 @@ struct Session {
     jar: Arc<Jar>,
     client: Client,
     remembered: bool,
+    // 仅留在 Rust 内存；成功保存的 Cookie 用于避免重复触发系统凭据授权。
+    saved_cookie: Option<String>,
+    persistence_failed: bool,
     message: Option<String>,
 }
 
 #[derive(Default)]
 struct RuntimeState {
     loaded: bool,
+    // None 表示尚未读取或读取失败；显式内存登录仍需清理可能存在的旧账号。
+    credential_present: Option<bool>,
     session: Option<Session>,
     message: Option<String>,
 }
@@ -183,6 +188,8 @@ fn new_session(base: Url, username: String) -> Result<Session> {
         jar,
         client,
         remembered: false,
+        saved_cookie: None,
+        persistence_failed: false,
         message: None,
     })
 }
@@ -279,15 +286,23 @@ async fn credential_clear(store: Arc<dyn CredentialStore>) -> Result<()> {
         .map_err(|_| "Credential: 无法清除系统凭据".to_string())?
 }
 async fn persist(session: &mut Session, store: Arc<dyn CredentialStore>) {
+    // 保存失败后保留当前内存会话，查询不再自动重试，避免反复弹出授权。
+    if session.persistence_failed {
+        return;
+    }
     let Some(cookie) = session.cookie() else {
         session.remembered = false;
+        session.persistence_failed = true;
         session.message = Some("SCM 未提供可记住的会话 Cookie；当前仅内存登录".into());
         return;
     };
+    if session.saved_cookie.as_deref() == Some(cookie.as_str()) {
+        return;
+    }
     let data = RememberedSession {
         base_url: session.base.to_string(),
         username: session.username.clone(),
-        cookie,
+        cookie: cookie.clone(),
     };
     let result = match serde_json::to_string(&data) {
         Ok(value) => tauri::async_runtime::spawn_blocking(move || store.save(&value))
@@ -296,10 +311,54 @@ async fn persist(session: &mut Session, store: Arc<dyn CredentialStore>) {
         Err(_) => Err(CREDENTIAL_WARNING.into()),
     };
     session.remembered = result.is_ok();
+    session.persistence_failed = result.is_err();
+    if result.is_ok() {
+        session.saved_cookie = Some(cookie);
+    }
     session.message = result.err();
 }
 
+impl RuntimeState {
+    fn begin_login(&mut self) {
+        // 不恢复或删除旧凭据；失败登录也不能暴露或重新启用旧内存会话。
+        self.loaded = true;
+        self.session = None;
+        self.message = None;
+    }
+}
+
 impl Runtime {
+    async fn clear_remembered(&self, state: &mut RuntimeState) {
+        state.message = match credential_clear(self.credentials.clone()).await {
+            Ok(()) => {
+                state.credential_present = Some(false);
+                None
+            }
+            Err(message) => Some(message),
+        };
+    }
+
+    async fn finish_login(
+        &self,
+        state: &mut RuntimeState,
+        mut session: Session,
+        remember: bool,
+    ) -> Status {
+        if remember {
+            persist(&mut session, self.credentials.clone()).await;
+            if session.remembered {
+                state.credential_present = Some(true);
+            }
+        } else if state.credential_present != Some(false) {
+            // 未读取时直接删除一次，避免先读再删触发两次授权，也防止下次恢复旧账号。
+            self.clear_remembered(state).await;
+            session.message = state.message.clone();
+        }
+        let status = session.status();
+        state.session = Some(session);
+        status
+    }
+
     async fn restore(&self, state: &mut RuntimeState) -> Result<()> {
         if state.loaded {
             return Ok(());
@@ -312,6 +371,7 @@ impl Runtime {
                 return Ok(());
             }
         };
+        state.credential_present = Some(value.is_some());
         let Some(value) = value else {
             return Ok(());
         };
@@ -326,6 +386,7 @@ impl Runtime {
             &session.base,
         );
         session.remembered = true;
+        session.saved_cookie = Some(remembered.cookie);
         state.session = Some(session);
         Ok(())
     }
@@ -333,7 +394,7 @@ impl Runtime {
     async fn expire(&self, state: &mut RuntimeState, error: &str) {
         if error.starts_with("SessionExpired:") {
             state.session = None;
-            state.message = credential_clear(self.credentials.clone()).await.err();
+            self.clear_remembered(state).await;
         }
     }
 }
@@ -369,16 +430,14 @@ impl Runtime {
         password: String,
         remember: bool,
     ) -> Result<Status> {
+        let mut state = self.state.lock().await;
+        state.begin_login();
         let base = validate_base(&base_url)?;
         let username = username.trim().to_string();
         if username.is_empty() || password.is_empty() {
             return Err("InvalidInput: 请输入 SCM 账号和密码".into());
         }
-        let mut state = self.state.lock().await;
-        state.loaded = true;
-        state.session = None;
-        state.message = credential_clear(self.credentials.clone()).await.err();
-        let mut session = new_session(base, username)?;
+        let session = new_session(base, username)?;
         let login_url = session
             .base
             .join("/kpi/login")
@@ -417,13 +476,7 @@ impl Runtime {
         if session.cookie().is_none() {
             return Err("Authentication: SCM 未建立有效会话，请重新登录".into());
         }
-        session.message = state.message.clone();
-        if remember {
-            persist(&mut session, self.credentials.clone()).await;
-        }
-        let status = session.status();
-        state.session = Some(session);
-        Ok(status)
+        Ok(self.finish_login(&mut state, session, remember).await)
     }
 
     pub async fn status(&self) -> Result<Status> {
@@ -456,7 +509,7 @@ impl Runtime {
         let mut state = self.state.lock().await;
         state.loaded = true;
         state.session = None;
-        state.message = credential_clear(self.credentials.clone()).await.err();
+        self.clear_remembered(&mut state).await;
         // 仅清本地会话，不请求站点的 loginOut。
         Ok(Status {
             connected: false,
@@ -895,15 +948,30 @@ mod tests {
     struct FakeCredentialStore {
         value: std::sync::Mutex<Option<String>>,
         fail: bool,
+        loads: std::sync::atomic::AtomicUsize,
+        saves: std::sync::atomic::AtomicUsize,
+        clears: std::sync::atomic::AtomicUsize,
+    }
+    impl FakeCredentialStore {
+        fn counts(&self) -> (usize, usize, usize) {
+            use std::sync::atomic::Ordering::SeqCst;
+            (
+                self.loads.load(SeqCst),
+                self.saves.load(SeqCst),
+                self.clears.load(SeqCst),
+            )
+        }
     }
     impl CredentialStore for FakeCredentialStore {
         fn load(&self) -> Result<Option<String>> {
+            self.loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.fail {
                 return Err(CREDENTIAL_WARNING.into());
             }
             Ok(self.value.lock().unwrap().clone())
         }
         fn save(&self, value: &str) -> Result<()> {
+            self.saves.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.fail {
                 return Err(CREDENTIAL_WARNING.into());
             }
@@ -911,12 +979,220 @@ mod tests {
             Ok(())
         }
         fn clear(&self) -> Result<()> {
+            self.clears
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.fail {
                 return Err("Credential: 无法删除已记住会话".into());
             }
             *self.value.lock().unwrap() = None;
             Ok(())
         }
+    }
+
+    fn cookie_session(cookie: &str) -> Session {
+        let session = new_session(
+            validate_base("https://example.invalid").unwrap(),
+            "example-user".into(),
+        )
+        .unwrap();
+        session.jar.add_cookie_str(
+            &format!("PHPSESSID={cookie}; Path=/; Secure; HttpOnly"),
+            &session.base,
+        );
+        session
+    }
+
+    #[test]
+    fn unchanged_cookie_never_rewrites_and_restored_cookie_is_already_saved() {
+        tauri::async_runtime::block_on(async {
+            let store = Arc::new(FakeCredentialStore::default());
+            let mut session = cookie_session("synthetic-session");
+            persist(&mut session, store.clone()).await;
+            assert_eq!(store.counts(), (0, 1, 0));
+            persist(&mut session, store.clone()).await;
+            assert_eq!(store.counts(), (0, 1, 0));
+            let runtime = Runtime {
+                state: Mutex::new(RuntimeState::default()),
+                credentials: store.clone(),
+            };
+            let mut state = runtime.state.lock().await;
+            for _ in 0..3 {
+                runtime.restore(&mut state).await.unwrap();
+                persist(state.session.as_mut().unwrap(), store.clone()).await;
+            }
+            assert_eq!(store.counts(), (1, 1, 0));
+            let session = state.session.as_mut().unwrap();
+            session.jar.add_cookie_str(
+                "PHPSESSID=rotated-session; Path=/; Secure; HttpOnly",
+                &session.base,
+            );
+            persist(session, store.clone()).await;
+            persist(session, store.clone()).await;
+            assert_eq!(store.counts(), (1, 2, 0));
+        });
+    }
+
+    #[test]
+    fn failed_save_is_not_retried_by_queries() {
+        tauri::async_runtime::block_on(async {
+            let store = Arc::new(FakeCredentialStore {
+                fail: true,
+                ..Default::default()
+            });
+            let mut session = cookie_session("synthetic-session");
+            persist(&mut session, store.clone()).await;
+            persist(&mut session, store.clone()).await;
+            session.jar.add_cookie_str(
+                "PHPSESSID=rotated-session; Path=/; Secure; HttpOnly",
+                &session.base,
+            );
+            persist(&mut session, store.clone()).await;
+            assert_eq!(store.counts(), (0, 1, 0));
+            assert!(!session.remembered);
+            assert!(session.message.as_deref().unwrap().contains("仅内存"));
+            assert_eq!(session.cookie().as_deref(), Some("rotated-session"));
+        });
+    }
+
+    #[test]
+    fn login_credential_flow_overwrites_without_delete_and_memory_login_clears_once() {
+        tauri::async_runtime::block_on(async {
+            let store = Arc::new(FakeCredentialStore::default());
+            let runtime = Runtime {
+                state: Mutex::new(RuntimeState::default()),
+                credentials: store.clone(),
+            };
+            let mut state = runtime.state.lock().await;
+            state.begin_login();
+            let status = runtime
+                .finish_login(&mut state, cookie_session("first-session"), true)
+                .await;
+            assert!(status.remembered);
+            assert_eq!(store.counts(), (0, 1, 0));
+            state.begin_login();
+            runtime
+                .finish_login(&mut state, cookie_session("second-session"), true)
+                .await;
+            assert_eq!(store.counts(), (0, 2, 0));
+            state.begin_login();
+            let status = runtime
+                .finish_login(&mut state, cookie_session("memory-session"), false)
+                .await;
+            assert!(status.connected);
+            assert!(!status.remembered);
+            assert_eq!(store.counts(), (0, 2, 1));
+            assert!(store.value.lock().unwrap().is_none());
+            state.begin_login();
+            runtime
+                .finish_login(&mut state, cookie_session("another-memory-session"), false)
+                .await;
+            runtime.restore(&mut state).await.unwrap();
+            assert_eq!(store.counts(), (0, 2, 1));
+            drop(state);
+            runtime.logout().await.unwrap();
+            assert_eq!(store.counts(), (0, 2, 2));
+        });
+    }
+
+    #[test]
+    fn memory_login_cleans_unknown_or_restored_credentials_but_skips_known_empty_store() {
+        tauri::async_runtime::block_on(async {
+            for restore in [false, true] {
+                let store = Arc::new(FakeCredentialStore::default());
+                persist(&mut cookie_session("old-session"), store.clone()).await;
+                let runtime = Runtime {
+                    state: Mutex::new(RuntimeState::default()),
+                    credentials: store.clone(),
+                };
+                let mut state = runtime.state.lock().await;
+                if restore {
+                    runtime.restore(&mut state).await.unwrap();
+                }
+                state.begin_login();
+                runtime
+                    .finish_login(&mut state, cookie_session("new-session"), false)
+                    .await;
+                assert_eq!(store.counts(), (usize::from(restore), 1, 1));
+                assert!(store.value.lock().unwrap().is_none());
+            }
+            let store = Arc::new(FakeCredentialStore::default());
+            let runtime = Runtime {
+                state: Mutex::new(RuntimeState::default()),
+                credentials: store.clone(),
+            };
+            let mut state = runtime.state.lock().await;
+            runtime.restore(&mut state).await.unwrap();
+            state.begin_login();
+            runtime
+                .finish_login(&mut state, cookie_session("memory-session"), false)
+                .await;
+            assert_eq!(store.counts(), (1, 0, 0));
+        });
+    }
+
+    #[test]
+    fn failed_login_does_not_touch_credentials_or_restore_previous_session() {
+        tauri::async_runtime::block_on(async {
+            let store = Arc::new(FakeCredentialStore::default());
+            persist(&mut cookie_session("old-session"), store.clone()).await;
+            let stored = store.value.lock().unwrap().clone();
+            let runtime = Runtime {
+                state: Mutex::new(RuntimeState {
+                    session: Some(cookie_session("old-memory-session")),
+                    ..Default::default()
+                }),
+                credentials: store.clone(),
+            };
+            // 输入校验即失败，不发出 HTTP；验证实际登录入口先隔离旧会话。
+            assert!(runtime
+                .login(
+                    "http://example.invalid".into(),
+                    "new-user".into(),
+                    "synthetic-password".into(),
+                    true
+                )
+                .await
+                .is_err());
+            let status = runtime.status().await.unwrap();
+            assert!(!status.connected);
+            assert!(status.username.is_none());
+            assert_eq!(store.counts(), (0, 1, 0));
+            assert_eq!(*store.value.lock().unwrap(), stored);
+        });
+    }
+
+    #[test]
+    fn memory_login_clear_failure_warns_without_query_retry() {
+        tauri::async_runtime::block_on(async {
+            let store = Arc::new(FakeCredentialStore {
+                fail: true,
+                ..Default::default()
+            });
+            let runtime = Runtime {
+                state: Mutex::new(RuntimeState::default()),
+                credentials: store.clone(),
+            };
+            let mut state = runtime.state.lock().await;
+            state.begin_login();
+            let status = runtime
+                .finish_login(&mut state, cookie_session("memory-session"), false)
+                .await;
+            assert!(status.connected);
+            assert!(!status.remembered);
+            assert!(status
+                .message
+                .as_deref()
+                .unwrap()
+                .starts_with("Credential:"));
+            for _ in 0..3 {
+                runtime.restore(&mut state).await.unwrap();
+            }
+            assert_eq!(store.counts(), (0, 0, 1));
+            assert_eq!(
+                state.session.as_ref().unwrap().cookie().as_deref(),
+                Some("memory-session")
+            );
+        });
     }
 
     #[test]
