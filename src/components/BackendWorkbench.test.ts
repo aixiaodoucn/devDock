@@ -112,6 +112,32 @@ function input(root: HTMLElement, selector: string, value: string) {
   field.value = value;
   field.dispatchEvent(new Event('input'));
 }
+it('待处理和测试项目全部进入开发及测试来源的共享候选列表', async () => {
+  const projects = Array.from({ length: 7 }, (_, index) => ({
+    id: String(101 + index),
+    name: `Synthetic project ${index + 1}`,
+    status: index < 5 ? '待处理' : '测试环境',
+  }));
+  vi.mocked(api.scmProjects).mockResolvedValueOnce(projects);
+  const panel = await mount();
+  try {
+    click(panel.root, '加载项目列表');
+    await flush();
+    const options = [
+      ...panel.root.querySelectorAll<HTMLOptionElement>('#backend-scm-projects option'),
+    ];
+    expect(options.map((option) => option.value)).toEqual(projects.map((project) => project.id));
+    expect(options.map((option) => option.textContent?.trim())).toEqual(
+      projects.map((project) => project.name),
+    );
+    expect(panel.root.querySelectorAll('[list="backend-scm-projects"]')).toHaveLength(2);
+    expect(api.scmProjectModules).not.toHaveBeenCalled();
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
 it('仅开发 SCM ID 可加载、应用并保存，保留已有测试分支', async () => {
   const initial = fixture();
   initial.scmDevelopmentProjectId = '123';

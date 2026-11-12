@@ -658,6 +658,7 @@ fn parse_projects(html: &str) -> Result<Vec<ScmProject>> {
     let status_col = column(&headers, "项目状态");
     let mut projects = Vec::new();
     let mut seen = HashSet::new();
+    let base = Url::parse("https://example.invalid/").expect("static URL");
     for row in rows {
         let (Some(id), Some(name), Some(status)) =
             (row.get(id_col), row.get(name_col), row.get(status_col))
@@ -667,11 +668,15 @@ fn parse_projects(html: &str) -> Result<Vec<ScmProject>> {
         if !numeric_id(&id.text) || name.text.is_empty() {
             continue;
         }
-        let linked = row.iter().flat_map(|cell| &cell.links).any(|link| {
-            link.contains("/kpi/project/project")
-                && query_id(link, "id").as_deref() == Some(&id.text)
+        // 待处理项目不一定带标准详情链接，以项目表中的合法 ID/名称为准。
+        // 只有明确的详情链接与本行 ID 冲突时才排除，不请求开始/修改等操作链接。
+        let conflicting_link = row.iter().flat_map(|cell| &cell.links).any(|link| {
+            base.join(link).ok().is_some_and(|url| {
+                url.path() == "/kpi/project/project"
+                    && query_id(link, "id").is_some_and(|linked_id| linked_id != id.text)
+            })
         });
-        if !linked {
+        if conflicting_link {
             continue;
         }
         if !seen.insert(id.text.clone()) {
@@ -826,7 +831,9 @@ mod tests {
 
     const PROJECTS: &str = r#"<table><tr><th>项目名称</th><th>项目状态</th><th>项目ID</th></tr>
       <tr><td><a href='/kpi/project/project?id=12'>Example app</a></td><td>开发中</td><td>12</td></tr>
-      <tr><td>无项目链接</td><td>完成</td><td>99</td></tr></table>"#;
+      <tr><td>Example pending</td><td>待处理</td><td>99</td></tr>
+      <tr><td colspan='3'>汇总</td></tr>
+      <tr><td>Invalid row</td><td>待处理</td><td>not-an-id</td></tr></table>"#;
     const REPOS: &str = r#"<table><tr><th>模块名</th><th>git地址</th><th>gitID</th></tr>
       <tr><td>example-api</td><td>git@example.invalid:group/api.git</td><td>7</td></tr></table>"#;
     const MODULES: &str = r#"<div class='modelist'><div class='subpro' id='example-api'></div>
@@ -891,14 +898,66 @@ mod tests {
     #[test]
     fn parses_project_headers_and_filters_non_project_rows() {
         let rows = parse_projects(PROJECTS).unwrap();
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, "12");
         assert_eq!(rows[0].name, "Example app");
         assert_eq!(rows[0].status.as_deref(), Some("开发中"));
+        assert_eq!(rows[1].id, "99");
+        assert_eq!(rows[1].status.as_deref(), Some("待处理"));
         assert!(parse_projects("<html>unexpected</html>").is_err());
-        assert!(parse_projects(&PROJECTS.replace("id=12", "id=bad"))
-            .unwrap()
-            .is_empty());
+        let conflicting = parse_projects(&PROJECTS.replace("id=12", "id=13")).unwrap();
+        assert_eq!(conflicting.len(), 1);
+        assert_eq!(conflicting[0].id, "99");
+    }
+
+    #[test]
+    fn includes_pending_projects_without_standard_detail_links() {
+        let html = r#"<table><tr><td>Navigation</td></tr></table>
+          <table><tr><th>项目ID</th><th>项目名称</th><th>项目状态</th><th>处理</th></tr>
+          <tr><td>101</td><td>Synthetic pending A</td><td>待处理</td><td>我要开始 修改</td></tr>
+          <tr><td>102</td><td><a>Synthetic pending B</a></td><td>待处理</td><td>我要开始 修改</td></tr>
+          <tr><td>103</td><td><a href='#'>Synthetic pending C</a></td><td>待处理</td><td>我要开始 修改</td></tr>
+          <tr><td>104</td><td><a href='/synthetic/details?id=104'>Synthetic pending D</a></td><td>待处理</td><td>我要开始 修改</td></tr>
+          <tr><td>105</td><td>Synthetic pending E</td><td>待处理</td><td><a href='/synthetic/start?id=105'>我要开始</a> 修改</td></tr>
+          <tr><td>106</td><td><a href='/kpi/project/project?id=106'>Synthetic testing A</a></td><td>测试环境</td><td>提交测试</td></tr>
+          <tr><td>107</td><td><a href='/kpi/project/project?show_type=2&amp;id=107'>Synthetic testing B</a></td><td>测试环境</td><td>提交测试</td></tr>
+          </table>"#;
+        let rows = parse_projects(html).unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            vec!["101", "102", "103", "104", "105", "106", "107"]
+        );
+        assert!(rows[..5]
+            .iter()
+            .all(|row| row.status.as_deref() == Some("待处理")));
+    }
+
+    #[test]
+    fn project_detail_links_only_reject_explicit_conflicting_ids() {
+        for (links, accepted) in [
+            ("", true),
+            ("<a href='/kpi/project/project?id=101'>Details</a>", true),
+            ("<a href='/kpi/project/project?id=bad'>Details</a>", true),
+            ("<a href='/kpi/project/project-extra?id=999'>Other</a>", true),
+            ("<a href='/other?next=/kpi/project/project&amp;id=999'>Other</a>", true),
+            ("<a href='/kpi/project/project?id=102'>Wrong project</a>", false),
+            ("<a href='/kpi/project/project?id=101'>Details</a><a href='/kpi/project/project?id=102'>Wrong project</a>", false),
+        ] {
+            let html = format!("<table><tr><th>项目ID</th><th>项目名称</th><th>项目状态</th></tr><tr><td>101</td><td>Synthetic project {links}</td><td>待处理</td></tr></table>");
+            assert_eq!(parse_projects(&html).unwrap().len(), usize::from(accepted), "{links}");
+        }
+    }
+
+    #[test]
+    fn project_rows_still_require_valid_unique_ids_and_names() {
+        let header = "<table><tr><th>项目ID</th><th>项目名称</th><th>项目状态</th></tr>";
+        let html = format!("{header}<tr><td></td><td>Empty id</td><td>待处理</td></tr><tr><td>abc</td><td>Bad id</td><td>待处理</td></tr><tr><td>123456789012345678901</td><td>Long id</td><td>待处理</td></tr><tr><td>101</td><td> </td><td>待处理</td></tr><tr><td colspan='3'>Total</td></tr><tr><td>102</td><td>Synthetic project</td><td></td></tr></table>");
+        let rows = parse_projects(&html).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "102");
+        assert!(rows[0].status.is_none());
+        let duplicate = format!("{header}<tr><td>101</td><td>First</td><td>待处理</td></tr><tr><td>101</td><td>Duplicate</td><td>测试环境</td></tr></table>");
+        assert!(parse_projects(&duplicate).unwrap_err().contains("ID 重复"));
     }
 
     #[test]
