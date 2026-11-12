@@ -154,20 +154,32 @@ it('开发、测试、当前及未关联模块分支支持点击或键盘复制�
   }
 });
 
-it('推送确认计划中的远端分支复制完整目标，不触发执行', async () => {
+it('Git 确认计划保留分支文字与标签，不提供点击复制', async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal('navigator', { clipboard: { writeText } });
   const panel = await ready();
   try {
     click(panel.root, '推送开发分支到远程');
     await flush();
-    const branches = panel.root.querySelectorAll<HTMLElement>('.plan-branch code');
-    branches[0].click();
+    const rows = [...panel.root.querySelectorAll<HTMLElement>('.plan-branch')];
+    expect(rows.map((row) => row.querySelector('span')?.textContent)).toEqual([
+      '当前分支：',
+      '本地开发分支：',
+      '目标远程分支：',
+    ]);
+    expect(rows.map((row) => row.querySelector('code')?.textContent)).toEqual([
+      'develop',
+      'develop',
+      'origin/develop',
+    ]);
+    for (const row of rows) {
+      const branch = row.querySelector<HTMLElement>('code')!;
+      expect(branch.getAttribute('role')).toBeNull();
+      expect(branch.classList.contains('branch-copyable')).toBe(false);
+      branch.click();
+    }
     await flush();
-    expect(writeText).toHaveBeenLastCalledWith('develop');
-    branches[branches.length - 1].click();
-    await flush();
-    expect(writeText).toHaveBeenLastCalledWith('origin/develop');
+    expect(writeText).not.toHaveBeenCalled();
     expect(api.executeBackendGit).not.toHaveBeenCalled();
   } finally {
     panel.close();

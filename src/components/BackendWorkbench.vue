@@ -972,31 +972,18 @@ onBeforeUnmount(() => {
           <li v-for="item in plan.repositories" :key="item.repository.id">
             <strong>{{ item.repository.name }}</strong>
             <div class="plan-branch">
-              当前分支：<code v-bind="branchCopyProps(item.currentBranch)">{{
-                item.currentBranch
-              }}</code>
+              <span>当前分支：</span><code>{{ item.currentBranch }}</code>
             </div>
             <div v-if="plan.operation === 'push-dev'" class="plan-branch">
-              本地开发分支：<code v-bind="branchCopyProps(item.repository.developmentBranch)">{{
-                item.repository.developmentBranch
-              }}</code>
+              <span>本地开发分支：</span><code>{{ item.repository.developmentBranch }}</code>
             </div>
             <div class="plan-branch">
-              {{ plan.operation === 'push-dev' ? '目标远程分支：' : '目标分支：'
-              }}<code
-                v-bind="
-                  branchCopyProps(
-                    plan.operation === 'push-dev'
-                      ? `${item.repository.remote}/${item.targetBranch}`
-                      : item.targetBranch,
-                  )
-                "
-                >{{
-                  plan.operation === 'push-dev'
-                    ? `${item.repository.remote}/${item.targetBranch}`
-                    : item.targetBranch
-                }}</code
-              >
+              <span>{{ plan.operation === 'push-dev' ? '目标远程分支：' : '目标分支：' }}</span>
+              <code>{{
+                plan.operation === 'push-dev'
+                  ? `${item.repository.remote}/${item.targetBranch}`
+                  : item.targetBranch
+              }}</code>
             </div>
             <span
               v-if="
@@ -1344,12 +1331,15 @@ code {
   margin-bottom: 10px;
 }
 .plan-branch {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px;
   margin-top: 5px;
   font-size: 12px;
 }
 .plan-branch code {
-  display: block;
-  margin-top: 3px;
+  min-width: 0;
 }
 .history-toolbar {
   margin-top: 16px;
