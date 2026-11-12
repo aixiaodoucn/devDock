@@ -1055,6 +1055,9 @@ input:not([type='checkbox']) {
 }
 .mapping-branch {
   grid-column: 1 / -1;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
 }
 .mapping-branch input {
   font-family: var(--mono);
