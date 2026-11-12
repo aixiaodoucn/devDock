@@ -661,9 +661,12 @@ onBeforeUnmount(() => {
       :disabled="locked"
       @change="connectionChanged"
     />
-    <section class="workbench-card" aria-label="SCM 项目映射">
+    <section class="workbench-card" aria-label="SCM 项目与仓库">
       <div class="section-heading">
-        <h3>SCM 分支映射</h3>
+        <h3>
+          SCM 项目与仓库
+          <span>关联 {{ visibleRepositories.length }} / 配置 {{ draft.subProjects.length }}</span>
+        </h3>
         <button
           class="button small"
           :disabled="!desktop || !connected || locked"
@@ -700,6 +703,9 @@ onBeforeUnmount(() => {
         >
           加载模块
         </button>
+        <button class="button small" :disabled="!desktop || locked" @click="refreshRepositories()">
+          刷新仓库
+        </button>
       </div>
       <p
         v-for="warning in developmentLoaded ? mapping.warnings : []"
@@ -708,79 +714,6 @@ onBeforeUnmount(() => {
       >
         {{ warning }}
       </p>
-      <div v-if="moduleRows.length" class="table-wrap">
-        <table>
-          <colgroup>
-            <col class="module-column" />
-            <col class="branch-column" />
-            <col class="mapping-column" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>模块 / Git ID</th>
-              <th>开发 / 测试分支</th>
-              <th>本地映射</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="({ module, testing: targets, repositories }, index) in moduleRows"
-              :key="index"
-            >
-              <td>
-                {{ module.moduleName }}<small>{{ module.gitId || '缺少 Git ID' }}</small>
-              </td>
-              <td>
-                <div class="module-branch">
-                  <span>开发</span><code>{{ module.branch }}</code>
-                </div>
-                <div class="module-branch">
-                  <span>测试</span>
-                  <div v-if="targets.length" class="test-branches">
-                    <code v-for="(target, targetIndex) in targets" :key="targetIndex">{{
-                      target.branch || '未配置'
-                    }}</code>
-                  </div>
-                  <span v-else class="hint">未配置</span>
-                </div>
-                <div class="module-branch" data-local-branch>
-                  <span>本地</span>
-                  <div v-if="repositories.length" class="test-branches">
-                    <code v-for="repo in repositories" :key="repo.id" :title="repo.path">
-                      {{ repositories.length > 1 ? `${repo.name}：` : ''
-                      }}{{ localBranch(repo.id) }}
-                    </code>
-                  </div>
-                  <span v-else class="hint">未映射本地仓库</span>
-                </div>
-              </td>
-              <td>
-                {{
-                  repositories.map((repo) => repo.name).join('、') ||
-                  '尚未映射，请添加本地路径或核对 SCM Git ID / 仓库 URL'
-                }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section class="workbench-card" aria-label="本地子仓库">
-      <div class="section-heading">
-        <h3>
-          本地子仓库
-          <span>关联 {{ visibleRepositories.length }} / 配置 {{ draft.subProjects.length }}</span>
-        </h3>
-        <div class="toolbar">
-          <button
-            class="button small"
-            :disabled="!desktop || locked"
-            @click="refreshRepositories()"
-          >
-            刷新仓库
-          </button>
-        </div>
-      </div>
       <p v-if="!draft.subProjects.length" class="empty">
         尚未配置子项目，请通过“编辑项目 / 扫描父目录”添加。
       </p>
@@ -800,6 +733,11 @@ onBeforeUnmount(() => {
                 :value="repo.id"
                 :disabled="locked || !!statusFor(repo.id)?.error"
               /><strong>{{ repo.name }}</strong></label
+            >
+            <span
+              v-if="repo.scmModuleName && repo.scmModuleName !== repo.name"
+              class="repository-metadata"
+              >模块：{{ repo.scmModuleName }}</span
             >
             <label class="repository-metadata"
               >Remote<input :value="repo.remote" data-remote readonly :title="repo.remote"
@@ -821,15 +759,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <p class="repository-path">{{ repo.path }}</p>
-        <div class="repository-state">
-          <code>{{ statusFor(repo.id)?.currentBranch || '分支待刷新' }}</code
-          ><span v-if="statusFor(repo.id)?.dirty" class="warning">有未提交更改</span
-          ><span v-if="statusFor(repo.id)?.merging" class="warning">合并中</span
-          ><span v-if="statusFor(repo.id)?.rebasing" class="warning">变基中</span
-          ><span v-if="statusFor(repo.id)?.error" class="error">{{
-            statusFor(repo.id)?.error
-          }}</span>
-        </div>
         <fieldset :disabled="locked">
           <div class="mapping-fields">
             <label class="mapping-branch"
@@ -844,6 +773,64 @@ onBeforeUnmount(() => {
             /></label>
           </div>
         </fieldset>
+        <div class="repository-state" data-local-branch>
+          <span>当前本地分支</span><code>{{ localBranch(repo.id) }}</code>
+          <span
+            v-if="
+              statusFor(repo.id)?.currentBranch &&
+              !statusFor(repo.id)?.error &&
+              repo.developmentBranch &&
+              statusFor(repo.id)?.currentBranch !== repo.developmentBranch
+            "
+            class="hint"
+            >尚未切换</span
+          >
+          <span v-if="statusFor(repo.id)?.dirty" class="warning">有未提交更改</span>
+          <span v-if="statusFor(repo.id)?.merging" class="warning">合并中</span>
+          <span v-if="statusFor(repo.id)?.rebasing" class="warning">变基中</span>
+          <span v-if="statusFor(repo.id)?.error" class="error">{{
+            statusFor(repo.id)?.error
+          }}</span>
+        </div>
+      </div>
+      <div
+        v-for="({ module, testing: targets }, index) in moduleRows.filter(
+          (row) => !row.repositories.length,
+        )"
+        :key="index"
+        class="repository-unlinked"
+      >
+        <div class="repository-heading">
+          <div class="repository-identity">
+            <strong>{{ module.moduleName }}</strong
+            ><span class="hint">未关联</span>
+            <label class="repository-metadata"
+              >SCM Git ID<input
+                :value="module.gitId || ''"
+                data-scm-git-id
+                readonly
+                :title="module.gitId || ''"
+            /></label>
+          </div>
+          <button class="button small" :disabled="locked" @click="emit('edit')">
+            关联本地目录
+          </button>
+        </div>
+        <div class="mapping-fields">
+          <label class="mapping-branch"
+            >开发分支<input :value="module.branch" data-development readonly :title="module.branch"
+          /></label>
+          <label v-for="(target, targetIndex) in targets" :key="targetIndex" class="mapping-branch"
+            >测试分支<input
+              :value="target.branch || ''"
+              data-test
+              readonly
+              :title="target.branch || ''"
+          /></label>
+          <label v-if="!targets.length" class="mapping-branch"
+            >测试分支<input value="" data-test readonly placeholder="未配置"
+          /></label>
+        </div>
       </div>
     </section>
     <section class="workbench-card" aria-label="Git 批量操作">
@@ -1117,10 +1104,15 @@ input:not([type='checkbox']) {
   font-family: var(--mono);
   font-size: 11px;
 }
-.repository {
+.repository,
+.repository-unlinked {
   border-top: 1px solid var(--line);
   padding-top: 12px;
   margin-top: 12px;
+}
+.repository-unlinked .repository-heading {
+  margin-bottom: 10px;
+  padding-left: 23px;
 }
 .repository-title {
   display: flex;
@@ -1170,53 +1162,6 @@ small,
   flex-direction: row;
   align-items: center;
   gap: 5px;
-}
-.table-wrap {
-  overflow: auto;
-  margin-top: 12px;
-}
-table {
-  width: 100%;
-  table-layout: fixed;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-.module-column {
-  width: 26%;
-}
-.branch-column {
-  width: 52%;
-}
-.module-branch {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  align-items: baseline;
-  gap: 8px;
-}
-.module-branch + .module-branch {
-  margin-top: 7px;
-}
-.module-branch > span:first-child {
-  color: var(--muted);
-  font-size: 11px;
-}
-.test-branches {
-  display: grid;
-  gap: 5px;
-}
-.mapping-column {
-  width: 22%;
-}
-th,
-td {
-  text-align: left;
-  padding: 9px 8px;
-  border-bottom: 1px solid var(--line);
-  overflow-wrap: anywhere;
-}
-th {
-  color: var(--muted);
-  font-weight: 500;
 }
 small {
   display: block;

@@ -66,6 +66,7 @@ async function mount(initial = fixture()) {
   const project = ref(initial);
   const saving = ref(false);
   const save = vi.fn();
+  const edit = vi.fn();
   const root = document.createElement('div');
   const app = createApp({
     render: () =>
@@ -74,11 +75,12 @@ async function mount(initial = fixture()) {
         saving: saving.value,
         busy: false,
         onSave: save,
+        onEdit: edit,
       }),
   });
   app.mount(root);
   await flush();
-  return { project, saving, save, root, close: () => app.unmount() };
+  return { project, saving, save, edit, root, close: () => app.unmount() };
 }
 async function ready(initial = fixture()) {
   const panel = await mount({
@@ -960,7 +962,7 @@ it('预检失败可重试，恢复 paused 只显示结果不直接执行', async
   panel.close();
 });
 
-it('模块按开发范围合并展示，同 Git ID 的测试分支位于开发分支下方', async () => {
+it('单一 SCM 项目与仓库按开发范围展示，关联仓库不重复且未关联模块不可选', async () => {
   const initial = fixture();
   initial.scmTestProjectId = '456';
   vi.mocked(api.scmProjectModules).mockImplementation(async (id) =>
@@ -982,37 +984,51 @@ it('模块按开发范围合并展示，同 Git ID 的测试分支位于开发�
   );
   const panel = await ready(initial);
   try {
-    expect([...panel.root.querySelectorAll('th')].map((cell) => cell.textContent?.trim())).toEqual([
-      '模块 / Git ID',
-      '开发 / 测试分支',
-      '本地映射',
-    ]);
-    const rows = [...panel.root.querySelectorAll('tbody tr')];
-    expect(rows).toHaveLength(2);
-    expect(rows[0].querySelectorAll('td')).toHaveLength(3);
-    expect(rows[0].textContent).toContain('service');
-    expect([...rows[0].querySelectorAll('code')].map((code) => code.textContent?.trim())).toEqual([
+    const section = panel.root.querySelector('section[aria-label="SCM 项目与仓库"]')!;
+    expect(panel.root.querySelectorAll('section[aria-label="SCM 项目与仓库"]')).toHaveLength(1);
+    expect(panel.root.textContent).not.toContain('SCM 分支映射');
+    expect(panel.root.textContent).not.toContain('本地子仓库');
+    expect(panel.root.querySelector('table')).toBeNull();
+    expect(section.querySelectorAll('.repository')).toHaveLength(1);
+    expect(section.querySelectorAll('.repository-title strong')).toHaveLength(1);
+    expect(section.querySelector('.repository-title strong')?.textContent).toBe('Service');
+    expect(section.querySelector('.repository')?.textContent).toContain('模块：service');
+    expect(section.querySelector<HTMLInputElement>('.repository [data-development]')?.value).toBe(
       'feature/current',
+    );
+    expect(section.querySelector<HTMLInputElement>('.repository [data-test]')?.value).toBe(
       'test/current',
-      'develop',
-    ]);
-    expect(rows[1].querySelector('[data-local-branch]')?.textContent).toContain('未映射本地仓库');
-    expect(rows[0].querySelector('td:last-child')?.textContent).toContain('Service');
-    expect(rows[1].textContent).toContain('missing-test');
-    expect(rows[1].textContent).toContain('未配置');
-    expect(panel.root.querySelector('tbody')?.textContent).not.toContain('test/unrelated');
-    expect(panel.root.querySelector('tbody')?.textContent).not.toContain('test/unknown');
+    );
+    expect(section.querySelectorAll('[data-local-branch]')).toHaveLength(1);
+    expect(section.querySelector('[data-local-branch]')?.textContent).toContain('develop');
+    expect(section.querySelector('[data-local-branch]')?.textContent).toContain('尚未切换');
+    const unlinked = section.querySelector('.repository-unlinked')!;
+    expect(unlinked.textContent).toContain('missing-test');
+    expect(unlinked.textContent).toContain('未关联');
+    expect(unlinked.querySelector('[type="checkbox"]')).toBeNull();
+    expect(unlinked.querySelector<HTMLInputElement>('[data-scm-git-id]')?.value).toBe('43');
+    expect(unlinked.querySelector<HTMLInputElement>('[data-development]')?.value).toBe(
+      'feature/other',
+    );
+    expect(unlinked.querySelector<HTMLInputElement>('[data-test]')?.placeholder).toBe('未配置');
+    click(unlinked as HTMLElement, '关联本地目录');
+    expect(panel.edit).toHaveBeenCalledOnce();
+    expect(section.textContent).not.toContain('renamed-service');
+    expect(section.textContent).not.toContain('test/unrelated');
+    expect(section.textContent).not.toContain('test/unknown');
+    expect(section.querySelectorAll('[data-test]')).toHaveLength(2);
     expect(panel.project.value.subProjects[0].testBranch).toBe('test/current');
   } finally {
     panel.close();
   }
 });
 
-it('模块表本地分支随仓库刷新更新，游离 HEAD 不冒充分支', async () => {
+it('仓库卡片本地分支随刷新更新，游离 HEAD 不冒充分支', async () => {
   const panel = await ready();
   try {
     const local = () => panel.root.querySelector('[data-local-branch]')?.textContent;
     expect(local()).toContain('develop');
+    expect(local()).not.toContain('尚未切换');
     const statuses: Awaited<ReturnType<typeof api.backendRepositoryStatuses>> = await vi
       .mocked(api.backendRepositoryStatuses)
       .mock.results.at(-1)!.value;
@@ -1022,12 +1038,14 @@ it('模块表本地分支随仓库刷新更新，游离 HEAD 不冒充分支', a
     click(panel.root, '刷新仓库');
     await flush();
     expect(local()).toContain('feature/local-current');
+    expect(local()).toContain('尚未切换');
     vi.mocked(api.backendRepositoryStatuses).mockResolvedValueOnce(
       statuses.map((status) => ({ ...status, currentBranch: '', head: 'abc123456789' })),
     );
     click(panel.root, '刷新仓库');
     await flush();
     expect(local()).toContain('游离 HEAD (abc12345)');
+    expect(local()).not.toContain('尚未切换');
     expect(panel.root.querySelector('.repository-heading [data-remote]')).not.toBeNull();
     expect(panel.root.querySelector('.repository-heading [data-scm-git-id]')).not.toBeNull();
     expect(panel.root.querySelectorAll('.mapping-fields label')).toHaveLength(2);
@@ -1274,6 +1292,9 @@ it.each(['dirty', 'merging', 'rebasing', 'error', 'missing'] as const)(
       click(panel.root, '刷新仓库');
       await flush();
       expect(button(panel.root, '切换开发分支').disabled).toBe(true);
+      expect(panel.root.querySelector('[data-local-branch]')?.textContent || '').not.toContain(
+        '尚未切换',
+      );
       expect(button(panel.root, '切换开发分支').title).not.toBe('');
       expect(panel.root.querySelector('[data-switch-reason]')?.textContent).toContain(
         button(panel.root, '切换开发分支').title,
@@ -1351,3 +1372,54 @@ it('完整开发 SCM 链接加载并规范保存后，父回执保留关联范�
 function button(root: HTMLElement, text: string): HTMLButtonElement {
   return [...root.querySelectorAll('button')].find((item) => item.textContent?.trim() === text)!;
 }
+
+it('没有本地配置的开发模块仍显示未关联卡片和同 Git ID 测试分支', async () => {
+  const initial = fixture();
+  initial.subProjects = [];
+  initial.scmTestProjectId = '456';
+  vi.mocked(api.scmProjectModules).mockImplementation(async (id) => [
+    {
+      gitId: '42',
+      moduleName: 'service',
+      gitRemoteUrl: null,
+      branch: id === '123' ? 'feature/scm-only' : 'test/scm-only',
+    },
+  ]);
+  const panel = await ready(initial);
+  try {
+    expect(panel.root.textContent).toContain('关联 0 / 配置 0');
+    const card = panel.root.querySelector('.repository-unlinked')!;
+    expect(card.textContent).toContain('未关联');
+    expect(card.querySelector<HTMLInputElement>('[data-development]')?.value).toBe(
+      'feature/scm-only',
+    );
+    expect(card.querySelector<HTMLInputElement>('[data-test]')?.value).toBe('test/scm-only');
+    expect(card.querySelector('[type="checkbox"]')).toBeNull();
+    click(card as HTMLElement, '关联本地目录');
+    expect(panel.edit).toHaveBeenCalledOnce();
+    expect(button(panel.root, '切换开发分支').disabled).toBe(true);
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+it('同一模块匹配多个本地目录时每个仓库只显示一次', async () => {
+  const initial = fixture();
+  initial.subProjects.push({
+    ...initial.subProjects[0],
+    id: 'second',
+    name: 'Second service',
+    path: '/example/second',
+  });
+  const panel = await ready(initial);
+  try {
+    expect(panel.root.querySelectorAll('.repository')).toHaveLength(2);
+    expect(panel.root.querySelectorAll('[data-local-branch]')).toHaveLength(2);
+    expect(
+      [...panel.root.querySelectorAll('.repository-title strong')].map((node) => node.textContent),
+    ).toEqual(['Service', 'Second service']);
+    expect(panel.root.querySelector('.repository-unlinked')).toBeNull();
+  } finally {
+    panel.close();
+  }
+});
