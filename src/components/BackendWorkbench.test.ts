@@ -1268,7 +1268,7 @@ it('单一 SCM 项目与仓库按开发范围展示，关联仓库不重复且�
     );
     expect(section.querySelectorAll('[data-local-branch]')).toHaveLength(1);
     expect(section.querySelector('[data-local-branch]')?.textContent).toContain('develop');
-    expect(section.querySelector('[data-local-branch]')?.textContent).toContain('尚未切换');
+    expect(section.querySelector('[data-local-branch]')?.textContent).not.toContain('尚未切换');
     const unlinked = section.querySelector('.repository-unlinked')!;
     expect(unlinked.textContent).toContain('missing-test');
     expect(unlinked.textContent).toContain('未关联');
@@ -1305,7 +1305,7 @@ it('仓库卡片本地分支随刷新更新，游离 HEAD 不冒充分支', asyn
     click(panel.root, '刷新仓库');
     await flush();
     expect(local()).toContain('feature/local-current');
-    expect(local()).toContain('尚未切换');
+    expect(local()).not.toContain('尚未切换');
     vi.mocked(api.backendRepositoryStatuses).mockResolvedValueOnce(
       statuses.map((status) => ({ ...status, currentBranch: '', head: 'abc123456789' })),
     );

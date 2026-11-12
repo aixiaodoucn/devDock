@@ -840,16 +840,6 @@ onBeforeUnmount(() => {
             "
             >{{ localBranch(repo.id) }}</code
           >
-          <span
-            v-if="
-              statusFor(repo.id)?.currentBranch &&
-              !statusFor(repo.id)?.error &&
-              repo.developmentBranch &&
-              statusFor(repo.id)?.currentBranch !== repo.developmentBranch
-            "
-            class="hint"
-            >尚未切换</span
-          >
           <span v-if="statusFor(repo.id)?.dirty" class="warning">有未提交更改</span>
           <span v-if="statusFor(repo.id)?.merging" class="warning">合并中</span>
           <span v-if="statusFor(repo.id)?.rebasing" class="warning">变基中</span>
