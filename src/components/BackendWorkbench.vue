@@ -849,13 +849,11 @@ onBeforeUnmount(() => {
           <li v-for="item in plan.repositories" :key="item.repository.id">
             <strong>{{ item.repository.name }}</strong>
             <div class="plan-branch">
-              来源分支：<code>{{ item.currentBranch }}</code>
+              当前分支：<code>{{ item.currentBranch }}</code>
             </div>
             <div class="plan-branch">
               目标分支：<code>{{ item.targetBranch }}</code>
             </div>
-            <small>来源提交：{{ item.sourceSha }}</small>
-            <small>目标提交：{{ item.targetSha }}</small>
             <span
               v-if="
                 plan.operation === 'merge' && item.remoteSha && item.targetSha !== item.remoteSha
