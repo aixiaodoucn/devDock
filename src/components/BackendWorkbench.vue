@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { api, desktop } from '../api';
-import { mapBackendModules, scmProjectId } from '../backend-mapping';
+import { syncBackendModules, scmProjectId } from '../backend-mapping';
 import type {
   Project,
   BackendGitPlan,
@@ -22,6 +22,7 @@ const emit = defineEmits<{
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const draft = ref<Project>(copy(props.project));
 const statuses = ref<BackendRepositoryStatus[]>([]);
+const repositoryLoading = ref(false);
 const selected = ref<string[]>(props.project.subProjects.map((item) => item.id));
 const error = ref('');
 const notice = ref('');
@@ -38,6 +39,18 @@ const sessionExpired = ref(false);
 const projects = ref<ScmProject[]>([]);
 const development = ref<ScmModule[]>([]);
 const testing = ref<ScmModule[]>([]);
+const loadedDevelopmentId = ref('');
+const loadedTestId = ref<string | undefined>();
+const statusIdentities = ref<Record<string, string>>({});
+const repositoryIdentity = (repo: Project['subProjects'][number]) =>
+  JSON.stringify([repo.path, repo.remote, repo.scmGitId]);
+function sourceId(value: string): string {
+  try {
+    return value.trim() ? scmProjectId(value) : '';
+  } catch {
+    return value.trim();
+  }
+}
 let generation = 0;
 let stateSequence = 0;
 let repositorySequence = 0;
@@ -87,20 +100,86 @@ const running = computed(
     history.value.some((item) => item.status === 'running' || item.status === 'aborting'),
 );
 const locked = computed(
-  () => props.saving || props.busy || !!activity.value || running.value || !!waiting.value,
-);
-const canPrepare = computed(
   () =>
-    desktop &&
-    !locked.value &&
-    !dirty.value &&
-    selected.value.length > 0 &&
-    selected.value.every((id) => {
-      const repo = draft.value.subProjects.find((item) => item.id === id);
-      return !!repo?.remote.trim() && !!repo.developmentBranch.trim();
-    }),
+    props.saving ||
+    props.busy ||
+    !!activity.value ||
+    repositoryLoading.value ||
+    running.value ||
+    !!waiting.value,
 );
-const statusFor = (id: string) => statuses.value.find((item) => item.id === id);
+const statusFor = (id: string) => {
+  const repo = draft.value.subProjects.find((item) => item.id === id);
+  return repo && statusIdentities.value[id] === repositoryIdentity(repo)
+    ? statuses.value.find((item) => item.id === id)
+    : undefined;
+};
+const developmentLoaded = computed(
+  () =>
+    !!loadedDevelopmentId.value &&
+    loadedDevelopmentId.value === sourceId(draft.value.scmDevelopmentProjectId),
+);
+const mapping = computed(() => {
+  const result = syncBackendModules(
+    draft.value.subProjects.filter((repo) => !statusFor(repo.id)?.error),
+    Object.fromEntries(
+      draft.value.subProjects.map((repo) => [repo.id, statusFor(repo.id)?.remoteUrl ?? '']),
+    ),
+    developmentLoaded.value ? development.value : [],
+    loadedTestId.value ? testing.value : undefined,
+  );
+  return {
+    ...result,
+    repositories: draft.value.subProjects.map(
+      (repo) => result.repositories.find((item) => item.id === repo.id) ?? repo,
+    ),
+  };
+});
+const visibleRepositories = computed(() =>
+  developmentLoaded.value
+    ? draft.value.subProjects.filter((repo) => mapping.value.visibleRepositoryIds.includes(repo.id))
+    : [],
+);
+const selectedRepositories = computed(() =>
+  visibleRepositories.value.filter((repo) => selected.value.includes(repo.id)),
+);
+function disabledReason(operationType: 'switch' | 'merge'): string {
+  if (!desktop) return '请在桌面应用中操作。';
+  if (locked.value)
+    return waiting.value ? '等待保存确认后可操作。' : '加载、保存或执行中，请稍候。';
+  if (!developmentLoaded.value) return '请先加载当前开发 SCM 项目并匹配本地仓库。';
+  if (!visibleRepositories.value.length) return '没有匹配的本地仓库，请添加路径或核对 SCM Git ID。';
+  if (!selectedRepositories.value.length) return '请至少勾选一个关联仓库。';
+  if (dirty.value) return '映射有未保存更改，请先保存映射。';
+  if (
+    selectedRepositories.value.some((repo) => !repo.remote.trim() || !repo.developmentBranch.trim())
+  )
+    return '请补全所选仓库的 remote 和开发分支。';
+  if (
+    selectedRepositories.value.some((repo) => {
+      const status = statusFor(repo.id);
+      return !status || !!status.error || status.dirty || status.merging || status.rebasing;
+    })
+  )
+    return '所选仓库状态未就绪，请刷新并处理未提交更改、合并或变基。';
+  if (operationType === 'merge') {
+    if (
+      draft.value.scmTestProjectId.trim() &&
+      loadedTestId.value !== sourceId(draft.value.scmTestProjectId)
+    )
+      return '测试 SCM 项目已变更，请先加载测试目标。';
+    if (
+      selectedRepositories.value.some(
+        (repo) =>
+          !repo.testBranch.trim() || repo.testBranch.trim() === repo.developmentBranch.trim(),
+      )
+    )
+      return '请为每个仓库配置明确且不同的开发分支和测试分支。';
+  }
+  return '';
+}
+const switchDisabledReason = computed(() => disabledReason('switch'));
+const mergeDisabledReason = computed(() => disabledReason('merge'));
 function valid(token: number) {
   return !disposed && token === generation;
 }
@@ -125,20 +204,30 @@ async function perform(label: string, action: (token: number) => Promise<void>) 
     if (valid(token)) activity.value = '';
   }
 }
-async function refreshRepositories(token = generation) {
-  if (!desktop) return;
+async function refreshRepositories(token = generation, fillIds: string[] = []): Promise<boolean> {
+  if (!desktop) return false;
   const sequence = ++repositorySequence;
+  repositoryLoading.value = true;
+  const repositories = copy(draft.value.subProjects);
   try {
-    const result = await api.backendRepositoryStatuses(copy(props.project.subProjects));
+    const result = await api.backendRepositoryStatuses(repositories);
     if (valid(token) && sequence === repositorySequence) {
       statuses.value = result;
-      // 普通目录及读取失败的仓库仍展示，但不进入批量 Git 操作。
+      statusIdentities.value = Object.fromEntries(
+        repositories.map((repo) => [repo.id, repositoryIdentity(repo)]),
+      );
       const unavailable = new Set(result.filter((item) => item.error).map((item) => item.id));
       selected.value = selected.value.filter((id) => !unavailable.has(id));
+      // 普通刷新只重算范围；新增或身份改变时才填分支，保留既有手工草稿。
+      if (developmentLoaded.value && fillIds.length) applyLoadedMapping(fillIds);
+      return true;
     }
   } catch (reason) {
     if (valid(token) && sequence === repositorySequence) failure(reason);
+  } finally {
+    if (sequence === repositorySequence) repositoryLoading.value = false;
   }
+  return false;
 }
 async function refreshHistory(token = generation) {
   if (!desktop) return;
@@ -223,6 +312,9 @@ watch(
       history.value = [];
       development.value = [];
       testing.value = [];
+      loadedDevelopmentId.value = '';
+      loadedTestId.value = undefined;
+      statusIdentities.value = {};
       push.value = false;
       keepTestPom.value = false;
       cleanConfirmed.value = {};
@@ -245,18 +337,10 @@ watch(
       selected.value = project.subProjects
         .filter((repo) => selected.value.includes(repo.id) || !previousIds.has(repo.id))
         .map((repo) => repo.id);
-      statuses.value = statuses.value.filter((status) => {
-        const previous = persisted.subProjects.find((repo) => repo.id === status.id);
-        const current = project.subProjects.find((repo) => repo.id === status.id);
-        return (
-          previous &&
-          current &&
-          previous.path === current.path &&
-          previous.remote === current.remote
-        );
-      });
+      // 状态按草稿身份校验；保存回执中的新 remote 已读取过，不能按旧 props 丢弃。
+      const currentIds = new Set(project.subProjects.map((repo) => repo.id));
+      statuses.value = statuses.value.filter((status) => currentIds.has(status.id));
       selected.value = selected.value.filter((id) => !statusFor(id)?.error);
-      void refreshRepositories();
     }
     persisted = copy(project);
   },
@@ -270,10 +354,38 @@ watch(
   },
 );
 watch(
-  () => [draft.value.scmDevelopmentProjectId, draft.value.scmTestProjectId],
+  () => sourceId(draft.value.scmDevelopmentProjectId),
   () => {
+    ++generation;
+    activity.value = '';
+    loadedDevelopmentId.value = '';
+    loadedTestId.value = undefined;
     development.value = [];
     testing.value = [];
+  },
+  { flush: 'sync' },
+);
+watch(
+  () => sourceId(draft.value.scmTestProjectId),
+  () => {
+    ++generation;
+    activity.value = '';
+    loadedTestId.value = undefined;
+    testing.value = [];
+  },
+  { flush: 'sync' },
+);
+watch(
+  () => draft.value.subProjects.map((repo) => [repo.id, repositoryIdentity(repo)] as const),
+  (current, previous) => {
+    const old = new Map(previous);
+    const changedIds = current
+      .filter(
+        ([id, identity]) => old.get(id) !== identity && statusIdentities.value[id] !== identity,
+      )
+      .map(([id]) => id);
+    if (changedIds.length || current.length !== previous.length)
+      void refreshRepositories(generation, changedIds);
   },
 );
 watch(
@@ -288,6 +400,8 @@ function connectionChanged(status: ScmStatus) {
   sessionExpired.value = false;
   development.value = [];
   testing.value = [];
+  loadedDevelopmentId.value = '';
+  loadedTestId.value = undefined;
   projects.value = [];
 }
 function loadProjects() {
@@ -296,66 +410,43 @@ function loadProjects() {
     if (valid(token)) projects.value = result;
   });
 }
-function loadModules() {
-  if (!connected.value) return;
-  void perform('加载 SCM 模块', async (token) => {
+function applyLoadedMapping(ids?: string[]) {
+  const mapped = mapping.value.repositories;
+  draft.value.subProjects = draft.value.subProjects.map((repo) =>
+    !ids || ids.includes(repo.id) ? (mapped.find((item) => item.id === repo.id) ?? repo) : repo,
+  );
+  // 映射仅修改 SCM 身份和分支；刚读取的 remote 状态仍属于同一仓库。
+  statusIdentities.value = Object.fromEntries(
+    draft.value.subProjects.map((repo) => [repo.id, repositoryIdentity(repo)]),
+  );
+}
+async function loadModules() {
+  if (!connected.value || !desktop || locked.value) return;
+  let loaded = false;
+  const token = generation;
+  await perform('加载 SCM 模块', async (currentToken) => {
     const devId = scmProjectId(draft.value.scmDevelopmentProjectId);
     const testId = testProjectId();
+    // 使用草稿 remote 获取最新 URL，读取失败时不使用过期状态猜测映射。
+    if (!(await refreshRepositories(currentToken))) return;
     const [dev, test] = await Promise.all([
       api.scmProjectModules(devId),
       testId ? api.scmProjectModules(testId) : Promise.resolve([]),
     ]);
-    if (!valid(token)) return;
+    if (!valid(currentToken)) return;
     development.value = dev;
     testing.value = test;
+    loadedDevelopmentId.value = devId;
+    loadedTestId.value = testId;
+    applyLoadedMapping();
+    loaded = true;
   });
-}
-function applyMapping() {
-  if (locked.value || !development.value.length) return;
-  try {
-    const testId = testProjectId();
-    const urls = Object.fromEntries(
-      statuses.value
-        .filter((status) => {
-          const saved = props.project.subProjects.find((repo) => repo.id === status.id);
-          const current = draft.value.subProjects.find((repo) => repo.id === status.id);
-          // 状态中的 URL 对应已持久化 remote，不能用于猜测刚编辑的新 remote。
-          return !!saved && saved.remote === current?.remote;
-        })
-        .map((status) => [status.id, status.remoteUrl]),
-    );
-    const eligible = draft.value.subProjects.filter((repo) => !statusFor(repo.id)?.error);
-    if (!eligible.length) throw new Error('没有可匹配的 Git 仓库，请先检查子项目目录。');
-    const mapped = mapBackendModules(
-      eligible,
-      urls,
-      development.value,
-      testId ? testing.value : undefined,
-    );
-    draft.value.subProjects = draft.value.subProjects.map(
-      (repo) => mapped.find((item) => item.id === repo.id) ?? repo,
-    );
-    draft.value.scmDevelopmentProjectId = scmProjectId(draft.value.scmDevelopmentProjectId);
-    draft.value.scmTestProjectId = testId ?? '';
-    save();
-  } catch (reason) {
-    failure(reason);
-  }
+  // 保存必须在 perform 释放 activity 锁后触发，父配置回执才表示保存成功。
+  if (loaded && valid(token)) save();
 }
 function prepare(operationType: 'switch' | 'merge') {
-  if (!canPrepare.value) return;
-  const repositories = copy(
-    draft.value.subProjects.filter((item) => selected.value.includes(item.id)),
-  );
-  if (
-    operationType === 'merge' &&
-    repositories.some(
-      (item) => !item.testBranch.trim() || item.testBranch === item.developmentBranch,
-    )
-  ) {
-    error.value = '请为每个仓库配置明确且不同的开发分支和测试分支。';
-    return;
-  }
+  if (disabledReason(operationType)) return;
+  const repositories = copy(selectedRepositories.value);
   plan.value = null;
   void perform('获取远端并预检', async (token) => {
     const result = await api.prepareBackendGit(
@@ -517,15 +608,16 @@ onBeforeUnmount(() => {
           :disabled="!desktop || !connected || locked"
           @click="loadModules"
         >
-          加载模块</button
-        ><button
-          class="button small"
-          :disabled="locked || !development.length"
-          @click="applyMapping"
-        >
-          应用映射并保存
+          加载模块
         </button>
       </div>
+      <p
+        v-for="warning in developmentLoaded ? mapping.warnings : []"
+        :key="warning"
+        class="warning"
+      >
+        {{ warning }}
+      </p>
       <div v-if="development.length || testing.length" class="table-wrap">
         <table>
           <colgroup>
@@ -560,9 +652,14 @@ onBeforeUnmount(() => {
                 <td>
                   {{
                     draft.subProjects
-                      .filter((repo) => !!repo.scmGitId && repo.scmGitId === module.gitId)
+                      .filter(
+                        (repo) =>
+                          visibleRepositories.some((item) => item.id === repo.id) &&
+                          !!repo.scmGitId &&
+                          repo.scmGitId === module.gitId,
+                      )
                       .map((repo) => repo.name)
-                      .join('、') || '尚未映射（按 Git ID / 仓库 URL 匹配）'
+                      .join('、') || '尚未映射，请添加本地路径或核对 SCM Git ID / 仓库 URL'
                   }}
                 </td>
               </tr></template
@@ -574,7 +671,8 @@ onBeforeUnmount(() => {
     <section class="workbench-card" aria-label="本地子仓库">
       <div class="section-heading">
         <h3>
-          本地子仓库 <span>{{ draft.subProjects.length }}</span>
+          本地子仓库
+          <span>关联 {{ visibleRepositories.length }} / 配置 {{ draft.subProjects.length }}</span>
         </h3>
         <div class="toolbar">
           <button
@@ -591,7 +689,13 @@ onBeforeUnmount(() => {
       <p v-if="!draft.subProjects.length" class="empty">
         尚未配置子项目，请通过“编辑项目 / 扫描父目录”添加。
       </p>
-      <div v-for="repo in draft.subProjects" :key="repo.id" class="repository">
+      <p v-else-if="!developmentLoaded" class="empty">
+        已配置{{ draft.subProjects.length }}个子项目，请先加载开发SCM项目
+      </p>
+      <p v-else-if="!visibleRepositories.length" class="empty">
+        暂无关联仓库，请编辑项目添加本地路径或核对 SCM Git ID。
+      </p>
+      <div v-for="repo in visibleRepositories" :key="repo.id" class="repository">
         <div class="repository-heading">
           <label class="repository-title"
             ><input
@@ -656,15 +760,25 @@ onBeforeUnmount(() => {
     <section class="workbench-card" aria-label="Git 批量操作">
       <div class="section-heading">
         <h3>Git 批量操作</h3>
-        <span class="hint">已选 {{ selected.length }} 个仓库</span>
+        <span class="hint">已选 {{ selectedRepositories.length }} 个仓库</span>
       </div>
       <p class="hint">
         先获取远端并预检，核对计划后执行。{{ dirty ? '映射有未保存更改，请先保存。' : '' }}
       </p>
       <div class="toolbar">
-        <button class="button small" :disabled="!canPrepare" @click="prepare('switch')">
+        <button
+          class="button small"
+          :disabled="!!switchDisabledReason"
+          :title="switchDisabledReason || '获取远端并预检，确认计划后切换开发分支。'"
+          @click="prepare('switch')"
+        >
           切换开发分支</button
-        ><button class="button small" :disabled="!canPrepare" @click="prepare('merge')">
+        ><button
+          class="button small"
+          :disabled="!!mergeDisabledReason"
+          :title="mergeDisabledReason || '获取远端并预检，确认计划后合并到测试分支。'"
+          @click="prepare('merge')"
+        >
           合并到测试分支</button
         ><label class="checkbox"
           ><input v-model="push" type="checkbox" :disabled="locked" />合并成功后推送测试分支</label
@@ -674,6 +788,12 @@ onBeforeUnmount(() => {
           pom.xml 冲突时保留测试分支版本
         </label>
       </div>
+      <p class="hint" data-switch-reason>
+        切换开发分支：{{ switchDisabledReason || '可点击预检，确认计划后执行。' }}
+      </p>
+      <p class="hint" data-merge-reason>
+        合并到测试分支：{{ mergeDisabledReason || '可点击预检，确认计划后执行。' }}
+      </p>
       <div v-if="plan" class="plan">
         <h4>确认 Git 计划</h4>
         <p>
