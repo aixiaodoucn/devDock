@@ -1,6 +1,6 @@
 {
   "name": "dev-dock",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.10.0",
