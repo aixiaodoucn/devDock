@@ -527,8 +527,16 @@ impl Runtime {
             .session
             .as_mut()
             .ok_or_else(|| SESSION_EXPIRED.to_string())?;
+        // 对应站点“当前负责人 / 全部”，默认无参数列表会遗漏待处理项目。
         let result = session
-            .get("/kpi/project/list", &[])
+            .get(
+                "/kpi/project/list",
+                &[
+                    ("author", session.username.as_str()),
+                    ("show", "1"),
+                    ("project_name", ""),
+                ],
+            )
             .await
             .and_then(|html| parse_projects(&html));
         if let Err(ref error) = result {
@@ -908,6 +916,83 @@ mod tests {
         let conflicting = parse_projects(&PROJECTS.replace("id=12", "id=13")).unwrap();
         assert_eq!(conflicting.len(), 1);
         assert_eq!(conflicting[0].id, "99");
+    }
+
+    #[test]
+    fn project_list_requests_all_states_for_current_account() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        for username in ["synthetic-user", "synthetic+user@example.invalid"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+            let expected_username = username.to_owned();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut first_line = String::new();
+                reader.read_line(&mut first_line).unwrap();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut request = first_line.split_whitespace();
+                assert_eq!(request.next(), Some("GET"));
+                let url = Url::parse("http://example.invalid/")
+                    .unwrap()
+                    .join(request.next().unwrap())
+                    .unwrap();
+                assert_eq!(url.path(), "/kpi/project/list");
+                let query: std::collections::HashMap<_, _> =
+                    url.query_pairs().into_owned().collect();
+                let all_for_user = query.get("show").map(String::as_str) == Some("1")
+                    && query.get("author").map(String::as_str) == Some(expected_username.as_str())
+                    && query.get("project_name").map(String::as_str) == Some("");
+                // 模拟真实站点：省略筛选只返回两个测试环境，当前账号+全部返回七项。
+                let start = if all_for_user { 0 } else { 5 };
+                let rows = (start..7).map(|index| {
+                    let state = if index < 5 { "待处理" } else { "测试环境" };
+                    format!("<tr><td>{}</td><td>Synthetic project {index}</td><td>{state}</td></tr>", 101 + index)
+                }).collect::<String>();
+                let html = format!("<table><tr><th>项目ID</th><th>项目名称</th><th>项目状态</th></tr>{rows}</table>");
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", html.len(), html).unwrap();
+                query
+            });
+            // 测试会话仅连接 loopback；公开登录入口仍要求 HTTPS。
+            let mut session = new_session(base, username.into()).unwrap();
+            session.client = Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap();
+            let store = Arc::new(FakeCredentialStore::default());
+            let runtime = Runtime {
+                state: Mutex::new(RuntimeState {
+                    loaded: true,
+                    session: Some(session),
+                    ..Default::default()
+                }),
+                credentials: store.clone(),
+            };
+            let projects = tauri::async_runtime::block_on(runtime.projects()).unwrap();
+            let query = server.join().unwrap();
+            assert_eq!(projects.len(), 7);
+            assert_eq!(
+                projects
+                    .iter()
+                    .filter(|project| project.status.as_deref() == Some("待处理"))
+                    .count(),
+                5
+            );
+            assert_eq!(query.get("author").map(String::as_str), Some(username));
+            assert_eq!(query.get("show").map(String::as_str), Some("1"));
+            assert_eq!(store.counts(), (0, 0, 0));
+        }
     }
 
     #[test]
