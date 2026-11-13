@@ -40,18 +40,18 @@ macOS 构建结果位于 `src-tauri/target/release/bundle/`。对外分发前需
 例如准备发布 `0.2.0`：
 
 ```sh
-pnpm version:set 0.2.0
+pnpm version:set 0.3.0
 pnpm version:check
 git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
-git commit -m "chore(release): 发布 0.2.0"
-git tag v0.2.0
+git commit -m "chore(release): 发布 0.3.0"
+git tag v0.3.0
 ```
 
 确认提交与 Tag 后，手动推送到 GitHub。以下示例使用本地已配置的 `github` 远程名，其他克隆需替换为实际 GitHub 远程名（通常为 `origin`）：
 
 ```sh
 git push github master
-git push github v0.2.0
+git push github v0.3.0
 ```
 
 推送 Tag 后，在 GitHub 完成以下步骤：
