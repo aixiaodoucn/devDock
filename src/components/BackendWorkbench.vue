@@ -785,16 +785,12 @@ onBeforeUnmount(() => {
               class="repository-metadata"
               >模块：{{ repo.scmModuleName }}</span
             >
-            <label class="repository-metadata"
-              >Remote<input :value="repo.remote" data-remote readonly :title="repo.remote"
-            /></label>
-            <label class="repository-metadata"
-              >SCM Git ID<input
-                :value="repo.scmGitId"
-                data-scm-git-id
-                readonly
-                :title="repo.scmGitId"
-            /></label>
+            <span class="repository-metadata"
+              >Remote：<code data-remote>{{ repo.remote || '未配置' }}</code></span
+            >
+            <span class="repository-metadata"
+              >SCM Git ID：<code data-scm-git-id>{{ repo.scmGitId || '未关联' }}</code></span
+            >
           </div>
           <div class="toolbar">
             <button class="button small" :disabled="!desktop" @click="openPath(repo.path)">
@@ -844,13 +840,9 @@ onBeforeUnmount(() => {
           <div class="repository-identity">
             <strong>{{ module.moduleName }}</strong
             ><span class="hint">未关联</span>
-            <label class="repository-metadata"
-              >SCM Git ID<input
-                :value="module.gitId || ''"
-                data-scm-git-id
-                readonly
-                :title="module.gitId || ''"
-            /></label>
+            <span class="repository-metadata"
+              >SCM Git ID：<code data-scm-git-id>{{ module.gitId || '未提供' }}</code></span
+            >
           </div>
           <button class="button small" :disabled="locked" @click="emit('edit')">
             关联本地目录
@@ -1172,12 +1164,9 @@ input:not([type='checkbox']) {
   color: var(--muted);
   font-size: 11px;
 }
-.repository-metadata input {
-  width: 88px;
-  height: 26px;
-  padding: 3px 7px;
-  font-family: var(--mono);
-  font-size: 11px;
+.repository-metadata code {
+  min-width: 0;
+  color: var(--ink);
 }
 .mapping-branch {
   display: grid;

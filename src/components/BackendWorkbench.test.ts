@@ -928,9 +928,9 @@ it('映射字段只读且没有保存映射按钮，SCM 自动保存不导出凭
   try {
     expect(button(panel.root, '保存映射')).toBeUndefined();
     expect(panel.root.querySelector('[data-save]')).toBeNull();
-    for (const selector of ['[data-remote]', '[data-scm-git-id]']) {
-      expect(panel.root.querySelector<HTMLInputElement>(selector)!.readOnly, selector).toBe(true);
-    }
+    expect(panel.root.querySelector('input[data-remote], input[data-scm-git-id]')).toBeNull();
+    expect(panel.root.querySelector('code[data-remote]')?.textContent).toBe('origin');
+    expect(panel.root.querySelector('code[data-scm-git-id]')?.textContent).toBe('42');
     expect(panel.root.querySelector('input[data-development], input[data-test]')).toBeNull();
     expect(panel.root.querySelector('code[data-development]')?.textContent).toBe('develop');
     expect(panel.root.querySelector('code[data-test]')?.textContent).toBe('test');
@@ -1284,7 +1284,8 @@ it('单一 SCM 项目与仓库按开发范围展示，关联仓库不重复且�
     expect(unlinked.textContent).toContain('missing-test');
     expect(unlinked.textContent).toContain('未关联');
     expect(unlinked.querySelector('[type="checkbox"]')).toBeNull();
-    expect(unlinked.querySelector<HTMLInputElement>('[data-scm-git-id]')?.value).toBe('43');
+    expect(unlinked.querySelector('input[data-scm-git-id]')).toBeNull();
+    expect(unlinked.querySelector('code[data-scm-git-id]')?.textContent).toBe('43');
     expect(unlinked.querySelector<HTMLElement>('[data-development]')?.textContent).toBe(
       'feature/other',
     );
