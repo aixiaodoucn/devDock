@@ -1,5 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { downloadDir, join } from '@tauri-apps/api/path';
 import type {
   AppConfig,
   Project,
@@ -196,8 +197,14 @@ export const api = {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       return true;
     }
+    let defaultPath = `dev-dock-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    try {
+      defaultPath = await join(await downloadDir(), defaultPath);
+    } catch {
+      // 系统未提供下载目录时，仍允许通过保存对话框自行选择位置。
+    }
     const path = await save({
-      defaultPath: `dev-dock-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      defaultPath,
       filters: [{ name: 'JSON 备份', extensions: ['json'] }],
     });
     if (!path) return false;

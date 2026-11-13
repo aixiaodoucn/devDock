@@ -2,13 +2,47 @@
 import { isProxy, reactive } from 'vue';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
+import { downloadDir, join } from '@tauri-apps/api/path';
+import { save } from '@tauri-apps/plugin-dialog';
 import { api } from './api';
 import { defaultConfig, newProject } from './types';
 
 vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => true, invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/path', () => ({ downloadDir: vi.fn(), join: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 
 describe('环境体检与构建历史的桌面接口', () => {
   beforeEach(() => vi.resetAllMocks());
+
+  it('导出默认定位系统下载目录，实际写入用户选定的位置', async () => {
+    const config = defaultConfig();
+    const filename = `dev-dock-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    vi.mocked(downloadDir).mockResolvedValue('/example/Downloads');
+    vi.mocked(join).mockResolvedValue(`/example/Downloads/${filename}`);
+    vi.mocked(save).mockResolvedValue('/example/selected/backup.json');
+    expect(await api.exportBackup(config)).toBe(true);
+    expect(join).toHaveBeenCalledWith('/example/Downloads', filename);
+    expect(save).toHaveBeenCalledWith({
+      defaultPath: `/example/Downloads/${filename}`,
+      filters: [{ name: 'JSON 备份', extensions: ['json'] }],
+    });
+    expect(invoke).toHaveBeenCalledWith('write_backup', {
+      path: '/example/selected/backup.json',
+      config,
+    });
+  });
+
+  it('下载目录不可用时仍显示保存对话框，取消不写入', async () => {
+    vi.mocked(downloadDir).mockRejectedValue(new Error('下载目录不可用'));
+    vi.mocked(save).mockResolvedValue(null);
+    expect(await api.exportBackup(defaultConfig())).toBe(false);
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultPath: `dev-dock-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      }),
+    );
+    expect(invoke).not.toHaveBeenCalled();
+  });
 
   it('Node 检测兼容无参请求并支持显式管理器与自定义目录', async () => {
     vi.mocked(invoke).mockResolvedValue([]);
