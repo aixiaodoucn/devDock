@@ -1,5 +1,6 @@
 mod accessibility;
 mod ai;
+mod app_identity;
 mod backend_git;
 mod build_history;
 mod config;
@@ -817,6 +818,8 @@ mod package_tests {
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    app_identity::configure(context.config_mut(), cfg!(debug_assertions));
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -838,11 +841,8 @@ pub fn run() {
                 .open(dir.join("instance.lock"))?;
             lock.try_lock()
                 .map_err(|e| std::io::Error::other(format!("DevDock 已在运行: {e}")))?;
-            let old_dir = dir.with_file_name("com.aidev.desktop");
-            let legacy_lock =
-                config::migrate_legacy(&old_dir, &dir).map_err(std::io::Error::other)?;
-            // 同时持有新旧实例锁，迁移后的恢复与构建仍受跨版本互斥保护。
-            app.manage((lock, legacy_lock));
+            // 两个发行渠道仅使用各自目录，不读取、迁移或锁定旧包名的数据。
+            app.manage(lock);
             let mut logs =
                 tasks::recover(app.handle()).unwrap_or_else(|e| vec![format!("启动恢复失败: {e}")]);
             // 历史恢复使用同一实例锁保护；历史损坏保留原文件，不阻止项目工作台启动。
@@ -903,7 +903,7 @@ pub fn run() {
             tray::show_main_window,
             tray::hide_quick_panel
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("无法初始化 DevDock");
     app.run(|handle, event| match event {
         #[cfg(target_os = "macos")]

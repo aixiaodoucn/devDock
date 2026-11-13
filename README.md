@@ -11,6 +11,10 @@ pnpm install
 pnpm tauri dev
 ```
 
+`pnpm tauri dev` 启动独立的 **DevDock Dev**，可与已安装的 **DevDock** 正式版同时运行。开发版窗口标题与托盘菜单带 Dev 标识，macOS 菜单栏图标旁直接显示 `Dev`。正式版包名为 `cn.aixiaodou.devdock`，开发版为 `cn.aixiaodou.devdock.dev`；配置、构建历史、Git 操作记录、实例锁及 SCM 记住登录的凭据分别保存。两个版本都不自动迁移或复制旧包名的数据，新目录首次启动为空工作台，需要时通过 JSON 备份手动导入项目。macOS 开发版数据位于 `~/Library/Application Support/cn.aixiaodou.devdock.dev/`，Windows 位于 `%APPDATA%\\cn.aixiaodou.devdock.dev\\`。旧数据原样保留，不自动搬移或清理。macOS 辅助功能与自动化权限需要按应用分别授权。
+
+正常开发仍使用上面的启动命令；直接调用 CLI 时需用 `pnpm exec tauri dev --config src-tauri/tauri.dev.conf.json`。`pnpm tauri build` 保持正式版身份；debug 构建在运行时也会使用独立的开发数据目录，避免绕过启动脚本后误写正式版。可运行 `pnpm test:dev` 检查启动参数与应用身份配置。
+
 仅预览界面可运行 `pnpm dev`。浏览器预览使用独立 localStorage，不读写桌面应用配置，不执行本地构建和终端命令。
 
 ```sh
@@ -381,9 +385,9 @@ AI_ALERT_EMAIL_ENABLED=false;ALERT_EMAIL_FROM=示例发件人 <sender@example.co
 - 导入不会执行命令。路径可能来自其他机器；执行前需确认路径和导入的自定义命令。
 - 命令中的敏感值会随配置导出，请妥善保存备份文件。
 
-macOS 配置与恢复记录位于 `~/Library/Application Support/com.devdock.desktop/`。配置写入采用临时文件与原子替换；单实例锁防止另一实例误恢复正在构建的 AppID。
+macOS 正式版配置与恢复记录位于 `~/Library/Application Support/cn.aixiaodou.devdock/`，开发版位于 `~/Library/Application Support/cn.aixiaodou.devdock.dev/`；Windows 使用 `%APPDATA%` 下对应包名的目录。配置写入采用临时文件与原子替换；每个渠道分别持有实例锁，正式版与开发版可以同时运行。
 
-首次升级会从旧版 `com.aidev.desktop` 数据目录复制配置及待恢复记录，保留旧数据，不覆盖已存在的 DevDock 配置。请先退出旧版应用再启动 DevDock，避免两版同时操作同一业务项目。应用标识已更新，macOS 可能需要重新授予自动化和辅助功能权限。旧 JSON 备份仍可导入。
+两个新包名均不自动读取或迁移旧版目录，旧文件保持原样。需要已有项目时可手动导入 JSON 备份。应用标识已更新，macOS 可能需要分别重新授予自动化和辅助功能权限。
 
 ## 公开源码与本地数据
 

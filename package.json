@@ -15,7 +15,8 @@
     "version:check": "node scripts/version.mjs check",
     "format": "prettier --write src index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/capabilities/main.json",
     "format:check": "prettier --check src index.html package.json tsconfig.json vite.config.ts src-tauri/tauri.conf.json src-tauri/capabilities/main.json",
-    "tauri": "tauri"
+    "test:dev": "node --test scripts/test-dev.mjs",
+    "tauri": "node scripts/tauri.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.0",

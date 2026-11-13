@@ -58,10 +58,20 @@ trait CredentialStore: Send + Sync {
 
 struct SystemCredentialStore;
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn credential_service(debug_assertions: bool) -> &'static str {
+    // 开发构建使用独立命名空间，避免读写或删除正式版会话。
+    if debug_assertions {
+        "cn.aixiaodou.devdock.dev.scm"
+    } else {
+        "cn.aixiaodou.devdock.scm"
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 impl SystemCredentialStore {
     fn entry(&self) -> Result<keyring::Entry> {
-        keyring::Entry::new("com.devdock.desktop.scm", "default")
+        keyring::Entry::new(credential_service(cfg!(debug_assertions)), "default")
             .map_err(|_| CREDENTIAL_WARNING.into())
     }
 }
@@ -836,6 +846,25 @@ fn parse_modules(html: &str, repositories: &[Repository]) -> Result<Vec<ScmModul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_service_isolates_development_and_preserves_release_namespace() {
+        let development = credential_service(true);
+        let release = credential_service(false);
+        assert_eq!(development, "cn.aixiaodou.devdock.dev.scm");
+        assert_eq!(release, "cn.aixiaodou.devdock.scm");
+        assert_ne!(development, release);
+    }
+
+    #[test]
+    fn credential_service_matches_build_mode() {
+        let expected = if cfg!(debug_assertions) {
+            "cn.aixiaodou.devdock.dev.scm"
+        } else {
+            "cn.aixiaodou.devdock.scm"
+        };
+        assert_eq!(credential_service(cfg!(debug_assertions)), expected);
+    }
 
     const PROJECTS: &str = r#"<table><tr><th>项目名称</th><th>项目状态</th><th>项目ID</th></tr>
       <tr><td><a href='/kpi/project/project?id=12'>Example app</a></td><td>开发中</td><td>12</td></tr>

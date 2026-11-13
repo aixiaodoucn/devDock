@@ -384,7 +384,9 @@ pub fn atomic_write(path: &Path, data: &str) -> Result<()> {
     }
     result
 }
+// 历史迁移逻辑仅保留回归测试，不再由新包名的应用启动流程调用。
 // 调用方须先取得新版实例锁；返回的旧版锁应持有到应用退出，避免两个版本同时修改项目。
+#[cfg(test)]
 pub fn migrate_legacy(old_dir: &Path, new_dir: &Path) -> Result<Option<std::fs::File>> {
     use std::fs;
     let old_config = old_dir.join("config.json");

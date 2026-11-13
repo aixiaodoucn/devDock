@@ -188,13 +188,14 @@ fn report_error(app: &AppHandle, error: String) {
 }
 
 pub fn init(app: &AppHandle) -> tauri::Result<()> {
+    let app_name = app.config().product_name.as_deref().unwrap_or("DevDock");
     // 提前隐藏创建，前端可在首次点击前完成事件监听；主窗口继续默认显示。
     let panel = WebviewWindowBuilder::new(
         app,
         QUICK_PANEL,
         WebviewUrl::App("index.html?view=quick".into()),
     )
-    .title("DevDock 快捷操作")
+    .title(format!("{app_name} 快捷操作"))
     .inner_size(390., 560.)
     .visible(false)
     .focused(false)
@@ -220,8 +221,20 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
             }
         });
     }
-    let open = MenuItem::with_id(app, "tray-open-main", "打开 DevDock", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "tray-quit", "退出 DevDock", true, None::<&str>)?;
+    let open = MenuItem::with_id(
+        app,
+        "tray-open-main",
+        format!("打开 {app_name}"),
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(
+        app,
+        "tray-quit",
+        format!("退出 {app_name}"),
+        true,
+        None::<&str>,
+    )?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
     // Windows 任务栏不应用 macOS 模板着色，使用彩色图标兼容深浅任务栏。
     let icon: &[u8] = if cfg!(target_os = "macos") {
@@ -229,11 +242,14 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
     } else {
         include_bytes!("../icons/icon.png")
     };
-    TrayIconBuilder::with_id(TRAY_ID)
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(icon)?)
         .icon_as_template(cfg!(target_os = "macos"))
-        .tooltip("DevDock")
-        .menu(&menu)
+        .tooltip(app_name);
+    // 菜单栏图标旁直接标明开发版，两个实例同时运行时也能区分。
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    let tray = tray.title("Dev");
+    tray.menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "tray-open-main" => {
