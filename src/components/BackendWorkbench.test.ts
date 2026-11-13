@@ -305,25 +305,25 @@ it('开发与测试 SCM 选择候选后收起下拉且保留ID，普通输入不
   try {
     click(panel.root, '加载项目列表');
     await flush();
-    const fields = panel.root.querySelectorAll<HTMLInputElement>('[list="backend-scm-projects"]');
+    const fields = panel.root.querySelectorAll<HTMLInputElement>('[data-scm-project-input]');
     fields[0].focus();
-    fields[0].value = '101';
-    fields[0].dispatchEvent(
-      new InputEvent('input', { inputType: 'insertText', data: '1', bubbles: true }),
-    );
+    fields[0].value = '10';
+    fields[0].dispatchEvent(new Event('input', { bubbles: true }));
     await flush();
     expect(document.activeElement).toBe(fields[0]);
-    fields[0].dispatchEvent(new Event('change', { bubbles: true }));
+    const developmentList = panel.root.querySelector(
+      `#${fields[0].getAttribute('aria-controls')}`,
+    )!;
+    developmentList.querySelector<HTMLElement>('[data-project-id="101"]')!.click();
     await flush();
-    expect(document.activeElement).not.toBe(fields[0]);
+    expect(fields[0].getAttribute('aria-expanded')).toBe('false');
     expect(fields[0].value).toBe('101');
     fields[1].focus();
-    fields[1].value = '102';
-    fields[1].dispatchEvent(
-      new InputEvent('input', { inputType: 'insertReplacementText', data: '102', bubbles: true }),
-    );
     await flush();
-    expect(document.activeElement).not.toBe(fields[1]);
+    const testingList = panel.root.querySelector(`#${fields[1].getAttribute('aria-controls')}`)!;
+    testingList.querySelector<HTMLElement>('[data-project-id="102"]')!.click();
+    await flush();
+    expect(fields[1].getAttribute('aria-expanded')).toBe('false');
     expect(fields[1].value).toBe('102');
     expect(fields[0].value).toBe('101');
     expect(api.scmProjectModules).not.toHaveBeenCalled();
@@ -342,21 +342,32 @@ it('待处理和测试项目全部进入开发及测试来源的共享候选列�
   }));
   vi.mocked(api.scmProjects).mockResolvedValueOnce(projects);
   const panel = await mount();
+  document.body.append(panel.root);
   try {
     click(panel.root, '加载项目列表');
     await flush();
-    const options = [
-      ...panel.root.querySelectorAll<HTMLOptionElement>('#backend-scm-projects option'),
-    ];
-    expect(options.map((option) => option.value)).toEqual(projects.map((project) => project.id));
-    expect(options.map((option) => option.textContent?.trim())).toEqual(
-      projects.map((project) => project.name),
-    );
-    expect(panel.root.querySelectorAll('[list="backend-scm-projects"]')).toHaveLength(2);
+    const fields = panel.root.querySelectorAll<HTMLInputElement>('[data-scm-project-input]');
+    expect(fields).toHaveLength(2);
+    expect(panel.root.querySelector('datalist')).toBeNull();
+    for (const field of fields) {
+      field.focus();
+      await flush();
+      const list = panel.root.querySelector(`#${field.getAttribute('aria-controls')}`)!;
+      const options = [...list.querySelectorAll<HTMLElement>('[role="option"]')];
+      expect(options.map((option) => option.dataset.projectId)).toEqual(
+        projects.map((project) => project.id),
+      );
+      options.forEach((option, index) =>
+        expect(option.textContent).toContain(projects[index].name),
+      );
+      field.blur();
+      await flush();
+    }
     expect(api.scmProjectModules).not.toHaveBeenCalled();
     expect(api.executeBackendGit).not.toHaveBeenCalled();
   } finally {
     panel.close();
+    panel.root.remove();
   }
 });
 
@@ -398,13 +409,13 @@ it('外部新增子项目在开发源加载前不展示，且保留未保存开�
   initial.scmDevelopmentProjectId = '';
   const panel = await mount(initial);
   try {
-    input(panel.root, '[list="backend-scm-projects"]', '123');
+    input(panel.root, '[data-scm-project-input]', '123');
     await flush();
     panel.project.value = { ...initial, subProjects: fixture().subProjects };
     await flush();
     expect(panel.root.querySelector('.repository-title')).toBeNull();
     expect(panel.root.textContent).toContain('已配置1个子项目，请先加载开发SCM项目');
-    expect(panel.root.querySelector<HTMLInputElement>('[list="backend-scm-projects"]')!.value).toBe(
+    expect(panel.root.querySelector<HTMLInputElement>('[data-scm-project-input]')!.value).toBe(
       '123',
     );
     click(panel.root, '加载模块');
