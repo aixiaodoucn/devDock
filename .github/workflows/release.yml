@@ -120,6 +120,10 @@ jobs:
             'Windows 当前提供基础工作台，HBuilderX 自动化与 APK/WGT 构建暂未支持。' \
             'Windows 安装包未签名；macOS 使用 ad-hoc 签名，未包含 Apple 公证。' \
             > release-notes.md
+          # 优先使用随版本提交的功能说明；旧标签仍沿用通用安装说明。
+          if [ -f "docs/release-$RELEASE_TAG.md" ]; then
+            cp "docs/release-$RELEASE_TAG.md" release-notes.md
+          fi
 
           # 公开版本不覆盖；失败留下的草稿可在同一 Tag 的重跑中继续上传。
           if state="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>release-query.log)"; then

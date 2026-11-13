@@ -37,6 +37,7 @@ function fixture({
   omitUpdate = false,
   duplicateUpdate = false,
   nestedMac = false,
+  releaseNotes,
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'devdock-release-'));
   const bin = join(dir, 'bin');
@@ -108,6 +109,10 @@ esac
       renameSync(join(mac, name), join(mac, name.includes('.dmg') ? 'dmg' : 'macos', name));
     }
   }
+  if (releaseNotes !== undefined) {
+    mkdirSync(join(dir, 'docs'));
+    writeFileSync(join(dir, 'docs', 'release-v0.1.0.md'), releaseNotes);
+  }
   writeFileSync(join(dir, 'publish.sh'), publishScript);
   return {
     run() {
@@ -135,7 +140,9 @@ esac
       const manifest = existsSync(manifestPath)
         ? JSON.parse(readFileSync(manifestPath, 'utf8'))
         : undefined;
-      return { ...result, calls, manifest };
+      const notesPath = join(dir, 'release-notes.md');
+      const notes = existsSync(notesPath) ? readFileSync(notesPath, 'utf8') : undefined;
+      return { ...result, calls, manifest, notes };
     },
     dispose() {
       rmSync(dir, { recursive: true, force: true });
@@ -151,6 +158,19 @@ function scenario(options, verify) {
   }
 }
 const unixOnly = { skip: process.platform === 'win32' };
+
+test('Release 草稿使用对应版本的发布说明，缺少文档时保留安装说明', unixOnly, () => {
+  const releaseNotes = '# DevDock v0.1.0\n\n- 新增示例功能。\n';
+  scenario({ releaseNotes }, ({ status, stderr, notes, calls }) => {
+    assert.equal(status, 0, stderr);
+    assert.equal(notes, releaseNotes);
+    assert.match(calls, /--notes-file release-notes\.md/);
+  });
+  scenario({}, ({ status, stderr, notes }) => {
+    assert.equal(status, 0, stderr);
+    assert.match(notes, /Windows x64/);
+  });
+});
 
 test('两个平台校验成功后创建草稿并上传安装包，不自动公开', unixOnly, () => {
   scenario({}, ({ status, calls, stderr, manifest }) => {
