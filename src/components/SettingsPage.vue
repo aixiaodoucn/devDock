@@ -263,8 +263,21 @@ watch(
               @error="emit('error', $event)"
             />
             <fieldset class="settings-node-fields form-stack" :disabled="saving || busy">
-              <div>
+              <div class="settings-node-heading">
                 <label for="settings-node-manager" class="field-label">公共 Node.js 环境</label>
+                <button
+                  v-if="nodeMode === 'nvm' || nodeMode === 'fnm'"
+                  type="button"
+                  class="button small"
+                  :disabled="saving || busy || detectingNode || !desktop"
+                  @click="detectNodeRoot()"
+                >
+                  <RefreshCw :size="14" :class="{ spinning: detectingNode }" />{{
+                    detectingNode ? '检测中…' : '检测本地目录'
+                  }}
+                </button>
+              </div>
+              <div class="settings-node-selection">
                 <select id="settings-node-manager" v-model="nodeMode">
                   <option v-if="!nodeMode" value="">未设置（保留已有项目配置）</option>
                   <option
@@ -275,13 +288,8 @@ watch(
                     {{ label }}
                   </option>
                 </select>
-                <p class="field-help">
-                  未设置时，新建且未指定版本的项目使用终端默认环境，旧项目的 nvm
-                  选择保持不变。明确设置后，公共 Node.js 环境对项目统一生效。
-                </p>
-              </div>
-              <template v-if="nodeMode === 'nvm' || nodeMode === 'fnm'">
                 <PathInput
+                  v-if="nodeMode === 'nvm' || nodeMode === 'fnm'"
                   :key="nodeMode"
                   v-model="nodeRoot"
                   label="公共 Node.js 版本数据目录"
@@ -292,23 +300,17 @@ watch(
                   "
                   @error="emit('error', $event)"
                 />
+              </div>
+              <p class="field-help">
+                未设置时，新建且未指定版本的项目使用终端默认环境，旧项目的 nvm
+                选择保持不变。明确设置后，公共 Node.js 环境对项目统一生效。
+              </p>
+              <template v-if="nodeMode === 'nvm' || nodeMode === 'fnm'">
                 <p class="field-help">
                   {{
                     nodeMode === 'nvm' ? 'NVM_DIR / NVM_HOME' : 'FNM_DIR'
                   }}：请选择非空的绝对目录，仅保存配置，不执行或安装管理器。
                 </p>
-                <div>
-                  <button
-                    type="button"
-                    class="button small"
-                    :disabled="saving || busy || detectingNode || !desktop"
-                    @click="detectNodeRoot()"
-                  >
-                    <RefreshCw :size="14" :class="{ spinning: detectingNode }" />{{
-                      detectingNode ? '检测中…' : '检测本地目录'
-                    }}
-                  </button>
-                </div>
                 <label v-if="nodeRoots.length > 1" for="settings-node-root"
                   >选择检测到的版本数据目录
                   <select
@@ -499,6 +501,28 @@ watch(
   padding: 16px 0 0;
   border: 0;
   border-top: 1px solid var(--line);
+}
+.settings-node-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.settings-node-heading .field-label {
+  margin: 0;
+}
+.settings-node-selection {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.settings-node-selection > select {
+  width: 240px;
+  max-width: 100%;
+}
+.settings-node-selection > :deep(.path-input) {
+  flex: 1;
+  min-width: 240px;
 }
 .settings-tool-actions {
   flex-shrink: 0;
