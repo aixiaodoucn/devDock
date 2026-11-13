@@ -678,15 +678,6 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="backend-workbench">
-    <header class="workbench-heading">
-      <div>
-        <span class="eyebrow">REPOSITORIES &amp; DELIVERY</span>
-        <h2>后端工作台</h2>
-      </div>
-      <button class="button small" :disabled="locked" @click="emit('edit')">
-        编辑项目 / 扫描父目录
-      </button>
-    </header>
     <p v-if="!desktop" class="hint">浏览器预览：可编辑映射，SCM 与 Git 操作需要桌面应用。</p>
     <p v-if="error" role="alert" class="error">{{ error }}</p>
     <p v-if="waiting" role="status">
@@ -1056,17 +1047,12 @@ onBeforeUnmount(() => {
   gap: 14px;
   color: var(--ink);
 }
-.workbench-heading,
 .section-heading,
 .repository-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-}
-h2 {
-  margin: 5px 0 0;
-  font-size: 22px;
 }
 h3,
 h4 {
@@ -1346,9 +1332,6 @@ code {
   .mapping-fields,
   .scm-projects {
     grid-template-columns: 1fr 1fr;
-  }
-  .workbench-heading {
-    align-items: flex-start;
   }
   .section-heading {
     flex-wrap: wrap;

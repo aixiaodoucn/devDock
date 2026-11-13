@@ -1299,9 +1299,6 @@ it('单一 SCM 项目与仓库按开发范围展示，关联仓库不重复且�
     expect(section.querySelector('.repository')?.textContent).toContain('模块：service');
     expect(section.textContent).not.toContain('编辑子项目');
     expect(section.querySelector('input[data-development], input[data-test]')).toBeNull();
-    click(panel.root, '编辑项目 / 扫描父目录');
-    expect(panel.edit).toHaveBeenCalledOnce();
-    panel.edit.mockClear();
     expect(section.querySelector<HTMLElement>('.repository [data-development]')?.textContent).toBe(
       'feature/current',
     );
