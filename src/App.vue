@@ -30,6 +30,7 @@ import {
   Activity,
   ArrowLeft,
   History,
+  GitBranch as GitBranchIcon,
 } from 'lucide-vue-next';
 import ProjectDialog from './components/ProjectDialog.vue';
 import GitBranch from './components/GitBranch.vue';
@@ -798,7 +799,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         </div>
         <h1>项目就位，<br />开发开始<span>.</span></h1>
         <p class="welcome-description">
-          把项目、构建和常用命令放在一起。<br />少一点切换，多一点专注。
+          把项目、构建、常用命令和 SCM 分支放在一起。<br />少一点切换，多一点专注。
         </p>
         <button class="button primary welcome-add" @click="editing = newProject()">
           <Plus :size="18" />添加第一个项目<ArrowUpRight :size="18" />
@@ -821,6 +822,12 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
             <span class="mono">03 / DEVELOP</span>
             <h3>终端命令</h3>
             <p>用你喜欢的终端<br />启动每个项目的开发环境。</p>
+          </div>
+          <div>
+            <div class="feature-icon"><GitBranchIcon :size="23" /></div>
+            <span class="mono">04 / SCM</span>
+            <h3>后端与 SCM</h3>
+            <p>管理子仓库，同步开发与测试分支。<br />预检确认后，批量切换、推送与合并。</p>
           </div>
         </div>
         <div class="welcome-footer">

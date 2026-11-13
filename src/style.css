@@ -1413,7 +1413,7 @@ button {
 }
 .welcome-features {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-top: 36px;
   border-top: 1px solid var(--line);
   padding-top: 20px;
@@ -1944,6 +1944,13 @@ button {
   }
   .welcome-page {
     padding: 32px 24px 20px;
+  }
+  .welcome-features {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 24px;
+  }
+  .welcome-features > div:nth-child(2n) {
+    border-right: 0;
   }
   .page-heading h1 {
     font-size: 26px;
