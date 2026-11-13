@@ -85,10 +85,10 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .theme-preview {
-  --preview-accent: #6941c6;
-  --preview-sidebar: #211a36;
-  --preview-surface: #f8f7fb;
-  --preview-line: #d6c7f2;
+  --preview-accent: #6257a6;
+  --preview-sidebar: #252735;
+  --preview-surface: #f5f5f8;
+  --preview-line: #d3cde5;
   position: relative;
   display: flex;
   gap: 6px;
@@ -106,28 +106,28 @@
   --preview-line: #c4d6fc;
 }
 .theme-preview.cyan {
-  --preview-accent: #0f766e;
-  --preview-sidebar: #102e2a;
-  --preview-surface: #f5f9f8;
-  --preview-line: #b6dfd1;
+  --preview-accent: #287366;
+  --preview-sidebar: #202e2a;
+  --preview-surface: #f4f6f5;
+  --preview-line: #c3d9ce;
 }
 .theme-preview.rose {
-  --preview-accent: #be185d;
-  --preview-sidebar: #321c29;
-  --preview-surface: #fcf7f9;
-  --preview-line: #f2bfd4;
+  --preview-accent: #9b5366;
+  --preview-sidebar: #30272c;
+  --preview-surface: #f7f5f5;
+  --preview-line: #e1cbd2;
 }
 .theme-preview.amber {
-  --preview-accent: #b45309;
-  --preview-sidebar: #30231c;
-  --preview-surface: #fbf8f4;
-  --preview-line: #efcba0;
+  --preview-accent: #97633b;
+  --preview-sidebar: #302c26;
+  --preview-surface: #f7f6f3;
+  --preview-line: #dfcfb8;
 }
 .theme-preview.slate {
-  --preview-accent: #303030;
-  --preview-sidebar: #202020;
-  --preview-surface: #f7f7f7;
-  --preview-line: #cecece;
+  --preview-accent: #475569;
+  --preview-sidebar: #242a32;
+  --preview-surface: #f4f6f8;
+  --preview-line: #cbd3de;
 }
 .theme-preview-sidebar {
   display: flex;
