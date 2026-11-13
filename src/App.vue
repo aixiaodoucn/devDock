@@ -888,7 +888,6 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
           </div>
         </div>
         <AiLauncher
-          v-if="project.type !== 'backend'"
           :tools="config.settings.aiTools"
           :default-tool-id="config.settings.defaultAiToolId"
           :project-tool-id="project.aiToolId"
