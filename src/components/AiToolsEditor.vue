@@ -33,6 +33,7 @@ function remove(id: string) {
         <h2 id="ai-tools-title"><Sparkles :size="16" />终端命令</h2>
         <p>配置常用命令，保存后可在任意项目目录中执行。</p>
       </div>
+      <slot name="actions" />
     </div>
     <slot name="terminal" />
     <p class="field-help">

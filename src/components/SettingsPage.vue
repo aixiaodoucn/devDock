@@ -333,6 +333,15 @@ watch(
             v-model:default-tool-id="draft.defaultAiToolId"
             :disabled="saving || busy"
           >
+            <template #actions>
+              <button
+                type="submit"
+                class="button primary small"
+                :disabled="saving || busy || detecting || detectingNode"
+              >
+                {{ saving ? '保存中…' : '保存设置' }}
+              </button>
+            </template>
             <template #terminal>
               <div class="settings-terminal-fields">
                 <label
