@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import {
   Download,
   Upload,
@@ -11,8 +11,8 @@ import {
   Check,
 } from 'lucide-vue-next';
 import type { Settings, Tools, ThemeName } from '../types';
-import { THEME_OPTIONS } from '../types';
-import { desktop } from '../api';
+import { NODE_MANAGER_LABELS, THEME_OPTIONS } from '../types';
+import { api, desktop } from '../api';
 import PathInput from './PathInput.vue';
 import AiToolsEditor from './AiToolsEditor.vue';
 import { isWindows } from '../platform';
@@ -36,7 +36,84 @@ const emit = defineEmits<{
 const cloneSettings = (settings: Settings): Settings => JSON.parse(JSON.stringify(settings));
 const draft = ref(cloneSettings(props.settings));
 const settingsForm = ref<HTMLFormElement>();
+const nodeMode = computed({
+  get: () => draft.value.nodeManager || '',
+  set: (value: NonNullable<Settings['nodeManager']>) => {
+    draft.value.nodeManager = value;
+  },
+});
+const nodeRoot = computed({
+  get: () => (nodeMode.value === 'fnm' ? draft.value.fnmDir : draft.value.nvmDir) || '',
+  set: (value: string) => {
+    if (nodeMode.value === 'fnm') draft.value.fnmDir = value;
+    else if (nodeMode.value === 'nvm') draft.value.nvmDir = value;
+  },
+});
+const detectingNode = ref(false);
+const nodeRoots = ref<string[]>([]);
+const nodeDetectionMessage = ref('');
+let nodeDetectionSequence = 0;
+const isAbsoluteRoot = (path: string) =>
+  /^(?:\/|[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/i.test(path.trim());
+watch(nodeMode, () => {
+  // 切换模式立即使旧检测失效，避免异步响应写入另一管理器的目录。
+  nodeDetectionSequence++;
+  detectingNode.value = false;
+  nodeRoots.value = [];
+  nodeDetectionMessage.value = '';
+});
+onBeforeUnmount(() => nodeDetectionSequence++);
+async function detectNodeRoot() {
+  const manager = nodeMode.value;
+  if (props.saving || props.busy || detectingNode.value || !desktop) return;
+  if (manager !== 'nvm' && manager !== 'fnm') return;
+  const sequence = ++nodeDetectionSequence;
+  const initialRoot = nodeRoot.value;
+  detectingNode.value = true;
+  nodeRoots.value = [];
+  nodeDetectionMessage.value = '';
+  const isCurrent = () => sequence === nodeDetectionSequence && manager === nodeMode.value;
+  try {
+    const versions = await api.nodeVersions({ manager });
+    if (!isCurrent() || nodeRoot.value !== initialRoot || props.saving || props.busy) return;
+    const roots = [
+      ...new Set(
+        versions
+          .filter((version) => (version.manager || 'nvm') === manager)
+          .map((version) => (manager === 'fnm' ? version.fnmDir : version.nvmDir)?.trim() || '')
+          .filter(isAbsoluteRoot),
+      ),
+    ];
+    nodeRoots.value = roots;
+    if (roots.length === 1) {
+      nodeRoot.value = roots[0];
+      nodeDetectionMessage.value = '已检测到唯一版本数据目录，请保存设置使其生效。';
+    } else {
+      nodeDetectionMessage.value = roots.length
+        ? '检测到多个版本数据目录，请选择一个目录，不会自动覆盖当前配置。'
+        : '未检测到本地版本数据目录，可手动选择目录，或使用终端默认模式。';
+    }
+  } catch (error) {
+    if (isCurrent())
+      nodeDetectionMessage.value = `检测失败：${String(error)}。可手动选择目录，或使用终端默认模式。`;
+  } finally {
+    if (isCurrent()) detectingNode.value = false;
+  }
+}
 function validateDraft() {
+  const manager = nodeMode.value;
+  if (manager && !['system', 'nvm', 'fnm'].includes(manager)) {
+    emit('error', '请选择有效的公共 Node.js 环境模式。');
+    settingsForm.value?.querySelector<HTMLSelectElement>('#settings-node-manager')?.focus();
+    return false;
+  }
+  if ((manager === 'nvm' || manager === 'fnm') && !isAbsoluteRoot(nodeRoot.value)) {
+    emit('error', `请为 ${NODE_MANAGER_LABELS[manager]} 填写非空的绝对版本数据目录。`);
+    settingsForm.value
+      ?.querySelector<HTMLInputElement>('[aria-label="公共 Node.js 版本数据目录"]')
+      ?.focus();
+    return false;
+  }
   for (const [index, tool] of draft.value.aiTools.entries()) {
     const field = !tool.name.trim() ? '名称' : !tool.command.trim() ? '执行命令' : '';
     if (!field) continue;
@@ -68,6 +145,9 @@ watch(
       value.hbuilderxPath !== previous.hbuilderxPath ||
       value.terminal !== previous.terminal ||
       value.jdkPath !== previous.jdkPath ||
+      value.nodeManager !== previous.nodeManager ||
+      value.nvmDir !== previous.nvmDir ||
+      value.fnmDir !== previous.fnmDir ||
       value.defaultAiToolId !== previous.defaultAiToolId ||
       JSON.stringify(value.aiTools) !== JSON.stringify(previous.aiTools)
     ) {
@@ -156,6 +236,69 @@ watch(
               label="默认 JDK 路径"
               @error="emit('error', $event)"
             />
+            <fieldset class="settings-node-fields form-stack" :disabled="saving || busy">
+              <div>
+                <label for="settings-node-manager" class="field-label">公共 Node.js 环境</label>
+                <select id="settings-node-manager" v-model="nodeMode">
+                  <option v-if="!nodeMode" value="">未设置（保留已有项目配置）</option>
+                  <option
+                    v-for="(label, manager) in NODE_MANAGER_LABELS"
+                    :key="manager"
+                    :value="manager"
+                  >
+                    {{ label }}
+                  </option>
+                </select>
+                <p class="field-help">
+                  未设置时，新建且未指定版本的项目使用终端默认环境，旧项目的 nvm
+                  选择保持不变。明确设置后，公共 Node.js 环境对项目统一生效。
+                </p>
+              </div>
+              <template v-if="nodeMode === 'nvm' || nodeMode === 'fnm'">
+                <PathInput
+                  :key="nodeMode"
+                  v-model="nodeRoot"
+                  label="公共 Node.js 版本数据目录"
+                  :placeholder="
+                    nodeMode === 'nvm'
+                      ? 'nvm 版本数据根目录（NVM_DIR / NVM_HOME）'
+                      : 'fnm 版本数据根目录（FNM_DIR）'
+                  "
+                  @error="emit('error', $event)"
+                />
+                <p class="field-help">
+                  {{
+                    nodeMode === 'nvm' ? 'NVM_DIR / NVM_HOME' : 'FNM_DIR'
+                  }}：请选择非空的绝对目录，仅保存配置，不执行或安装管理器。
+                </p>
+                <div>
+                  <button
+                    type="button"
+                    class="button small"
+                    :disabled="saving || busy || detectingNode || !desktop"
+                    @click="detectNodeRoot"
+                  >
+                    <RefreshCw :size="14" :class="{ spinning: detectingNode }" />{{
+                      detectingNode ? '检测中…' : '检测本地目录'
+                    }}
+                  </button>
+                </div>
+                <label v-if="nodeRoots.length > 1" for="settings-node-root"
+                  >选择检测到的版本数据目录
+                  <select
+                    id="settings-node-root"
+                    :value="nodeRoots.includes(nodeRoot) ? nodeRoot : ''"
+                    @change="nodeRoot = ($event.target as HTMLSelectElement).value"
+                  >
+                    <option value="" disabled>请选择目录</option>
+                    <option v-for="root in nodeRoots" :key="root" :value="root">{{ root }}</option>
+                  </select>
+                </label>
+                <p v-if="nodeDetectionMessage" class="field-help" role="status">
+                  {{ nodeDetectionMessage }}
+                </p>
+              </template>
+            </fieldset>
           </div>
         </section>
         <section class="panel settings-ai-panel">
@@ -319,6 +462,13 @@ watch(
 }
 .settings-terminal-fields > label:last-child {
   grid-column: 3 / -1;
+}
+.settings-node-fields {
+  min-width: 0;
+  margin: 0;
+  padding: 16px 0 0;
+  border: 0;
+  border-top: 1px solid var(--line);
 }
 .settings-save {
   margin-top: 14px;

@@ -53,6 +53,8 @@ import {
   PLATFORM_LABELS,
   TYPE_LABELS,
   THEME_OPTIONS,
+  projectNodeManager,
+  NODE_MANAGER_LABELS,
 } from './types';
 import type {
   AppConfig,
@@ -104,6 +106,23 @@ let backendGitNoticeUnlisten: UnlistenFn | undefined;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 let manifestRequest = 0;
 const project = computed(() => config.value.projects.find((item) => item.id === selectedId.value));
+const selectedNodeManager = computed(() =>
+  project.value ? projectNodeManager(project.value, config.value.settings) : 'system',
+);
+const unconfiguredSharedNode = computed(
+  () =>
+    project.value?.nodeManager === 'inherit' &&
+    !!project.value.nodeVersion &&
+    !config.value.settings.nodeManager,
+);
+const selectedNodeDirectory = computed(() => {
+  const source = config.value.settings.nodeManager ? config.value.settings : project.value;
+  return selectedNodeManager.value === 'fnm'
+    ? source?.fnmDir || ''
+    : selectedNodeManager.value === 'nvm'
+      ? source?.nvmDir || ''
+      : '';
+});
 const filteredProjects = computed(() =>
   config.value.projects.filter((item) =>
     item.name.toLowerCase().includes(search.value.toLowerCase()),
@@ -894,10 +913,19 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         <div v-if="project.type === 'nodejs'" class="node-runtime-summary">
           <span
             ><Terminal :size="15" />Node.js
-            <strong>{{ project.nodeVersion || '终端默认版本' }}</strong
-            ><span v-if="project.nodeVersion" class="tag">nvm</span></span
+            <strong>{{
+              unconfiguredSharedNode
+                ? project.nodeVersion
+                : selectedNodeManager === 'system'
+                  ? '终端默认环境'
+                  : project.nodeVersion || '未选择版本'
+            }}</strong
+            ><span v-if="unconfiguredSharedNode" class="tag">公共环境待配置</span
+            ><span v-else-if="selectedNodeManager !== 'system'" class="tag">{{
+              NODE_MANAGER_LABELS[selectedNodeManager]
+            }}</span></span
           >
-          <span v-if="project.nvmDir" class="runtime-path">{{ project.nvmDir }}</span>
+          <span v-if="selectedNodeDirectory" class="runtime-path">{{ selectedNodeDirectory }}</span>
           <button class="text-button" :disabled="busy" @click="editProject">
             修改版本 <ArrowUpRight :size="13" />
           </button>
@@ -1246,6 +1274,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
       :project="editing"
       :existing="config.projects"
       :tools="tools"
+      :settings="config.settings"
       :hbuilderx-path="config.settings.hbuilderxPath"
       :saving="saving"
       :detecting="detecting"

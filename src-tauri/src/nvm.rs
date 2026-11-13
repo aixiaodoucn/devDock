@@ -1,6 +1,6 @@
 #[cfg(any(not(windows), test))]
 use crate::config::Action;
-use crate::config::{Project, Result};
+use crate::config::{Project, Result, Settings};
 use serde::Serialize;
 use std::{
     collections::HashSet,
@@ -17,6 +17,9 @@ pub struct NodeVersion {
     pub version: String,
     pub path: String,
     pub nvm_dir: String,
+    pub manager: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fnm_dir: String,
 }
 
 #[cfg(any(not(windows), test))]
@@ -55,6 +58,172 @@ pub fn validate_selection(version: &str, dir: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 旧配置有版本时继续使用 nvm，否则沿用终端默认环境。
+pub(crate) fn effective_manager(project: &Project) -> Result<&str> {
+    match project.node_manager.as_str() {
+        "" => Ok(if project.node_version.is_empty() {
+            "system"
+        } else {
+            "nvm"
+        }),
+        "nvm" | "fnm" if project.node_version.is_empty() => Ok("system"),
+        manager @ ("system" | "nvm" | "fnm") => Ok(manager),
+        "inherit" if project.node_version.is_empty() => Ok("system"),
+        "inherit" => Err("请在偏好设置配置公共Node环境".into()),
+        _ => Err("nodeManager 必须为 inherit、system、nvm 或 fnm".into()),
+    }
+}
+
+fn validate_roots(nvm_dir: &str, fnm_dir: &str) -> Result<()> {
+    for (name, dir) in [("nvmDir", nvm_dir), ("fnmDir", fnm_dir)] {
+        if !dir.is_empty() && !crate::paths::is_absolute(dir) {
+            return Err(format!("{name} 必须为绝对路径"));
+        }
+    }
+    Ok(())
+}
+
+/// 公共配置仅验证格式，允许安装目录尚不存在及跨系统导入。
+pub fn validate_settings(settings: &Settings) -> Result<()> {
+    validate_roots(&settings.nvm_dir, &settings.fnm_dir)?;
+    let root = match settings.node_manager.as_str() {
+        "" | "system" => return Ok(()),
+        "nvm" => &settings.nvm_dir,
+        "fnm" => &settings.fnm_dir,
+        _ => return Err("公共 nodeManager 必须为 system、nvm 或 fnm".into()),
+    };
+    if root.is_empty() {
+        return Err("公共 Node 环境必须指定对应绝对数据目录".into());
+    }
+    Ok(())
+}
+
+fn validate_project_format(project: &Project) -> Result<()> {
+    validate_roots(&project.nvm_dir, &project.fnm_dir)?;
+    if !["", "inherit", "system", "nvm", "fnm"].contains(&project.node_manager.as_str()) {
+        return Err("nodeManager 必须为 inherit、system、nvm 或 fnm".into());
+    }
+    if !project.node_version.is_empty() && semver(&project.node_version).is_none() {
+        return Err("nodeVersion 必须为精确版本 vMAJOR.MINOR.PATCH".into());
+    }
+    Ok(())
+}
+
+/// 配置保存与导入不检查安装，也允许尚未配置公共环境的 inherit 项目。
+pub fn validate_project_config(project: &Project, settings: &Settings) -> Result<()> {
+    if project.project_type != "nodejs" {
+        return Ok(());
+    }
+    validate_settings(settings)?;
+    validate_project_format(project)?;
+    if settings.node_manager.is_empty() {
+        validate_project(project)?;
+    }
+    Ok(())
+}
+
+/// 仅生成本次运行/体检的快照，公共选择不会写回兼容字段。
+pub fn resolve_project(project: &Project, settings: &Settings) -> Result<Project> {
+    if project.project_type != "nodejs" {
+        return Ok(project.clone());
+    }
+    validate_project_config(project, settings)?;
+    let mut resolved = project.clone();
+    if project.node_version.is_empty() || settings.node_manager == "system" {
+        resolved.node_manager = "system".into();
+        resolved.node_version.clear();
+        resolved.nvm_dir.clear();
+        resolved.fnm_dir.clear();
+    } else if !settings.node_manager.is_empty() {
+        resolved.node_manager = settings.node_manager.clone();
+        resolved.nvm_dir = settings.nvm_dir.clone();
+        resolved.fnm_dir = settings.fnm_dir.clone();
+    } else if project.node_manager == "inherit" {
+        return Err("请在偏好设置配置公共Node环境".into());
+    }
+    Ok(resolved)
+}
+
+pub fn validate_project(project: &Project) -> Result<()> {
+    validate_project_format(project)?;
+    if project.node_manager == "inherit" {
+        return Ok(());
+    }
+    let manager = effective_manager(project)?;
+    // 导入只检查格式，不依赖当前机器的安装；旧空版本可保留合法 nvmDir。
+    if manager == "system" {
+        if !project.node_version.is_empty() {
+            return Err("终端默认环境不能指定 nodeVersion".into());
+        }
+        return Ok(());
+    }
+    if semver(&project.node_version).is_none() {
+        return Err("nodeVersion 必须为精确版本 vMAJOR.MINOR.PATCH".into());
+    }
+    let dir = if manager == "fnm" {
+        &project.fnm_dir
+    } else {
+        &project.nvm_dir
+    };
+    if dir.is_empty() {
+        return Err(format!("选择 {manager} 时必须指定对应绝对数据目录"));
+    }
+    Ok(())
+}
+
+/// 统一解析精确安装路径，供终端执行和只读体检共用。
+pub(crate) fn selected_node(project: &Project, windows: bool) -> Result<Option<PathBuf>> {
+    validate_project(project)?;
+    let manager = effective_manager(project)?;
+    if manager == "system" {
+        return Ok(None);
+    }
+    let root = Path::new(if manager == "fnm" {
+        &project.fnm_dir
+    } else {
+        &project.nvm_dir
+    });
+    if !root.is_absolute() {
+        return Err("Node 数据目录不是当前系统可用的绝对路径".into());
+    }
+    let version = &project.node_version;
+    let candidates = if manager == "fnm" {
+        vec![root
+            .join("node-versions")
+            .join(version)
+            .join("installation")
+            .join(if windows { "node.exe" } else { "bin/node" })]
+    } else if windows {
+        vec![
+            root.join(version).join("node.exe"),
+            root.join(version.strip_prefix('v').unwrap())
+                .join("node.exe"),
+        ]
+    } else {
+        vec![root.join("versions/node").join(version).join("bin/node")]
+    };
+    candidates
+        .into_iter()
+        .find(|node| {
+            if windows {
+                node.is_file()
+            } else {
+                executable(node)
+            }
+        })
+        .map(Some)
+        .ok_or_else(|| "所选精确 Node 版本未安装、文件缺少或不可执行；未以其他版本代替".into())
+}
+
+pub(crate) fn nvm_script(root: &Path) -> Option<PathBuf> {
+    std::iter::once(root.join("nvm.sh"))
+        .chain([
+            PathBuf::from("/opt/homebrew/opt/nvm/nvm.sh"),
+            PathBuf::from("/usr/local/opt/nvm/nvm.sh"),
+        ])
+        .find(|path| path.is_absolute() && path.is_file())
 }
 
 fn executable(path: &Path) -> bool {
@@ -128,6 +297,145 @@ pub fn detect() -> Vec<NodeVersion> {
             std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
         ))
     }
+}
+
+fn fnm_roots() -> Vec<PathBuf> {
+    fnm_candidates(
+        std::env::var_os("FNM_DIR").map(PathBuf::from),
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from),
+        std::env::var_os("XDG_DATA_HOME").map(PathBuf::from),
+        std::env::var_os("APPDATA").map(PathBuf::from),
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+    )
+}
+
+fn fnm_candidates(
+    custom: Option<PathBuf>,
+    home: Option<PathBuf>,
+    xdg: Option<PathBuf>,
+    appdata: Option<PathBuf>,
+    local: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut roots: Vec<_> = custom.into_iter().collect();
+    if let Some(home) = home {
+        roots.extend([
+            home.join("Library/Application Support/fnm"),
+            home.join(".local/share/fnm"),
+            home.join(".fnm"),
+            home.join("AppData/Roaming/fnm"),
+            home.join("AppData/Local/fnm"),
+        ]);
+    }
+    for base in [xdg, appdata, local].into_iter().flatten() {
+        roots.push(base.join("fnm"));
+    }
+    roots.retain(|root| root.is_absolute());
+    roots
+}
+
+fn scan_fnm(roots: Vec<PathBuf>, windows: bool) -> Vec<NodeVersion> {
+    let mut found = vec![];
+    let mut seen = HashSet::new();
+    for root in roots {
+        if !root.is_absolute() {
+            continue;
+        }
+        let Ok(root) = fs::canonicalize(root) else {
+            continue;
+        };
+        let Some(dir) = root.to_str() else {
+            continue;
+        };
+        let Ok(entries) = fs::read_dir(root.join("node-versions")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Some(version) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if semver(&version).is_none() {
+                continue;
+            }
+            let node = entry.path().join("installation").join(if windows {
+                "node.exe"
+            } else {
+                "bin/node"
+            });
+            if !(if windows {
+                node.is_file()
+            } else {
+                executable(&node)
+            }) {
+                continue;
+            }
+            let Ok(node) = fs::canonicalize(node) else {
+                continue;
+            };
+            let Some(path) = node.to_str() else {
+                continue;
+            };
+            if seen.insert(crate::paths::key(path)) {
+                found.push(NodeVersion {
+                    version,
+                    path: path.into(),
+                    manager: "fnm".into(),
+                    nvm_dir: String::new(),
+                    fnm_dir: dir.into(),
+                });
+            }
+        }
+    }
+    sort_versions(&mut found);
+    found
+}
+
+fn sort_versions(versions: &mut [NodeVersion]) {
+    versions.sort_by(|a, b| {
+        semver(&b.version)
+            .cmp(&semver(&a.version))
+            .then_with(|| a.manager.cmp(&b.manager))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+}
+
+/// 只读扫描；显式目录必须同时明确提供者，避免意外扫描其他安装。
+pub fn detect_versions(manager: Option<&str>, dir: Option<&str>) -> Result<Vec<NodeVersion>> {
+    if !matches!(manager, None | Some("nvm" | "fnm" | "system")) {
+        return Err("nodeManager 必须为 system、nvm 或 fnm".into());
+    }
+    if let Some(dir) = dir {
+        if !crate::paths::is_absolute(dir) {
+            return Err("Node 数据目录必须为绝对路径".into());
+        }
+        if !matches!(manager, Some("nvm" | "fnm")) {
+            return Err("手动目录必须指定 nvm 或 fnm".into());
+        }
+    }
+    if manager == Some("system") {
+        return Ok(vec![]);
+    }
+    let mut found = vec![];
+    if manager.is_none() || manager == Some("nvm") {
+        if let Some(dir) = dir {
+            #[cfg(windows)]
+            found.extend(scan_windows(vec![PathBuf::from(dir)]));
+            #[cfg(not(windows))]
+            found.extend(scan(vec![PathBuf::from(dir)]));
+        } else {
+            found.extend(detect());
+        }
+    }
+    if manager.is_none() || manager == Some("fnm") {
+        found.extend(scan_fnm(
+            dir.map(|dir| vec![PathBuf::from(dir)])
+                .unwrap_or_else(fnm_roots),
+            cfg!(windows),
+        ));
+    }
+    sort_versions(&mut found);
+    Ok(found)
 }
 
 #[cfg(any(windows, test))]
@@ -217,6 +525,8 @@ fn scan_windows(roots: Vec<PathBuf>) -> Vec<NodeVersion> {
                         version,
                         path: path.into(),
                         nvm_dir: nvm_dir.into(),
+                        manager: "nvm".into(),
+                        fnm_dir: String::new(),
                     },
                 ));
             }
@@ -229,28 +539,10 @@ fn scan_windows(roots: Vec<PathBuf>) -> Vec<NodeVersion> {
 // 只为新会话提供 PATH 前置目录，不运行 Node 或改变 nvm 全局链接。
 #[cfg(any(windows, test))]
 pub fn windows_node_bin(project: &Project) -> Result<Option<PathBuf>> {
-    if project.project_type != "nodejs" || project.node_version.is_empty() {
+    if project.project_type != "nodejs" {
         return Ok(None);
     }
-    validate_selection(&project.node_version, &project.nvm_dir)?;
-    let root = Path::new(&project.nvm_dir);
-    if !root.is_absolute() {
-        return Err("nvmDir 不是当前系统可用的绝对路径".into());
-    }
-    for name in [
-        &project.node_version,
-        project.node_version.strip_prefix('v').unwrap(),
-    ] {
-        let dir = root.join(name);
-        if windows_node_file(&dir) {
-            return Ok(Some(dir));
-        }
-    }
-    Err(format!(
-        "所选 Node 未安装或缺少 node.exe: {} / {}",
-        root.display(),
-        project.node_version
-    ))
+    Ok(selected_node(project, true)?.and_then(|node| node.parent().map(Path::to_path_buf)))
 }
 
 #[cfg(not(windows))]
@@ -294,6 +586,8 @@ fn scan(roots: Vec<PathBuf>) -> Vec<NodeVersion> {
                         version,
                         path: path.into(),
                         nvm_dir: nvm_dir.into(),
+                        manager: "nvm".into(),
+                        fnm_dir: String::new(),
                     },
                 ));
             }
@@ -422,7 +716,7 @@ fn env_prefix(text: &str) -> Result<String> {
         .iter()
         .map(|(key, value)| format!("export {key}={}", quote(value)))
         .collect::<Vec<_>>()
-        .join("; "))
+        .join(" && "))
 }
 
 #[cfg(any(not(windows), test))]
@@ -431,13 +725,34 @@ pub fn command_for(project: &Project, action: &Action) -> Result<String> {
         return Ok(action.command.clone());
     }
     let env = env_prefix(&action.env_vars)?;
-    let base = if project.project_type == "nodejs" && !project.node_version.is_empty() {
-        activation(
-            &project.nvm_dir,
-            &project.node_version,
-            &action.command,
-            &NVM_SCRIPTS.map(PathBuf::from),
-        )?
+    let base = if project.project_type == "nodejs" {
+        validate_project(project)?;
+        match effective_manager(project)? {
+            "nvm" => activation(
+                &project.nvm_dir,
+                &project.node_version,
+                &action.command,
+                &NVM_SCRIPTS.map(PathBuf::from),
+            )?,
+            "fnm" => {
+                let node = selected_node(project, false)?.ok_or("未选择 Node 版本")?;
+                if action.command.contains('\0') {
+                    return Err("终端命令包含无效空字符".into());
+                }
+                let bin = node
+                    .parent()
+                    .and_then(Path::to_str)
+                    .ok_or("Node 路径编码无效")?;
+                // 只影响当前命令会话，不调用 fnm、不创建链接、不改全局选择。
+                format!(
+                    "test -x {} && export PATH={}:\"$PATH\" && eval {}",
+                    quote(node.to_str().ok_or("Node 路径编码无效")?),
+                    quote(bin),
+                    quote(&action.command)
+                )
+            }
+            _ => action.command.clone(),
+        }
     } else {
         action.command.clone()
     };
@@ -508,11 +823,36 @@ mod portable_tests {
     }
 
     #[test]
+    fn fnm_roots_cover_environment_and_common_locations() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path();
+        let roots = fnm_candidates(
+            Some(base.join("custom")),
+            Some(base.join("home")),
+            Some(base.join("xdg")),
+            Some(base.join("roaming")),
+            Some(base.join("local")),
+        );
+        for suffix in [
+            "custom",
+            "home/Library/Application Support/fnm",
+            "home/.local/share/fnm",
+            "home/.fnm",
+            "xdg/fnm",
+            "roaming/fnm",
+            "local/fnm",
+        ] {
+            assert!(roots.contains(&base.join(suffix)), "{suffix}");
+        }
+        assert!(fnm_candidates(Some("relative".into()), None, None, None, None).is_empty());
+    }
+
+    #[test]
     fn shell_environment_quotes_values_without_executing_them() {
         assert_eq!(quote("a'b;$(false)"), "'a'\\''b;$(false)'");
         assert_eq!(
             env_prefix("TOKEN=a'b;CONFIG=\"x;y\"").unwrap(),
-            "export TOKEN='a'\\''b'; export CONFIG='x;y'"
+            "export TOKEN='a'\\''b' && export CONFIG='x;y'"
         );
         assert!(env_prefix("BAD NAME=value").is_err());
     }
@@ -579,6 +919,27 @@ mod windows_tests {
     }
 
     #[test]
+    fn fnm_windows_layout_uses_installation_directory_without_nvm() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fnm");
+        let bin = installed(&root.join("node-versions/v22.10.0"), "installation");
+        let mut selected = project();
+        selected.node_manager = "fnm".into();
+        selected.node_version = "v22.10.0".into();
+        selected.fnm_dir = root.to_string_lossy().into();
+        let found = scan_fnm(vec![root.clone(), root], true);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].manager, "fnm");
+        assert!(found[0].nvm_dir.is_empty());
+        assert_eq!(windows_node_bin(&selected).unwrap(), Some(bin.clone()));
+        fs::remove_file(bin.join("node.exe")).unwrap();
+        assert!(windows_node_bin(&selected).is_err());
+        selected.node_manager = "system".into();
+        selected.node_version.clear();
+        assert_eq!(windows_node_bin(&selected).unwrap(), None);
+    }
+
+    #[test]
     fn unselected_and_non_node_projects_return_none() {
         let mut selected = project();
         assert_eq!(windows_node_bin(&selected).unwrap(), None);
@@ -637,6 +998,253 @@ mod tests {
         fs::write(&node, "fake node must never execute").unwrap();
         fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
         node
+    }
+
+    fn selected_fnm(root: &Path) -> Project {
+        serde_json::from_value(serde_json::json!({"id":"p","name":"P","type":"nodejs","path":"/tmp/p","platforms":[],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[],"nodeManager":"fnm","nodeVersion":"v22.10.0","fnmDir":root})).unwrap()
+    }
+
+    fn installed_fnm(root: &Path, version: &str) -> PathBuf {
+        let node = root
+            .join("node-versions")
+            .join(version)
+            .join("installation/bin/node");
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(&node, "fake node must never execute").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        node
+    }
+
+    #[test]
+    fn fnm_scan_manual_directory_dedup_sort_and_manager_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fnm space ' $(false)");
+        for version in ["v9.9.9", "v22.10.0", "v22.2.0", "v01.0.0", "v23.0.0-beta"] {
+            installed_fnm(&root, version);
+        }
+        let disabled = installed_fnm(&root, "v30.0.0");
+        fs::set_permissions(disabled, fs::Permissions::from_mode(0o644)).unwrap();
+        let alias = temp.path().join("alias");
+        symlink(&root, &alias).unwrap();
+        let found = scan_fnm(vec![root.clone(), alias], false);
+        assert_eq!(
+            found.iter().map(|v| v.version.as_str()).collect::<Vec<_>>(),
+            ["v22.10.0", "v22.2.0", "v9.9.9"]
+        );
+        assert!(found
+            .iter()
+            .all(|v| v.manager == "fnm" && v.nvm_dir.is_empty() && !v.fnm_dir.is_empty()));
+        assert_eq!(
+            detect_versions(Some("fnm"), root.to_str()).unwrap().len(),
+            3
+        );
+        installed(&root, "v22.10.0");
+        fs::write(root.join("nvm.sh"), "never source").unwrap();
+        let mut both = detect_versions(Some("nvm"), root.to_str()).unwrap();
+        both.extend(found);
+        sort_versions(&mut both);
+        assert_eq!(
+            both.iter()
+                .filter(|v| v.version == "v22.10.0")
+                .map(|v| v.manager.as_str())
+                .collect::<Vec<_>>(),
+            ["fnm", "nvm"]
+        );
+        assert!(detect_versions(Some("system"), None).unwrap().is_empty());
+        for (manager, dir) in [
+            (Some("bad"), None),
+            (Some("fnm"), Some("relative")),
+            (None, root.to_str()),
+        ] {
+            assert!(detect_versions(manager, dir).is_err());
+        }
+        assert!(detect_versions(Some("fnm"), Some("/missing-synthetic-fnm"))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn shared_settings_require_explicit_mode_and_portable_active_root_only() {
+        let mut settings = Settings::default();
+        validate_settings(&settings).unwrap();
+        for manager in ["nvm", "fnm"] {
+            settings.node_manager = manager.into();
+            assert!(validate_settings(&settings).is_err());
+            settings.nvm_dir = "/not-installed/nvm".into();
+            settings.fnm_dir = r"C:\not-installed\fnm".into();
+            validate_settings(&settings).unwrap();
+            settings.nvm_dir.clear();
+            settings.fnm_dir.clear();
+        }
+        settings.node_manager = "system".into();
+        validate_settings(&settings).unwrap();
+        settings.nvm_dir = "relative".into();
+        assert!(validate_settings(&settings).is_err());
+        settings.nvm_dir.clear();
+        for manager in ["inherit", "unknown", " nvm"] {
+            settings.node_manager = manager.into();
+            assert!(validate_settings(&settings).is_err());
+        }
+    }
+
+    #[test]
+    fn inherit_imports_without_shared_settings_but_cannot_execute_unresolved() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut project = selected_fnm(temp.path());
+        project.node_manager = "inherit".into();
+        project.platforms = vec!["web".into()];
+        project.fnm_dir.clear();
+        let settings = Settings::default();
+        validate_project(&project).unwrap();
+        validate_project_config(&project, &settings).unwrap();
+        let config = crate::config::AppConfig {
+            settings: settings.clone(),
+            projects: vec![project.clone()],
+            ..Default::default()
+        };
+        crate::config::parse(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            resolve_project(&project, &settings).unwrap_err(),
+            "请在偏好设置配置公共Node环境"
+        );
+        assert!(selected_node(&project, false).is_err());
+        let action: Action = serde_json::from_value(serde_json::json!({"id":"a","name":"A","kind":"shell","platform":"web","menuPath":[],"command":"npm run dev"})).unwrap();
+        assert!(command_for(&project, &action).is_err());
+        project.node_version = "v22".into();
+        assert!(validate_project_config(&project, &settings).is_err());
+    }
+
+    #[test]
+    fn shared_provider_selects_same_exact_version_without_changing_legacy_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let nvm_root = temp.path().join("nvm");
+        let fnm_root = temp.path().join("fnm");
+        let nvm_node = installed(&nvm_root, "v22.10.0");
+        let fnm_node = installed_fnm(&fnm_root, "v22.10.0");
+        let project = selected_fnm(&fnm_root);
+        let before = serde_json::to_value(&project).unwrap();
+        let mut settings = Settings::default();
+        let legacy = resolve_project(&project, &settings).unwrap();
+        assert_eq!(serde_json::to_value(legacy).unwrap(), before);
+        settings.nvm_dir = nvm_root.to_string_lossy().into();
+        settings.fnm_dir = fnm_root.to_string_lossy().into();
+        for (manager, expected) in [("nvm", nvm_node), ("fnm", fnm_node.clone())] {
+            settings.node_manager = manager.into();
+            let resolved = resolve_project(&project, &settings).unwrap();
+            assert_eq!(selected_node(&resolved, false).unwrap(), Some(expected));
+            assert_eq!(serde_json::to_value(&project).unwrap(), before);
+        }
+        fs::remove_file(fnm_node).unwrap();
+        let resolved = resolve_project(&project, &settings).unwrap();
+        assert!(selected_node(&resolved, false).is_err()); // 不借用另一提供者同版本。
+        settings.node_manager.clear();
+        let mut old_nvm = project.clone();
+        old_nvm.node_manager.clear();
+        old_nvm.nvm_dir = nvm_root.to_string_lossy().into();
+        let resolved = resolve_project(&old_nvm, &settings).unwrap();
+        assert_eq!(
+            selected_node(&resolved, false).unwrap(),
+            Some(nvm_root.join("versions/node/v22.10.0/bin/node"))
+        );
+    }
+
+    #[test]
+    fn shared_defaults_and_non_node_projects_do_not_activate_node() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut project = selected_fnm(temp.path());
+        let mut settings = Settings::default();
+        for manager in ["", "system", "nvm", "fnm"] {
+            settings.node_manager = manager.into();
+            settings.nvm_dir = temp.path().join("missing-nvm").to_string_lossy().into();
+            settings.fnm_dir = temp.path().join("missing-fnm").to_string_lossy().into();
+            project.node_version.clear();
+            let resolved = resolve_project(&project, &settings).unwrap();
+            assert_eq!(effective_manager(&resolved).unwrap(), "system");
+            assert!(selected_node(&resolved, false).unwrap().is_none());
+        }
+        project.node_version = "v22.10.0".into();
+        settings.node_manager = "system".into();
+        assert!(resolve_project(&project, &settings)
+            .unwrap()
+            .node_version
+            .is_empty());
+        project.project_type = "uniapp".into();
+        settings.node_manager = "invalid".into();
+        let before = serde_json::to_value(&project).unwrap();
+        assert_eq!(
+            serde_json::to_value(resolve_project(&project, &settings).unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn project_validation_is_portable_and_default_never_activates() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut project = selected_fnm(temp.path());
+        validate_project(&project).unwrap(); // 不要求安装存在。
+        assert!(selected_node(&project, false).is_err());
+        for manager in ["unknown", "system", "nvm"] {
+            project.node_manager = manager.into();
+            assert!(validate_project(&project).is_err());
+        }
+        project.node_manager = "fnm".into();
+        for version in ["v22", "v22.10.0;false", "v01.0.0", "../v22.10.0"] {
+            project.node_version = version.into();
+            assert!(validate_project(&project).is_err());
+        }
+        project.node_version.clear();
+        validate_project(&project).unwrap();
+        assert!(selected_node(&project, false).unwrap().is_none());
+        project.node_manager.clear();
+        project.fnm_dir.clear();
+        project.nvm_dir = temp.path().join("not installed").to_string_lossy().into();
+        validate_project(&project).unwrap();
+        project.node_manager = "system".into();
+        let action: Action = serde_json::from_value(serde_json::json!({"id":"a","name":"A","kind":"shell","platform":"web","menuPath":[],"command":"printf 'a';\nprintf b"})).unwrap();
+        assert_eq!(command_for(&project, &action).unwrap(), action.command);
+        project.node_manager = "bad".into();
+        project.project_type = "backend".into();
+        assert_eq!(command_for(&project, &action).unwrap(), action.command);
+    }
+
+    #[test]
+    fn fnm_activation_quotes_command_and_guards_entire_command_without_running_node() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fnm ' $(false)");
+        let node = installed_fnm(&root, "v22.10.0");
+        let project = selected_fnm(&root);
+        let marker = temp.path().join("ran");
+        let mut action: Action = serde_json::from_value(serde_json::json!({"id":"a","name":"A","kind":"shell","platform":"web","menuPath":[],"command":"", "envVars":"VALUE='a;b'"})).unwrap();
+        action.command = format!(
+            "test \"$VALUE\" = 'a;b'; printf 'quoted' > {}\nprintf done",
+            quote(marker.to_str().unwrap())
+        );
+        let command = command_for(&project, &action).unwrap();
+        assert!(command.starts_with("export VALUE='a;b' && test -x "));
+        assert!(!command.contains("fnm use"));
+        for shell in ["/bin/bash", "/bin/zsh"] {
+            let output = Command::new(shell).args(["-c", &command]).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fs::read_to_string(&marker).unwrap(), "quoted");
+            fs::remove_file(&marker).unwrap();
+            fs::set_permissions(&node, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(command_for(&project, &action).is_err());
+            assert!(!Command::new(shell)
+                .args(["-c", &command])
+                .status()
+                .unwrap()
+                .success());
+            assert!(!marker.exists());
+            fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        action.command = "bad\0command".into();
+        assert!(command_for(&project, &action).is_err());
+        fs::remove_file(node).unwrap();
+        assert!(command_for(&project, &action).is_err());
     }
 
     #[test]
@@ -729,7 +1337,7 @@ mod tests {
         action.env_vars = "ALERT_EMAIL_FROM=示例发件人 <sender@example.com>;TOKEN=a'b".into();
         let command = command_for(&project, &action).unwrap();
         assert!(command.starts_with(
-            "export ALERT_EMAIL_FROM='示例发件人 <sender@example.com>'; export TOKEN='a'\\''b' && test -x "
+            "export ALERT_EMAIL_FROM='示例发件人 <sender@example.com>' && export TOKEN='a'\\''b' && test -x "
         ));
         assert!(command.contains("nvm use --silent 'v22.10.0' && eval 'npm run dev'"));
         // 未配置环境变量时保持原命令；菜单动作不注入环境变量。

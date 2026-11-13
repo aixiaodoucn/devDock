@@ -137,8 +137,11 @@ export const api = {
   detect() {
     return native<Tools>('detect_tools');
   },
-  nodeVersions() {
-    return native<NodeVersion[]>('detect_node_versions');
+  nodeVersions(options?: { manager?: 'nvm' | 'fnm'; dir?: string }) {
+    return native<NodeVersion[]>(
+      'detect_node_versions',
+      options ? { manager: options.manager ?? null, dir: options.dir?.trim() || null } : undefined,
+    );
   },
   packageScripts(project: Project) {
     return native<{ name: string; command: string }[]>('read_package_scripts', { project });

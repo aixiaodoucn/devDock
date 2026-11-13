@@ -56,6 +56,8 @@ pub fn prepare_action(
     let mut temporary = project.clone();
     temporary.node_version.clear();
     temporary.nvm_dir.clear();
+    temporary.node_manager.clear();
+    temporary.fnm_dir.clear();
     Ok((temporary, action))
 }
 
@@ -141,6 +143,54 @@ mod tests {
             expected["nvmDir"] = "".into();
             assert_eq!(serde_json::to_value(temporary).unwrap(), expected);
             assert_eq!(serde_json::to_value(&original).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn fnm_and_invalid_managers_are_cleared_only_in_temporary_copy() {
+        for manager in ["fnm", "system", "invalid"] {
+            let mut original = project("nodejs");
+            original.node_manager = manager.into();
+            original.fnm_dir = "/not-installed/fnm".into();
+            let before = serde_json::to_value(&original).unwrap();
+            let (temporary, action) =
+                prepare_action(&original, &settings(), Some("custom")).unwrap();
+            assert!(temporary.node_manager.is_empty());
+            assert!(temporary.fnm_dir.is_empty());
+            assert!(temporary.nvm_dir.is_empty());
+            assert!(temporary.node_version.is_empty());
+            assert_eq!(
+                crate::nvm::command_for(&temporary, &action).unwrap(),
+                action.command
+            );
+            assert_eq!(serde_json::to_value(&original).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn shared_node_settings_never_activate_ai_or_directory_actions() {
+        let mut original = project("nodejs");
+        original.node_manager = "inherit".into();
+        original.nvm_dir.clear();
+        let before = serde_json::to_value(&original).unwrap();
+        for manager in ["", "system", "nvm", "fnm"] {
+            let mut settings = settings();
+            settings.node_manager = manager.into();
+            settings.nvm_dir = "/not-installed/shared-nvm".into();
+            settings.fnm_dir = "/not-installed/shared-fnm".into();
+            for tool in [None, Some("custom")] {
+                let (temporary, action) = prepare_action(&original, &settings, tool).unwrap();
+                let resolved = crate::nvm::resolve_project(&temporary, &settings).unwrap();
+                assert!(resolved.node_version.is_empty());
+                assert!(crate::nvm::selected_node(&resolved, false)
+                    .unwrap()
+                    .is_none());
+                assert_eq!(
+                    crate::nvm::command_for(&resolved, &action).unwrap(),
+                    action.command
+                );
+                assert_eq!(serde_json::to_value(&original).unwrap(), before);
+            }
         }
     }
 

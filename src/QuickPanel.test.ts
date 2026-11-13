@@ -174,6 +174,48 @@ describe('菜单栏快捷弹框', () => {
       panel.dispose();
     }
   });
+  it('fnm 项目显示正确来源，快捷执行保留完整环境配置', async () => {
+    const fnm: Project = { ...node, nodeManager: 'fnm', nvmDir: '', fnmDir: '/tmp/example-fnm' };
+    vi.mocked(api.load).mockResolvedValueOnce({ ...config, projects: [fnm] });
+    const panel = await mount();
+    try {
+      expect(panel.root.querySelector('.quick-project-title small')?.textContent).toContain('fnm');
+      expect(panel.root.querySelector('.quick-project-title small')?.textContent).toContain(
+        'v16.20.2',
+      );
+      panel.root.querySelector<HTMLButtonElement>('.quick-action')!.click();
+      await flush();
+      expect(api.runAction).toHaveBeenCalledWith(fnm, fnm.commands[0], config.settings);
+    } finally {
+      panel.dispose();
+    }
+  });
+  it('公共 fnm 模式统一展示并随快捷执行传入，不改写旧项目路径', async () => {
+    const settings = { ...config.settings, nodeManager: 'fnm' as const, fnmDir: '/tmp/shared-fnm' };
+    vi.mocked(api.load).mockResolvedValueOnce({ ...config, settings, projects: [node] });
+    const panel = await mount();
+    try {
+      expect(panel.root.querySelector('.quick-project-title small')?.textContent).toContain('fnm');
+      panel.root.querySelector<HTMLButtonElement>('.quick-action')!.click();
+      await flush();
+      expect(api.runAction).toHaveBeenCalledWith(node, node.commands[0], settings);
+      expect(node.nvmDir).toBe('/tmp/nvm');
+    } finally {
+      panel.dispose();
+    }
+  });
+  it('继承公共环境但尚未配置时不误报终端默认可运行', async () => {
+    const shared: Project = { ...node, nodeManager: 'inherit', nvmDir: '', fnmDir: '' };
+    vi.mocked(api.load).mockResolvedValueOnce({ ...config, projects: [shared] });
+    const panel = await mount();
+    try {
+      expect(panel.root.querySelector('.quick-project-title small')?.textContent).toContain(
+        '公共环境待配置',
+      );
+    } finally {
+      panel.dispose();
+    }
+  });
   it('快捷执行复用项目完整配置，包括所选 nvm 版本', async () => {
     const panel = await mount();
     try {

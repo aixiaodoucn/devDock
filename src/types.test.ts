@@ -1,5 +1,80 @@
 import { describe, expect, it } from 'vitest';
-import { defaultConfig, mergeConfig, newProject, normalizeProjectPlatforms } from './types';
+import {
+  defaultConfig,
+  mergeConfig,
+  newProject,
+  normalizeProjectPlatforms,
+  projectNodeManager,
+} from './types';
+
+describe('Node 环境兼容', () => {
+  it('旧 nvm 版本与无版本项目分别保留 nvm 和终端默认含义', () => {
+    const legacy = { ...newProject(), nodeVersion: 'v22.12.0', nvmDir: '/example/nvm' };
+    delete legacy.nodeManager;
+    delete legacy.fnmDir;
+    const restored = normalizeProjectPlatforms(legacy);
+    expect(projectNodeManager(restored)).toBe('nvm');
+    expect(restored.nodeVersion).toBe('v22.12.0');
+    expect(restored.nvmDir).toBe('/example/nvm');
+    expect(projectNodeManager(newProject())).toBe('system');
+    expect(projectNodeManager({ ...newProject(), nodeManager: 'fnm' })).toBe('system');
+  });
+  it('公共模式优先于旧项目来源，无版本时仍使用终端默认', () => {
+    const project = { ...newProject(), nodeVersion: 'v22.12.0', nvmDir: '/example/nvm' };
+    expect(projectNodeManager(project, { nodeManager: 'fnm' })).toBe('fnm');
+    expect(projectNodeManager(project, { nodeManager: 'system' })).toBe('system');
+    expect(projectNodeManager({ ...project, nodeVersion: '' }, { nodeManager: 'fnm' })).toBe(
+      'system',
+    );
+    expect(projectNodeManager(project, { nodeManager: '' })).toBe('nvm');
+  });
+  it('公共选择的项目仅保存版本，合并导入保留当前电脑公共设置', () => {
+    const current = defaultConfig();
+    current.settings.nodeManager = 'fnm';
+    current.settings.fnmDir = '/example/local-fnm';
+    const incoming = defaultConfig();
+    incoming.settings.nodeManager = 'nvm';
+    incoming.settings.nvmDir = '/example/other-device-nvm';
+    incoming.projects = [
+      {
+        ...newProject(),
+        id: 'node',
+        type: 'nodejs',
+        path: '/example/node',
+        nodeManager: 'inherit',
+        nodeVersion: 'v22.12.0',
+      },
+    ];
+    const result = mergeConfig(current, incoming);
+    expect(result.settings).toEqual(current.settings);
+    expect(result.projects[0]).toMatchObject({
+      nodeManager: 'inherit',
+      nodeVersion: 'v22.12.0',
+      nvmDir: '',
+      fnmDir: '',
+    });
+    expect(projectNodeManager(result.projects[0], result.settings)).toBe('fnm');
+  });
+  it('fnm 来源和数据目录在配置备份合并后保持独立', () => {
+    const incoming = defaultConfig();
+    incoming.projects = [
+      {
+        ...newProject(),
+        id: 'node',
+        type: 'nodejs',
+        path: '/example/node',
+        nodeManager: 'fnm',
+        nodeVersion: 'v22.12.0',
+        fnmDir: '/example/fnm data',
+      },
+    ];
+    const result = mergeConfig(defaultConfig(), JSON.parse(JSON.stringify(incoming)));
+    expect(projectNodeManager(result.projects[0])).toBe('fnm');
+    expect(result.projects[0].fnmDir).toBe('/example/fnm data');
+    expect(result.projects[0].nvmDir).toBe('');
+    expect(result.schemaVersion).toBe(1);
+  });
+});
 
 describe('配置备份合并', () => {
   it('旧平台合并为 Web 和小程序，保留全部操作及独立菜单路径', () => {

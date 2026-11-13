@@ -10,6 +10,19 @@ vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => true, invoke: vi.fn() })
 describe('环境体检与构建历史的桌面接口', () => {
   beforeEach(() => vi.resetAllMocks());
 
+  it('Node 检测兼容无参请求并支持显式管理器与自定义目录', async () => {
+    vi.mocked(invoke).mockResolvedValue([]);
+    await api.nodeVersions();
+    expect(invoke).toHaveBeenLastCalledWith('detect_node_versions', undefined);
+    await api.nodeVersions({ manager: 'fnm', dir: ' /example/custom fnm ' });
+    expect(invoke).toHaveBeenLastCalledWith('detect_node_versions', {
+      manager: 'fnm',
+      dir: '/example/custom fnm',
+    });
+    await api.nodeVersions({ manager: 'nvm', dir: '' });
+    expect(invoke).toHaveBeenLastCalledWith('detect_node_versions', { manager: 'nvm', dir: null });
+  });
+
   it('体检发送独立快照，Vue 响应式对象不进入原生参数', async () => {
     const project = reactive(newProject());
     project.id = 'example-project';

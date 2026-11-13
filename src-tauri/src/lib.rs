@@ -371,8 +371,11 @@ async fn open_path(path: String) -> Result<()> {
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-fn detect_node_versions() -> Vec<nvm::NodeVersion> {
-    nvm::detect()
+fn detect_node_versions(
+    manager: Option<String>,
+    dir: Option<String>,
+) -> Result<Vec<nvm::NodeVersion>> {
+    nvm::detect_versions(manager.as_deref(), dir.as_deref())
 }
 #[tauri::command]
 fn detect_tools() -> Result<Tools> {
@@ -686,7 +689,27 @@ mod package_tests {
         let mut invalid = imported;
         invalid.projects[0].node_version = "default".into();
         assert!(write_backup(path.clone(), invalid).is_err());
-        assert_eq!(fs::read_to_string(path).unwrap(), original);
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        let mut fnm = read_backup(path.clone()).unwrap();
+        fnm.projects[0].node_manager = "fnm".into();
+        fnm.projects[0].fnm_dir = "/portable backup/fnm's data".into();
+        fnm.projects[0].nvm_dir.clear();
+        write_backup(path.clone(), fnm).unwrap();
+        let mut restored = read_backup(path.clone()).unwrap();
+        assert_eq!(restored.projects[0].node_manager, "fnm");
+        assert_eq!(restored.projects[0].fnm_dir, "/portable backup/fnm's data");
+        assert_eq!(restored.projects[0].node_version, "v22.10.0");
+        assert!(restored.projects[0].nvm_dir.is_empty());
+        restored.settings.node_manager = "fnm".into();
+        restored.settings.fnm_dir = restored.projects[0].fnm_dir.clone();
+        restored.projects[0].node_manager = "inherit".into();
+        restored.projects[0].fnm_dir.clear();
+        write_backup(path.clone(), restored).unwrap();
+        let shared = read_backup(path).unwrap();
+        assert_eq!(shared.settings.node_manager, "fnm");
+        assert_eq!(shared.settings.fnm_dir, "/portable backup/fnm's data");
+        assert_eq!(shared.projects[0].node_manager, "inherit");
+        assert!(shared.projects[0].fnm_dir.is_empty());
     }
     #[test]
     fn theme_backup_roundtrip_and_legacy_import() {

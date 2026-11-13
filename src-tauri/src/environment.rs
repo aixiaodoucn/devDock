@@ -130,7 +130,15 @@ fn check_with(
         );
     }
     if project.project_type != "backend" {
-        check_node(&mut report, project, platform);
+        match nvm::resolve_project(project, settings) {
+            Ok(resolved) => check_node(&mut report, &resolved, platform),
+            Err(_) => report.add(
+                "node",
+                "Node 环境",
+                "error",
+                "Node 配置错误，请在偏好设置配置公共Node环境并检查精确版本和绝对数据目录",
+            ),
+        }
     }
     let uniapp = project.project_type == "uniapp";
     let app = uniapp && project.platforms.iter().any(|p| p == "app");
@@ -317,38 +325,46 @@ fn check_terminal(report: &mut EnvironmentReport, terminal: &str, platform: &str
 }
 
 fn check_node(report: &mut EnvironmentReport, project: &Project, platform: &str) {
-    if project.project_type != "nodejs" || project.node_version.is_empty() {
-        report.add("node", "Node 环境", "warning", "未指定 Node 精确版本；使用终端默认环境，无法保证与应用 PATH 一致，未检测运行中的 Node 版本");
+    if project.project_type != "nodejs" {
+        report.add(
+            "node",
+            "Node 环境",
+            "warning",
+            "使用终端默认环境，未检测运行中的 Node 版本",
+        );
         return;
     }
-    if nvm::validate_selection(&project.node_version, &project.nvm_dir).is_err()
-        || !Path::new(&project.nvm_dir).is_absolute()
-    {
+    if nvm::validate_project(project).is_err() {
         report.add(
             "node",
             "Node 环境",
             "error",
-            "Node 必须选择精确版本 vMAJOR.MINOR.PATCH，并配置当前系统可用的 nvm 绝对目录",
+            "Node manager、精确版本或对应绝对数据目录配置无效",
         );
         return;
     }
-    let root = Path::new(&project.nvm_dir);
-    report.path("nvm-dir", "nvm 安装目录", root, true);
-    let candidates = if platform == "windows" {
-        vec![
-            root.join(&project.node_version).join("node.exe"),
-            root.join(project.node_version.trim_start_matches('v'))
-                .join("node.exe"),
-        ]
+    let manager = nvm::effective_manager(project).unwrap();
+    if manager == "system" {
+        report.add(
+            "node",
+            "Node 环境",
+            "warning",
+            "使用终端默认环境，无法保证与应用 PATH 一致，未检测运行中的 Node 版本",
+        );
+        return;
+    }
+    let root = Path::new(if manager == "fnm" {
+        &project.fnm_dir
     } else {
-        vec![root
-            .join("versions/node")
-            .join(&project.node_version)
-            .join("bin/node")]
-    };
-    let installed = candidates
-        .iter()
-        .any(|node| node.is_file() && (platform == "windows" || accessible(node, ACCESS_EXECUTE)));
+        &project.nvm_dir
+    });
+    report.path(
+        &format!("{manager}-dir"),
+        &format!("{manager} 安装目录"),
+        root,
+        true,
+    );
+    let installed = nvm::selected_node(project, platform == "windows").is_ok();
     report.add(
         "node",
         "Node 环境",
@@ -359,14 +375,8 @@ fn check_node(report: &mut EnvironmentReport, project: &Project, platform: &str)
             "所选精确 Node 版本未安装、文件缺少或不可执行；未以其他版本代替"
         },
     );
-    if platform != "windows" {
-        let script = [
-            root.join("nvm.sh"),
-            PathBuf::from("/opt/homebrew/opt/nvm/nvm.sh"),
-            PathBuf::from("/usr/local/opt/nvm/nvm.sh"),
-        ]
-        .into_iter()
-        .any(|p| p.is_file() && accessible(&p, ACCESS_READ));
+    if manager == "nvm" && platform != "windows" {
+        let script = nvm::nvm_script(root).is_some_and(|path| accessible(&path, ACCESS_READ));
         report.add(
             "nvm-script",
             "nvm 激活脚本",
@@ -618,6 +628,102 @@ mod tests {
         assert_eq!(
             status(&report(&project, &settings, "macos"), "node"),
             "error"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fnm_diagnostics_are_read_only_and_do_not_require_nvm_script() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut project, settings) = fixture();
+        project.project_type = "nodejs".into();
+        project.node_manager = "fnm".into();
+        project.node_version = "v22.1.0".into();
+        project.fnm_dir = dir.path().to_string_lossy().into();
+        let node = dir
+            .path()
+            .join("node-versions/v22.1.0/installation/bin/node");
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(&node, "must never execute").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        let before = serde_json::to_value(&project).unwrap();
+        let result = check_with(&project, &settings, "macos", || panic!("无需请求权限")).unwrap();
+        assert_eq!(status(&result, "node"), "pass");
+        assert_eq!(status(&result, "fnm-dir"), "pass");
+        assert!(!result.items.iter().any(|item| item.id == "nvm-script"));
+        assert_eq!(fs::read_to_string(&node).unwrap(), "must never execute");
+        assert_eq!(serde_json::to_value(&project).unwrap(), before);
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            status(&report(&project, &settings, "macos"), "node"),
+            "error"
+        );
+        project.node_manager = "system".into();
+        assert_eq!(
+            status(&report(&project, &settings, "macos"), "node"),
+            "error"
+        );
+        project.node_version.clear();
+        assert_eq!(
+            status(&report(&project, &settings, "macos"), "node"),
+            "warning"
+        );
+        project.node_manager = "unknown".into();
+        assert_eq!(
+            status(&report(&project, &settings, "macos"), "node"),
+            "error"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_node_diagnostics_resolve_provider_read_only_and_report_configuration_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut project, mut settings) = fixture();
+        project.project_type = "nodejs".into();
+        project.node_manager = "inherit".into();
+        project.node_version = "v22.1.0".into();
+        let before = serde_json::to_value(&project).unwrap();
+        let result = report(&project, &settings, "macos");
+        assert_eq!(status(&result, "node"), "error");
+        assert!(result
+            .items
+            .iter()
+            .find(|item| item.id == "node")
+            .unwrap()
+            .detail
+            .contains("偏好设置"));
+        settings.node_manager = "fnm".into();
+        settings.fnm_dir = dir.path().to_string_lossy().into();
+        let node = dir
+            .path()
+            .join("node-versions/v22.1.0/installation/bin/node");
+        fs::create_dir_all(node.parent().unwrap()).unwrap();
+        fs::write(&node, "must never execute shared Node").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        let result = report(&project, &settings, "macos");
+        assert_eq!(status(&result, "node"), "pass");
+        assert_eq!(status(&result, "fnm-dir"), "pass");
+        assert_eq!(serde_json::to_value(&project).unwrap(), before);
+        settings.node_manager = "nvm".into();
+        settings.nvm_dir = dir.path().to_string_lossy().into();
+        assert_eq!(
+            status(&report(&project, &settings, "macos"), "node"),
+            "error"
+        );
+        settings.node_manager = "system".into();
+        assert_eq!(
+            status(&report(&project, &settings, "macos"), "node"),
+            "warning"
+        );
+        settings.node_manager = "fnm".into();
+        project.node_version.clear();
+        let result = report(&project, &settings, "macos");
+        assert_eq!(status(&result, "node"), "warning");
+        assert!(!result.items.iter().any(|item| item.id == "fnm-dir"));
+        assert_eq!(
+            fs::read_to_string(node).unwrap(),
+            "must never execute shared Node"
         );
     }
 

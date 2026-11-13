@@ -21,12 +21,21 @@ import {
   defaultConfig,
   TYPE_LABELS,
   PLATFORM_LABELS,
+  projectNodeManager,
+  NODE_MANAGER_LABELS,
   type Project,
   type Action,
   type TaskEvent,
 } from './types';
 
 const config = ref(defaultConfig());
+function nodeSummary(project: Project): string {
+  if (project.type !== 'nodejs' || !project.nodeVersion) return '';
+  if (project.nodeManager === 'inherit' && !config.value.settings.nodeManager)
+    return ` · ${project.nodeVersion}（公共环境待配置）`;
+  const manager = projectNodeManager(project, config.value.settings);
+  return manager === 'system' ? '' : ` · ${NODE_MANAGER_LABELS[manager]} ${project.nodeVersion}`;
+}
 const query = ref('');
 const loading = ref(true);
 const loadError = ref('');
@@ -298,12 +307,7 @@ onUnmounted(() => {
             /></span>
             <span class="quick-project-title"
               ><strong>{{ project.name }}</strong
-              ><small
-                >{{ TYPE_LABELS[project.type]
-                }}<template v-if="project.type === 'nodejs' && project.nodeVersion">
-                  · {{ project.nodeVersion }}</template
-                ></small
-              ></span
+              ><small>{{ TYPE_LABELS[project.type] }}{{ nodeSummary(project) }}</small></span
             >
           </button>
           <button

@@ -527,6 +527,8 @@ pub fn action_with_title(
                 }
             })?;
         } else {
+            // 主窗、托盘及通用终端动作共用临时 Node 快照，不改变保存的项目。
+            let project = nvm::resolve_project(&project, &settings)?;
             let terminal = fallback(&project.terminal, &settings.terminal);
             #[cfg(windows)]
             {

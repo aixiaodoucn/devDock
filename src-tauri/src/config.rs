@@ -20,6 +20,13 @@ pub struct Settings {
     pub ai_tools: Vec<AiTool>,
     #[serde(default)]
     pub default_ai_tool_id: String,
+    // 缺少公共模式时保留旧项目环境；明确设置后统一提供管理器与数据目录。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node_manager: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub nvm_dir: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fnm_dir: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -66,6 +73,9 @@ impl Default for Settings {
             open_output_after_build: default_open_output_after_build(),
             ai_tools: vec![],
             default_ai_tool_id: String::new(),
+            node_manager: String::new(),
+            nvm_dir: String::new(),
+            fnm_dir: String::new(),
         }
     }
 }
@@ -109,6 +119,11 @@ pub struct Project {
     pub node_version: String,
     #[serde(default)]
     pub nvm_dir: String,
+    // 空管理器兼容旧配置：指定版本按 nvm 处理，否则跟随终端默认环境。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node_manager: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fnm_dir: String,
     // 每个项目可配置终端命令使用的环境变量，旧配置默认为空。
     #[serde(default)]
     pub env_vars: String,
@@ -214,6 +229,7 @@ impl AppConfig {
         }
         terminal(&self.settings.terminal)?;
         validate_ai_tools(&self.settings.ai_tools)?;
+        crate::nvm::validate_settings(&self.settings)?;
         if self.settings.default_ai_tool_id.contains('\0') {
             return Err("defaultAiToolId 不能含 NUL".into());
         }
@@ -293,7 +309,7 @@ impl AppConfig {
             if p.ai_tool_id.contains('\0') {
                 return Err("aiToolId 不能含 NUL".into());
             }
-            crate::nvm::validate_selection(&p.node_version, &p.nvm_dir)?;
+            crate::nvm::validate_project_config(p, &self.settings)?;
             let mut actions = HashSet::new();
             for a in &p.commands {
                 if a.id.is_empty()
@@ -1094,6 +1110,68 @@ mod tests {
             .unwrap_err()
             .contains("missing field"));
     }
+    #[test]
+    fn node_manager_configuration_roundtrips_and_rejects_ambiguous_modes() {
+        let mut value = serde_json::json!({"schemaVersion":1,"projects":[{
+            "id":"node","name":"Node","type":"nodejs","path":"/tmp/example-node",
+            "platforms":["web"],"manifestPath":"","androidAppId":"","iosAppId":"",
+            "androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"",
+            "outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[],
+            "nodeManager":"fnm","nodeVersion":"v22.12.0","fnmDir":"/not-installed/fnm data"
+        }],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":""}});
+        let parsed = parse(&value.to_string()).unwrap();
+        let restored = parse(&serialize(&parsed).unwrap()).unwrap();
+        assert_eq!(restored.projects[0].node_manager, "fnm");
+        assert_eq!(restored.projects[0].fnm_dir, "/not-installed/fnm data");
+        assert_eq!(restored.projects[0].node_version, "v22.12.0");
+        assert_eq!(restored.schema_version, 1);
+        for manager in ["unsupported", "system"] {
+            let mut invalid = value.clone();
+            invalid["projects"][0]["nodeManager"] = manager.into();
+            assert!(parse(&invalid.to_string()).is_err(), "{manager}");
+        }
+        let mut invalid = value.clone();
+        invalid["projects"][0]["fnmDir"] = "relative/fnm".into();
+        assert!(parse(&invalid.to_string()).is_err());
+        value["projects"][0]["nodeManager"] = "system".into();
+        value["projects"][0]["nodeVersion"] = "".into();
+        value["projects"][0]["fnmDir"] = "".into();
+        assert!(parse(&value.to_string()).is_ok());
+    }
+
+    #[test]
+    fn shared_node_settings_roundtrip_without_project_machine_paths() {
+        let mut value = serde_json::json!({"schemaVersion":1,"projects":[{
+            "id":"node","name":"Node","type":"nodejs","path":"/tmp/shared-node",
+            "platforms":["web"],"manifestPath":"","androidAppId":"","iosAppId":"",
+            "androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"",
+            "outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[],
+            "nodeManager":"inherit","nodeVersion":"v22.12.0"
+        }],"settings":{"hbuilderxPath":"","terminal":"Terminal","jdkPath":"",
+            "nodeManager":"fnm","fnmDir":"/not-installed/shared-fnm"}});
+        let parsed = parse(&value.to_string()).unwrap();
+        let restored = parse(&serialize(&parsed).unwrap()).unwrap();
+        assert_eq!(restored.settings.node_manager, "fnm");
+        assert_eq!(restored.settings.fnm_dir, "/not-installed/shared-fnm");
+        assert_eq!(restored.projects[0].node_manager, "inherit");
+        assert!(restored.projects[0].nvm_dir.is_empty());
+        assert!(restored.projects[0].fnm_dir.is_empty());
+        value["settings"]["nodeManager"] = "".into();
+        value["settings"]["fnmDir"] = "".into();
+        let portable = parse(&value.to_string()).unwrap();
+        assert!(crate::nvm::resolve_project(&portable.projects[0], &portable.settings).is_err());
+        value["settings"]["nodeManager"] = "fnm".into();
+        assert!(parse(&value.to_string()).is_err());
+        value["settings"]["nodeManager"] = "system".into();
+        let system = parse(&value.to_string()).unwrap();
+        assert!(
+            crate::nvm::resolve_project(&system.projects[0], &system.settings)
+                .unwrap()
+                .node_version
+                .is_empty()
+        );
+    }
+
     #[test]
     fn theme_defaults_for_new_and_legacy_configs() {
         assert_eq!(Settings::default().theme, "lavender");

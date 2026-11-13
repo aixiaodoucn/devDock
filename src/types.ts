@@ -90,6 +90,12 @@ export interface ScmModule {
   gitRemoteUrl: string | null;
   branch: string;
 }
+export type NodeManager = 'system' | 'nvm' | 'fnm';
+export const NODE_MANAGER_LABELS: Record<NodeManager, string> = {
+  system: '终端默认',
+  nvm: 'nvm',
+  fnm: 'fnm',
+};
 export interface Project {
   id: string;
   name: string;
@@ -108,6 +114,8 @@ export interface Project {
   terminal: string;
   nodeVersion: string;
   nvmDir: string;
+  nodeManager?: NodeManager | '' | 'inherit';
+  fnmDir?: string;
   envVars: string;
   aiToolId: string;
   commands: Action[];
@@ -115,10 +123,21 @@ export interface Project {
   scmDevelopmentProjectId: string;
   scmTestProjectId: string;
 }
+export function projectNodeManager(
+  project: Pick<Project, 'nodeManager' | 'nodeVersion'>,
+  settings?: Pick<Settings, 'nodeManager'>,
+): NodeManager {
+  if (!project.nodeVersion) return 'system';
+  if (settings?.nodeManager) return settings.nodeManager;
+  if (project.nodeManager === 'inherit') return 'system';
+  return project.nodeManager || (project.nodeVersion ? 'nvm' : 'system');
+}
 export interface NodeVersion {
   version: string;
   path: string;
   nvmDir: string;
+  manager?: 'nvm' | 'fnm';
+  fnmDir?: string;
 }
 export const THEME_OPTIONS = [
   {
@@ -179,6 +198,9 @@ export interface Settings {
   openOutputAfterBuild: boolean;
   aiTools: AiTool[];
   defaultAiToolId: string;
+  nodeManager?: NodeManager | '';
+  nvmDir?: string;
+  fnmDir?: string;
 }
 export interface AppConfig {
   schemaVersion: 1;
@@ -280,6 +302,9 @@ export function defaultConfig(): AppConfig {
       openOutputAfterBuild: true,
       aiTools: [],
       defaultAiToolId: '',
+      nodeManager: '',
+      nvmDir: '',
+      fnmDir: '',
     },
   };
 }
@@ -302,6 +327,8 @@ export function newProject(): Project {
     terminal: '',
     nodeVersion: '',
     nvmDir: '',
+    nodeManager: '',
+    fnmDir: '',
     envVars: '',
     aiToolId: '',
     commands: [],
@@ -320,6 +347,8 @@ export function normalizeProjectPlatforms(project: Project): Project {
   // 仅合并用途分类，具体菜单、命令和操作 ID 均保留。
   return {
     ...project,
+    nodeManager: project.nodeManager ?? '',
+    fnmDir: project.fnmDir ?? '',
     subProjects: (project.subProjects ?? []).map((repository) => ({
       id: repository.id,
       name: repository.name,

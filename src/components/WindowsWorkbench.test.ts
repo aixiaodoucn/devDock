@@ -87,6 +87,7 @@ describe('Windows 基础工作台界面', () => {
       render: () =>
         h(ProjectDialog, {
           project,
+          settings: { ...defaultConfig().settings, nodeManager: 'system' },
           tools,
           existing: [],
           saving: false,
@@ -96,11 +97,23 @@ describe('Windows 基础工作台界面', () => {
     });
     try {
       await flush();
-      expect(panel.root.textContent).toContain('不调用 nvm use');
+      expect(panel.root.textContent).toContain('跟随终端默认环境');
+      expect(panel.root.textContent).toContain('仅对新会话生效，不改变全局环境');
       panel.root
         .querySelector('form')!
         .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-      expect(save).toHaveBeenCalledWith(expect.objectContaining({ path: project.path }));
+      expect(panel.root.querySelector('#project-node-manager')).toBeNull();
+      expect(panel.root.querySelector('[aria-label="版本数据目录"]')).toBeNull();
+      expect(api.nodeVersions).not.toHaveBeenCalled();
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: project.path,
+          nodeManager: 'inherit',
+          nodeVersion: '',
+          nvmDir: '',
+          fnmDir: '',
+        }),
+      );
     } finally {
       panel.dispose();
     }

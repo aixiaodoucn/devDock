@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { X, Plus, Trash2, FolderGit2, RefreshCw } from 'lucide-vue-next';
-import type { Project, Tools, Action, NodeVersion, UniappScript } from '../types';
-import { PLATFORM_LABELS, normalizeProjectPlatforms } from '../types';
+import type { Project, Settings, Tools, Action, NodeVersion, UniappScript } from '../types';
+import {
+  PLATFORM_LABELS,
+  NODE_MANAGER_LABELS,
+  projectNodeManager,
+  normalizeProjectPlatforms,
+} from '../types';
 import { api, desktop } from '../api';
 import PathInput from './PathInput.vue';
 import BackendRepositoriesEditor, {
@@ -12,6 +17,7 @@ import BackendRepositoriesEditor, {
 import { isWindows, isAbsolutePath, pathKey } from '../platform';
 const props = defineProps<{
   project: Project;
+  settings?: Settings;
   tools: Tools;
   hbuilderxPath?: string;
   existing: Project[];
@@ -70,38 +76,61 @@ const packageScripts = ref<{ name: string; command: string }[]>([]);
 const nodeVersions = ref<NodeVersion[]>([]);
 const readingNodes = ref(false);
 const nodesLoaded = ref(false);
-const nodeKey = (version: Pick<NodeVersion, 'version' | 'nvmDir'>) =>
-  JSON.stringify([version.nvmDir, version.version]);
-const selectedNodeKey = computed(() =>
-  draft.value.nodeVersion
-    ? nodeKey({ version: draft.value.nodeVersion, nvmDir: draft.value.nvmDir })
-    : '',
+const publicNodeManager = computed(() => props.settings?.nodeManager || '');
+const missingPublicEnvironment = computed(
+  () => !publicNodeManager.value && draft.value.nodeManager === 'inherit',
+);
+const legacyEnvironment = computed(
+  () => !publicNodeManager.value && !missingPublicEnvironment.value && !!draft.value.nodeVersion,
+);
+// 公共模式决定可选版本来源；空版本仍需显示公共管理器的候选列表。
+const nodeManager = computed(() => publicNodeManager.value || projectNodeManager(draft.value));
+const nodeDirectory = computed(() => {
+  const source = publicNodeManager.value ? props.settings : draft.value;
+  return (nodeManager.value === 'fnm' ? source?.fnmDir : source?.nvmDir) || '';
+});
+const versionManager = (version: NodeVersion) => version.manager || 'nvm';
+// 原生已按请求目录扫描；返回路径可能已解析符号链接，不能再做字符串目录过滤。
+const availableNodeVersions = computed(() =>
+  nodeVersions.value.filter((version) => versionManager(version) === nodeManager.value),
 );
 const selectedNode = computed(() =>
-  nodeVersions.value.find((version) => nodeKey(version) === selectedNodeKey.value),
+  availableNodeVersions.value.find((version) => version.version === draft.value.nodeVersion),
 );
+let nodesRequest = 0;
 async function loadNodeVersions() {
-  if (readingNodes.value) return;
+  const request = ++nodesRequest;
+  const manager = nodeManager.value;
+  const dir = nodeDirectory.value;
+  if (manager === 'system' || missingPublicEnvironment.value) return;
+  if (dir && !isAbsolutePath(dir)) {
+    error.value = '版本数据目录必须是完整的绝对路径，请到偏好设置检查公共环境。';
+    return;
+  }
   readingNodes.value = true;
   try {
-    nodeVersions.value = await api.nodeVersions();
+    const versions = await api.nodeVersions({ manager, dir });
+    // 公共管理器、目录或项目类型切换后，迟到的结果不能覆盖当前候选。
+    if (request !== nodesRequest) return;
+    nodeVersions.value = versions;
     nodesLoaded.value = true;
   } catch (reason) {
-    error.value = String(reason);
+    if (request === nodesRequest) error.value = String(reason);
   } finally {
-    readingNodes.value = false;
+    if (request === nodesRequest) readingNodes.value = false;
   }
 }
 function selectNodeVersion(event: Event) {
-  const key = (event.target as HTMLSelectElement).value;
-  const version = nodeVersions.value.find((item) => nodeKey(item) === key);
-  draft.value.nodeVersion = version?.version || '';
-  draft.value.nvmDir = version?.nvmDir || '';
+  draft.value.nodeVersion = (event.target as HTMLSelectElement).value;
 }
 watch(
-  () => draft.value.type,
-  (type) => {
-    if (type === 'nodejs' && desktop && !nodesLoaded.value) loadNodeVersions();
+  () => [draft.value.type, nodeManager.value, nodeDirectory.value, missingPublicEnvironment.value],
+  () => {
+    nodesRequest++;
+    nodeVersions.value = [];
+    nodesLoaded.value = false;
+    readingNodes.value = false;
+    if (draft.value.type === 'nodejs' && desktop) loadNodeVersions();
   },
   { immediate: true },
 );
@@ -418,6 +447,25 @@ function submit() {
     tab.value = 'general';
     return;
   }
+  if (item.type === 'nodejs') {
+    if (
+      publicNodeManager.value !== 'system' &&
+      item.nodeVersion &&
+      !/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(item.nodeVersion)
+    ) {
+      error.value = '请选择已安装的精确 Node.js 版本（例如 v22.22.2）。';
+      tab.value = 'general';
+      return;
+    }
+    if (publicNodeManager.value) {
+      // 项目只保存版本；管理器与根目录始终从公共偏好设置解析。
+      item.nodeManager = 'inherit';
+      if (publicNodeManager.value === 'system') item.nodeVersion = '';
+      item.nvmDir = '';
+      item.fnmDir = '';
+    }
+    // 尚未配置公共环境时保留旧项目和异机导入的原始元数据。
+  }
   // 切换类型保留草稿元数据，必须显式清理后才能保存为其他项目类型。
   if (
     item.type !== 'backend' &&
@@ -559,50 +607,73 @@ function submit() {
             </div>
           </div>
           <div v-if="draft.type === 'nodejs'" class="node-version-setting">
-            <label for="project-node-version" class="field-label">Node.js 版本</label>
-            <div class="version-select-row">
-              <select
-                id="project-node-version"
-                :value="selectedNodeKey"
-                :disabled="readingNodes"
-                @change="selectNodeVersion"
-              >
-                <option value="">跟随终端默认版本</option>
-                <option
-                  v-for="version in nodeVersions"
-                  :key="nodeKey(version)"
-                  :value="nodeKey(version)"
-                >
-                  {{ version.version }}（nvm）
-                </option>
-                <option v-if="draft.nodeVersion && !selectedNode" :value="selectedNodeKey">
-                  {{ draft.nodeVersion }}（{{ nodesLoaded ? '本机未检测到' : '已保存' }}）
-                </option>
-              </select>
-              <button
-                type="button"
-                class="button"
-                :disabled="readingNodes || !desktop"
-                @click="loadNodeVersions"
-              >
-                <RefreshCw :size="14" :class="{ spinning: readingNodes }" />{{
-                  readingNodes ? '获取中…' : '获取本地版本'
-                }}
-              </button>
-            </div>
-            <p v-if="selectedNode" class="field-help runtime-path">{{ selectedNode.path }}</p>
-            <p v-else-if="draft.nodeVersion" class="field-help">
-              已指定 {{ draft.nodeVersion }}。执行前会检查版本是否仍安装，缺少时停止运行。
+            <p v-if="legacyEnvironment" class="field-help">
+              尚未设置公共环境，使用原项目配置。请到偏好设置配置公共 Node.js 环境。
             </p>
+            <template v-if="missingPublicEnvironment && draft.nodeVersion">
+              <p class="field-help">
+                已保存
+                {{
+                  draft.nodeVersion
+                }}（本机未检测到）。尚未设置公共环境，请到偏好设置配置后使用；保存将保留原版本。
+              </p>
+            </template>
+            <template v-else-if="nodeManager !== 'system' && !missingPublicEnvironment">
+              <p class="field-help">
+                {{ publicNodeManager ? '公共环境模式' : '原项目环境模式' }}：{{
+                  NODE_MANAGER_LABELS[nodeManager]
+                }}
+                · 版本数据目录：{{ nodeDirectory || '自动检测' }}。管理器和目录请到偏好设置修改。
+              </p>
+              <label for="project-node-version" class="field-label">Node.js 精确版本</label>
+              <div class="version-select-row">
+                <select
+                  id="project-node-version"
+                  :value="draft.nodeVersion"
+                  :disabled="readingNodes"
+                  @change="selectNodeVersion"
+                >
+                  <option value="">跟随终端默认环境</option>
+                  <option
+                    v-for="version in availableNodeVersions"
+                    :key="version.version"
+                    :value="version.version"
+                  >
+                    {{ version.version }}
+                  </option>
+                  <option v-if="draft.nodeVersion && !selectedNode" :value="draft.nodeVersion">
+                    {{ draft.nodeVersion }}（{{ nodesLoaded ? '本机未检测到' : '已保存' }}）
+                  </option>
+                </select>
+                <button
+                  type="button"
+                  class="button"
+                  :disabled="readingNodes || !desktop"
+                  @click="loadNodeVersions"
+                >
+                  <RefreshCw :size="14" :class="{ spinning: readingNodes }" />{{
+                    readingNodes ? '获取中…' : '获取本地版本'
+                  }}
+                </button>
+              </div>
+              <p v-if="selectedNode" class="field-help runtime-path">{{ selectedNode.path }}</p>
+              <p v-else-if="draft.nodeVersion" class="field-help">
+                已指定 {{ draft.nodeVersion }}。执行前会检查版本是否仍安装，缺少时停止运行。
+              </p>
+              <p v-if="nodesLoaded && !availableNodeVersions.length" class="field-help">
+                未发现已安装的 {{ NODE_MANAGER_LABELS[nodeManager] }} Node.js
+                版本，请到偏好设置检查公共环境，或选择跟随终端默认环境。
+              </p>
+            </template>
             <p v-else class="field-help">
-              {{
-                isWindows
-                  ? '选择版本后，仅在新终端会话中将该版本加入 PATH，不调用 nvm use，也不改变系统版本。'
-                  : '选择版本后，执行命令前通过 nvm 启用。仅作用于本次终端，不改变默认版本。'
+              跟随终端默认环境。{{
+                publicNodeManager === 'system'
+                  ? '公共环境模式：终端默认。'
+                  : '可到偏好设置配置公共 Node.js 环境。'
               }}
             </p>
-            <p v-if="nodesLoaded && !nodeVersions.length" class="field-help">
-              未发现已安装的 nvm Node.js 版本，可先使用终端默认版本。
+            <p class="field-help">
+              仅对新会话生效，不改变全局环境。执行前检查指定版本，不存在时停止运行。
             </p>
           </div>
           <label v-if="draft.type === 'uniapp'"
