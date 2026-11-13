@@ -1,4 +1,3 @@
-#[cfg(not(windows))]
 use crate::nvm;
 use crate::{
     accessibility::{self, PermissionPrompt},
