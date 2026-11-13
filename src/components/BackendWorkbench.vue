@@ -286,10 +286,8 @@ function disabledReason(operationType: BackendGitPlan['operation']): string {
   )
     return '请先切换开发分支，再推送开发分支到远程。';
   if (operationType === 'switch-test' || operationType === 'merge') {
-    if (
-      draft.value.scmTestProjectId.trim() &&
-      loadedTestId.value !== sourceId(draft.value.scmTestProjectId)
-    )
+    if (!draft.value.scmTestProjectId.trim()) return '请填写测试 SCM 项目 ID 并加载测试目标。';
+    if (loadedTestId.value !== sourceId(draft.value.scmTestProjectId))
       return '测试 SCM 项目已变更，请先加载测试目标。';
     if (operationType === 'switch-test') {
       if (selectedRepositories.value.some((repo) => !repo.testBranch.trim()))
@@ -550,9 +548,11 @@ function loadProjects() {
 }
 function applyLoadedMapping(ids?: string[]) {
   const mapped = mapping.value.repositories;
-  draft.value.subProjects = draft.value.subProjects.map((repo) =>
-    !ids || ids.includes(repo.id) ? (mapped.find((item) => item.id === repo.id) ?? repo) : repo,
-  );
+  draft.value.subProjects = draft.value.subProjects.map((repo) => {
+    const updated =
+      !ids || ids.includes(repo.id) ? (mapped.find((item) => item.id === repo.id) ?? repo) : repo;
+    return draft.value.scmTestProjectId.trim() ? updated : { ...updated, testBranch: '' };
+  });
   // 映射仅修改 SCM 身份和分支；刚读取的 remote 状态仍属于同一仓库。
   statusIdentities.value = Object.fromEntries(
     draft.value.subProjects.map((repo) => [repo.id, repositoryIdentity(repo)]),
@@ -803,7 +803,7 @@ onBeforeUnmount(() => {
               repo.developmentBranch
             }}</code>
           </div>
-          <div class="mapping-branch">
+          <div v-if="draft.scmTestProjectId.trim()" class="mapping-branch">
             <span>测试分支</span
             ><code v-bind="branchCopyProps(repo.testBranch)" data-test>{{
               repo.testBranch || '未配置'

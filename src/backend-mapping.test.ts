@@ -60,13 +60,13 @@ describe('SCM 映射', () => {
       ])[0].scmGitId,
     ).toBe('42');
   });
-  it('只应用开发映射时保留既有测试分支', () => {
+  it('只应用开发映射时清空既有测试分支', () => {
     const result = mapBackendModules(
       [{ ...repo, testBranch: 'saved-testing' }],
       { repo: module.gitRemoteUrl! },
       [module],
     );
-    expect(result[0]).toMatchObject({ developmentBranch: 'develop', testBranch: 'saved-testing' });
+    expect(result[0]).toMatchObject({ developmentBranch: 'develop', testBranch: '' });
     expect(repo.testBranch).toBe('');
   });
   it('明确加载测试映射时空结果或不匹配不能清空旧目标', () => {

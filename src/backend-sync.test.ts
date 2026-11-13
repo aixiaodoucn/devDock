@@ -43,11 +43,9 @@ describe('SCM 自动填入与仓库范围', () => {
     expect(repo.developmentBranch).toBe('old-development');
     expect(result.warnings).toEqual([]);
   });
-  it('只加载开发时保留原有测试分支，明确加载的测试缺失时清除旧目标并提示', () => {
+  it('只加载开发时清除原有测试分支，明确加载的测试缺失时提示', () => {
     const local = { ...repo, scmGitId: '7' };
-    expect(syncBackendModules([local], {}, [development]).repositories[0].testBranch).toBe(
-      'saved-testing',
-    );
+    expect(syncBackendModules([local], {}, [development]).repositories[0].testBranch).toBe('');
     const result = syncBackendModules([local], {}, [development], []);
     expect(result.visibleRepositoryIds).toEqual(['local-api']);
     expect(result.repositories[0].testBranch).toBe('');

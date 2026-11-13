@@ -48,6 +48,7 @@ function fixture(): Project {
     name: 'Example',
     type: 'backend',
     scmDevelopmentProjectId: '123',
+    scmTestProjectId: '456',
     subProjects: [
       {
         id: 'repo',
@@ -118,10 +119,14 @@ it('开发、测试、当前及未关联模块分支支持点击或键盘复制�
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal('navigator', { clipboard: { writeText } });
   const branch = 'feature/' + 'example-branch_'.repeat(20);
-  vi.mocked(api.scmProjectModules).mockResolvedValue([
-    { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch },
-    { gitId: '43', moduleName: 'unlinked', gitRemoteUrl: null, branch: 'feature/unlinked' },
-  ]);
+  vi.mocked(api.scmProjectModules).mockImplementation(async (id) =>
+    id === '456'
+      ? [{ gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'test' }]
+      : [
+          { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch },
+          { gitId: '43', moduleName: 'unlinked', gitRemoteUrl: null, branch: 'feature/unlinked' },
+        ],
+  );
   const panel = await ready();
   try {
     const development = panel.root.querySelector<HTMLElement>('.repository [data-development]')!;
@@ -192,6 +197,11 @@ it('未配置和游离 HEAD 等占位状态不提供复制入口', async () => {
   vi.stubGlobal('navigator', { clipboard: { writeText } });
   const initial = fixture();
   initial.subProjects[0].testBranch = '';
+  vi.mocked(api.scmProjectModules).mockImplementation(async (id) =>
+    id === '456'
+      ? []
+      : [{ gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'develop' }],
+  );
   const panel = await ready(initial);
   try {
     const statuses = await vi.mocked(api.backendRepositoryStatuses).mock.results.at(-1)!.value;
@@ -237,6 +247,7 @@ it('剪贴板拒绝时提示手动复制，不把失败报告为成功', async (
 
 it('切换master不依赖测试目标，预检后确认执行且不采用合并选项', async () => {
   const initial = fixture();
+  initial.scmTestProjectId = '';
   initial.subProjects[0].testBranch = '';
   const panel = await ready(initial);
   try {
@@ -371,8 +382,9 @@ it('待处理和测试项目全部进入开发及测试来源的共享候选列�
   }
 });
 
-it('仅开发 SCM ID 可加载、应用并保存，保留已有测试分支', async () => {
+it('仅开发 SCM ID 时只请求开发模块、清空旧测试分支并禁止测试操作', async () => {
   const initial = fixture();
+  initial.scmTestProjectId = '';
   initial.scmDevelopmentProjectId = '123';
   initial.subProjects[0].scmGitId = '42';
   vi.mocked(api.scmStatus).mockResolvedValue({
@@ -393,12 +405,19 @@ it('仅开发 SCM ID 可加载、应用并保存，保留已有测试分支', as
     expect(panel.save).toHaveBeenCalledOnce();
     expect(panel.save.mock.calls[0][0].subProjects[0]).toMatchObject({
       developmentBranch: 'feature/new',
-      testBranch: 'test',
+      testBranch: '',
     });
     expect(panel.save.mock.calls[0][0].scmTestProjectId).toBe('');
     panel.project.value = panel.save.mock.calls[0][0];
     await flush();
     expect(panel.root.textContent).toContain('映射已保存');
+    expect(panel.root.querySelector('[data-test]')).toBeNull();
+    for (const name of ['切换到测试分支', '合并到测试分支']) {
+      expect(button(panel.root, name).disabled).toBe(true);
+      expect(button(panel.root, name).title).toContain('请填写测试 SCM 项目 ID');
+      click(panel.root, name);
+    }
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
   } finally {
     panel.close();
   }
@@ -485,9 +504,21 @@ it('填写测试 ID 但模块为空时不能按开发-only应用', async () => {
     panel.close();
   }
 });
-it.each(['', 'develop'])('测试分支为 %j 时合并仍被拦截，切换无需测试 SCM ID', async (branch) => {
+it.each(['', 'develop'])('测试分支为 %j 时合并仍被拦截，开发切换不受影响', async (branch) => {
   const initial = fixture();
   initial.subProjects[0].testBranch = branch;
+  vi.mocked(api.scmProjectModules).mockImplementation(async (id) =>
+    id === '456' && !branch
+      ? []
+      : [
+          {
+            gitId: '42',
+            moduleName: 'service',
+            gitRemoteUrl: null,
+            branch: id === '456' ? branch : 'develop',
+          },
+        ],
+  );
   const panel = await ready(initial);
   try {
     click(panel.root, '合并到测试分支');
@@ -856,12 +887,12 @@ beforeEach(() => {
       error: '',
     })),
   );
-  vi.mocked(api.scmProjectModules).mockResolvedValue([
+  vi.mocked(api.scmProjectModules).mockImplementation(async (id) => [
     {
       gitId: '42',
       moduleName: 'service',
       gitRemoteUrl: 'https://example.invalid/team/service.git',
-      branch: 'develop',
+      branch: id === '456' ? 'test' : 'develop',
     },
   ]);
   vi.mocked(api.backendGitOperations).mockResolvedValue([]);
@@ -1377,7 +1408,7 @@ it('修改测试源保留开发范围并要求加载测试目标，修改开发�
     click(panel.root, '切换开发分支');
     await flush();
     expect(panel.root.querySelector('.plan')).not.toBeNull();
-    input(panel.root, '.scm-projects label:nth-child(2) input', '456');
+    input(panel.root, '.scm-projects label:nth-child(2) input', '789');
     await flush();
     expect(panel.root.querySelector('.plan')).toBeNull();
     expect(panel.root.querySelectorAll('.repository')).toHaveLength(1);
@@ -1397,6 +1428,63 @@ it('修改测试源保留开发范围并要求加载测试目标，修改开发�
     panel.close();
   }
 });
+it.each(['合并到测试分支', '切换到测试分支'])(
+  '%s 预检后清空测试 ID 立即隐藏测试分支并清除计划，开发加载清空全部旧测试目标',
+  async (operation) => {
+    const initial = fixture();
+    initial.subProjects.push({
+      ...initial.subProjects[0],
+      id: 'unlinked',
+      name: 'Unlinked',
+      path: '/example/unlinked',
+      scmGitId: '99',
+      testBranch: 'test/stale-unlinked',
+    });
+    const panel = await ready(initial);
+    try {
+      // 模拟仍带旧测试目标的未关联本地配置，开发范围不包含该仓库。
+      panel.project.value = {
+        ...panel.project.value,
+        subProjects: panel.project.value.subProjects.map((repo) =>
+          repo.id === 'unlinked' ? { ...repo, testBranch: 'test/stale-unlinked' } : repo,
+        ),
+      };
+      await flush();
+      expect(panel.root.querySelectorAll('.repository')).toHaveLength(1);
+      click(panel.root, operation);
+      await flush();
+      expect(panel.root.querySelector('.plan')).not.toBeNull();
+      expect(panel.root.querySelector('[data-test]')?.textContent).toBe('test');
+      input(panel.root, '.scm-projects label:nth-child(2) input', '');
+      await flush();
+      expect(panel.root.querySelector('[data-test]')).toBeNull();
+      expect(panel.root.querySelector('.plan')).toBeNull();
+      vi.mocked(api.prepareBackendGit).mockClear();
+      for (const name of ['切换到测试分支', '合并到测试分支']) {
+        expect(button(panel.root, name).disabled).toBe(true);
+        click(panel.root, name);
+      }
+      expect(api.prepareBackendGit).not.toHaveBeenCalled();
+      vi.mocked(api.scmProjectModules).mockClear();
+      panel.save.mockClear();
+      click(panel.root, '加载模块');
+      await flush();
+      expect(api.scmProjectModules).toHaveBeenCalledExactlyOnceWith('123');
+      expect(panel.save).toHaveBeenCalledOnce();
+      const saved = panel.save.mock.calls[0][0] as Project;
+      expect(saved.scmTestProjectId).toBe('');
+      expect(
+        saved.subProjects.map((repo) => ({ id: repo.id, testBranch: repo.testBranch })),
+      ).toEqual([
+        { id: 'repo', testBranch: '' },
+        { id: 'unlinked', testBranch: '' },
+      ]);
+      expect(api.executeBackendGit).not.toHaveBeenCalled();
+    } finally {
+      panel.close();
+    }
+  },
+);
 it('缺失测试匹配清空目标并警告，开发切换仍可预检', async () => {
   const initial = fixture();
   initial.scmTestProjectId = '456';
@@ -1481,6 +1569,7 @@ it('已加载范围的新增外部仓库自动匹配并保存，普通状态刷�
 });
 it('加载使用配置 remote 的最新状态，自动保存失败保留分支并重新加载重试', async () => {
   const initial = fixture();
+  initial.scmTestProjectId = '';
   initial.subProjects[0].remote = 'upstream';
   initial.subProjects[0].scmGitId = '';
   vi.mocked(api.backendRepositoryStatuses).mockImplementation(async (repositories) =>
@@ -1617,6 +1706,7 @@ it('首次按唯一 URL 识别 Git ID 后立即自动保存，不被身份刷新
 });
 it('完整开发 SCM 链接加载并规范保存后，父回执保留关联范围且允许预检', async () => {
   const initial = fixture();
+  initial.scmTestProjectId = '';
   initial.scmDevelopmentProjectId = 'https://example.invalid/projects/123';
   vi.mocked(api.scmProjectModules).mockResolvedValue([
     { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'feature/from-link' },
@@ -1788,6 +1878,9 @@ it('测试切换仅预检选中仓库，即使勾选推送与 pom 策略仍传 f
 it('测试切换允许当前位于其他分支且开发与测试目标相同', async () => {
   const initial = fixture();
   initial.subProjects[0].testBranch = 'develop';
+  vi.mocked(api.scmProjectModules).mockResolvedValue([
+    { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'develop' },
+  ]);
   const readStatus = vi.mocked(api.backendRepositoryStatuses).getMockImplementation()!;
   vi.mocked(api.backendRepositoryStatuses).mockImplementation(async (repositories) =>
     (await readStatus(repositories)).map((status) => ({
@@ -1817,6 +1910,11 @@ it('测试切换允许当前位于其他分支且开发与测试目标相同', a
 it('缺少测试分支时禁止测试切换，空目标显示未配置', async () => {
   const initial = fixture();
   initial.subProjects[0].testBranch = '';
+  vi.mocked(api.scmProjectModules).mockImplementation(async (id) =>
+    id === '456'
+      ? []
+      : [{ gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'develop' }],
+  );
   const panel = await ready(initial);
   try {
     expect(panel.root.querySelector('code[data-test]')?.textContent).toBe('未配置');
@@ -1832,12 +1930,12 @@ it('缺少测试分支时禁止测试切换，空目标显示未配置', async (
 it('测试源草稿与已保存但未加载的测试源均阻止测试切换', async () => {
   const panel = await ready();
   try {
-    input(panel.root, '.scm-projects label:nth-child(2) input', '456');
+    input(panel.root, '.scm-projects label:nth-child(2) input', '789');
     await flush();
     expect(button(panel.root, '切换到测试分支').title).toContain('请重新加载模块并等待自动保存');
     click(panel.root, '切换到测试分支');
     expect(api.prepareBackendGit).not.toHaveBeenCalled();
-    panel.project.value = { ...panel.project.value, scmTestProjectId: '456' };
+    panel.project.value = { ...panel.project.value, scmTestProjectId: '789' };
     await flush();
     expect(button(panel.root, '切换开发分支').disabled).toBe(false);
     expect(button(panel.root, '切换到测试分支').title).toContain('请先加载测试目标');
@@ -2065,7 +2163,7 @@ it('批量操作说明紧邻标题、保留选中数量且仅有未保存配置�
         node.textContent?.includes('先获取远端并预检，核对计划后执行。'),
       ),
     ).toBe(false);
-    input(panel.root, '.scm-projects label:nth-child(2) input', '456');
+    input(panel.root, '.scm-projects label:nth-child(2) input', '789');
     await flush();
     expect(section.querySelector('[data-scm-unsaved]')?.textContent).toContain('SCM 配置有更改');
     expect(button(panel.root, '推送开发分支到远程').disabled).toBe(true);

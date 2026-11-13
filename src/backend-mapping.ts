@@ -60,8 +60,8 @@ export function syncBackendModules(
     }
     visibleRepositoryIds.push(repository.id);
     matchedModules.add(moduleId);
-    let testBranch = repository.testBranch;
-    // 未选择测试源时保留旧目标；明确选择后，缺失目标不能沿用旧分支误合并。
+    let testBranch = '';
+    // 测试目标只能来自本次明确加载的测试源，不能沿用历史分支。
     if (testing !== undefined) {
       const paired = testing.filter((candidate) => candidate.gitId?.trim() === moduleId);
       if (paired.length === 1 && paired[0].branch.trim()) testBranch = paired[0].branch.trim();
@@ -117,8 +117,8 @@ export function mapBackendModules(
       scmGitId: module.gitId!,
       scmModuleName: module.moduleName,
       developmentBranch: module.branch,
-      // 未请求测试映射时保留已有目标，不能因只更新开发分支而清空。
-      testBranch: paired ? paired[0].branch : repository.testBranch,
+      // 未请求测试映射时清空历史目标，测试分支必须来自当前测试源。
+      testBranch: paired ? paired[0].branch : '',
     };
   });
 }
