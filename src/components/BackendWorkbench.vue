@@ -763,10 +763,7 @@ onBeforeUnmount(() => {
       <p v-if="!draft.subProjects.length" class="empty">
         尚未配置子项目，请通过“编辑项目 / 扫描父目录”添加。
       </p>
-      <p v-else-if="!developmentLoaded" class="empty">
-        已配置{{ draft.subProjects.length }}个子项目，请先加载开发SCM项目
-      </p>
-      <p v-else-if="!visibleRepositories.length" class="empty">
+      <p v-else-if="developmentLoaded && !visibleRepositories.length" class="empty">
         暂无关联仓库，请编辑项目添加本地路径或核对 SCM Git ID。
       </p>
       <div v-for="repo in visibleRepositories" :key="repo.id" class="repository">

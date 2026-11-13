@@ -414,7 +414,7 @@ it('外部新增子项目在开发源加载前不展示，且保留未保存开�
     panel.project.value = { ...initial, subProjects: fixture().subProjects };
     await flush();
     expect(panel.root.querySelector('.repository-title')).toBeNull();
-    expect(panel.root.textContent).toContain('已配置1个子项目，请先加载开发SCM项目');
+    expect(panel.root.querySelector('[aria-label="SCM 项目与仓库"] .empty')).toBeNull();
     expect(panel.root.querySelector<HTMLInputElement>('[data-scm-project-input]')!.value).toBe(
       '123',
     );
