@@ -63,10 +63,16 @@ watch(nodeMode, () => {
   nodeDetectionMessage.value = '';
 });
 onBeforeUnmount(() => nodeDetectionSequence++);
-async function detectNodeRoot() {
+function detectTools() {
+  if (props.detecting || props.saving || props.busy || detectingNode.value || !desktop) return;
+  emit('detect');
+  void detectNodeRoot(true);
+}
+async function detectNodeRoot(scanAll = false) {
   const manager = nodeMode.value;
   if (props.saving || props.busy || detectingNode.value || !desktop) return;
-  if (manager !== 'nvm' && manager !== 'fnm') return;
+  const selectedManager = manager === 'nvm' || manager === 'fnm' ? manager : undefined;
+  if (!selectedManager && !scanAll) return;
   const sequence = ++nodeDetectionSequence;
   const initialRoot = nodeRoot.value;
   detectingNode.value = true;
@@ -74,8 +80,18 @@ async function detectNodeRoot() {
   nodeDetectionMessage.value = '';
   const isCurrent = () => sequence === nodeDetectionSequence && manager === nodeMode.value;
   try {
-    const versions = await api.nodeVersions({ manager });
+    const versions = await api.nodeVersions(
+      selectedManager ? { manager: selectedManager } : undefined,
+    );
     if (!isCurrent() || nodeRoot.value !== initialRoot || props.saving || props.busy) return;
+    // 未选管理器时只展示发现结果，避免检测改变已有项目的环境含义。
+    if (!selectedManager) {
+      const managers = [...new Set(versions.map((version) => version.manager || 'nvm'))];
+      nodeDetectionMessage.value = managers.length
+        ? `已检测到 ${managers.join('、')}，共 ${versions.length} 个 Node.js 版本。请选择公共环境模式后检测目录，并保存设置。`
+        : '未检测到 nvm/fnm 已安装版本。可使用终端默认环境；此检测不运行 Node.js，未核验终端当前版本。';
+      return;
+    }
     const roots = [
       ...new Set(
         versions
@@ -131,7 +147,8 @@ function validateDraft() {
   return true;
 }
 function saveDraft() {
-  if (!props.saving && !props.busy && validateDraft()) emit('save', cloneSettings(draft.value));
+  if (!props.saving && !props.busy && !props.detecting && !detectingNode.value && validateDraft())
+    emit('save', cloneSettings(draft.value));
 }
 function exportDraft() {
   // 导出当前表单快照，包含尚未保存的终端命令，不改动已保存设置。
@@ -178,16 +195,25 @@ watch(
               <h2>开发工具</h2>
               <p>项目可以覆盖这里的默认配置。</p>
             </div>
-            <button
-              type="button"
-              class="button small"
-              :disabled="detecting || !desktop"
-              @click="emit('detect')"
-            >
-              <RefreshCw :size="14" :class="{ spinning: detecting }" />{{
-                detecting ? '检测中' : '自动检测'
-              }}
-            </button>
+            <div class="button-row settings-tool-actions">
+              <button
+                type="button"
+                class="button small"
+                :disabled="detecting || detectingNode || saving || busy || !desktop"
+                @click="detectTools"
+              >
+                <RefreshCw :size="14" :class="{ spinning: detecting || detectingNode }" />{{
+                  detecting || detectingNode ? '检测中' : '自动检测'
+                }}
+              </button>
+              <button
+                type="submit"
+                class="button primary small"
+                :disabled="saving || busy || detecting || detectingNode"
+              >
+                {{ saving ? '保存中…' : '保存设置' }}
+              </button>
+            </div>
           </div>
           <div class="form-stack">
             <label
@@ -276,7 +302,7 @@ watch(
                     type="button"
                     class="button small"
                     :disabled="saving || busy || detectingNode || !desktop"
-                    @click="detectNodeRoot"
+                    @click="detectNodeRoot()"
                   >
                     <RefreshCw :size="14" :class="{ spinning: detectingNode }" />{{
                       detectingNode ? '检测中…' : '检测本地目录'
@@ -294,10 +320,10 @@ watch(
                     <option v-for="root in nodeRoots" :key="root" :value="root">{{ root }}</option>
                   </select>
                 </label>
-                <p v-if="nodeDetectionMessage" class="field-help" role="status">
-                  {{ nodeDetectionMessage }}
-                </p>
               </template>
+              <p v-if="nodeDetectionMessage" class="field-help" role="status">
+                {{ nodeDetectionMessage }}
+              </p>
             </fieldset>
           </div>
         </section>
@@ -338,11 +364,6 @@ watch(
             </template>
           </AiToolsEditor>
         </section>
-      </div>
-      <div class="form-end settings-save">
-        <button class="button primary" :disabled="saving || busy">
-          {{ saving ? '保存中…' : '保存设置' }}
-        </button>
       </div>
     </form>
     <div class="settings-support-grid">
@@ -470,8 +491,10 @@ watch(
   border: 0;
   border-top: 1px solid var(--line);
 }
-.settings-save {
-  margin-top: 14px;
+.settings-tool-actions {
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .settings-support-grid {
   display: grid;

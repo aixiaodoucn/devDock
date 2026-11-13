@@ -16,6 +16,7 @@ async function flush() {
 }
 function mount(settings: Settings = defaultConfig().settings) {
   const state = reactive({ settings, saving: false, busy: false });
+  const detectTools = vi.fn();
   const save = vi.fn();
   const exportSettings = vi.fn();
   const error = vi.fn();
@@ -28,6 +29,7 @@ function mount(settings: Settings = defaultConfig().settings) {
         tools: { hbuilderxPath: '', terminals: [], jdks: [] },
         detecting: false,
         projectCount: 0,
+        onDetect: detectTools,
         onSave: save,
         onExport: exportSettings,
         onError: error,
@@ -37,6 +39,7 @@ function mount(settings: Settings = defaultConfig().settings) {
   return {
     state,
     root,
+    detectTools,
     save,
     exportSettings,
     error,
@@ -85,6 +88,49 @@ describe('SettingsPage 公共 Node.js 环境', () => {
     vi.mocked(api.nodeVersions).mockResolvedValue([]);
     vi.mocked(api.choosePath).mockResolvedValue(null);
   });
+  it('自动检测同时检测工具与所选 Node 管理器，顶部保存提交检测后的草稿', async () => {
+    vi.mocked(api.nodeVersions).mockResolvedValue([version('fnm', '/example/fnm')]);
+    const panel = mount({ ...defaultConfig().settings, nodeManager: 'fnm' });
+    try {
+      const actions = panel.root.querySelector('.settings-tool-actions')!;
+      const buttons = actions.querySelectorAll<HTMLButtonElement>('button');
+      buttons[0].click();
+      expect(panel.detectTools).toHaveBeenCalledTimes(1);
+      expect(api.nodeVersions).toHaveBeenCalledWith({ manager: 'fnm' });
+      panel.submit();
+      expect(panel.save).not.toHaveBeenCalled();
+      await flush();
+      expect(buttons[1].textContent).toContain('保存设置');
+      buttons[1].click();
+      expect(panel.save).toHaveBeenCalledWith(
+        expect.objectContaining({ nodeManager: 'fnm', fnmDir: '/example/fnm' }),
+      );
+      expect(panel.state.settings.fnmDir).toBe('');
+    } finally {
+      panel.dispose();
+    }
+  });
+  it.each(['', 'system'] as const)(
+    '自动检测在模式 %s 下发现管理器但不覆盖选择',
+    async (manager) => {
+      vi.mocked(api.nodeVersions).mockResolvedValue([
+        version('nvm', '/example/nvm'),
+        version('fnm', '/example/fnm'),
+      ]);
+      const panel = mount({ ...defaultConfig().settings, nodeManager: manager });
+      try {
+        panel.root.querySelector<HTMLButtonElement>('.settings-tool-actions button')!.click();
+        await flush();
+        expect(panel.detectTools).toHaveBeenCalledTimes(1);
+        expect(api.nodeVersions).toHaveBeenCalledWith(undefined);
+        expect(panel.root.textContent).toContain('已检测到 nvm、fnm，共 2 个 Node.js 版本');
+        panel.submit();
+        expect(panel.save).toHaveBeenCalledWith(expect.objectContaining({ nodeManager: manager }));
+      } finally {
+        panel.dispose();
+      }
+    },
+  );
   it.each([undefined, ''] as const)(
     '旧配置 %s 在保存其它偏好时保持兼容，不自动启用覆盖',
     async (manager) => {
