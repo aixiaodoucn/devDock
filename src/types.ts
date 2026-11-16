@@ -51,6 +51,7 @@ export interface BackendGitPlanRepository {
   targetBranch: string;
   targetSha: string;
   createTracking: boolean;
+  syncTestBranch?: boolean;
   remoteSha: string;
 }
 export interface BackendGitPlan {

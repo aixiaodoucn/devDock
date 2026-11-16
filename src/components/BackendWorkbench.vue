@@ -940,8 +940,11 @@ onBeforeUnmount(() => {
                   : item.targetBranch
               }}</code>
             </div>
+            <span v-if="plan.operation === 'merge' && item.syncTestBranch" class="warning">
+              本地测试分支落后于远端，执行时将先快进同步远端最新代码，再合并开发分支。
+            </span>
             <span
-              v-if="
+              v-else-if="
                 plan.operation === 'merge' && item.remoteSha && item.targetSha !== item.remoteSha
               "
               class="warning"

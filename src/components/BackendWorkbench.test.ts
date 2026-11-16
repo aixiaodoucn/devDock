@@ -808,6 +808,36 @@ it('普通目录记录不参与 Git 选择，也不阻断其他仓库的 SCM 映
   }
 });
 
+it.each([true, false])(
+  '合并计划区分快进同步与本地未推送提交：syncTestBranch=%s',
+  async (syncTestBranch) => {
+    const prepare = vi.mocked(api.prepareBackendGit).getMockImplementation()!;
+    vi.mocked(api.prepareBackendGit).mockImplementation(async (...args) => {
+      const plan = await prepare(...args);
+      return {
+        ...plan,
+        repositories: plan.repositories.map((item) => ({
+          ...item,
+          targetSha: 'local-test',
+          remoteSha: 'remote-test',
+          syncTestBranch,
+        })),
+      };
+    });
+    const panel = await ready();
+    try {
+      click(panel.root, '合并到测试分支');
+      await flush();
+      const text = panel.root.querySelector('.plan')?.textContent || '';
+      expect(text.includes('先快进同步远端最新代码')).toBe(syncTestBranch);
+      expect(text.includes('测试分支已有本地未推送提交')).toBe(!syncTestBranch);
+      expect(api.executeBackendGit).not.toHaveBeenCalled();
+    } finally {
+      panel.close();
+    }
+  },
+);
+
 it('pom 冲突策略默认关闭，只有合并预检携带，修改后旧计划失效', async () => {
   const panel = await ready();
   try {

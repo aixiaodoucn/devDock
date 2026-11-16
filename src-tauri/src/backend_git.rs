@@ -68,6 +68,8 @@ pub struct PlanRepository {
     pub target_sha: String,
     pub create_tracking: bool,
     pub remote_sha: String,
+    #[serde(default)]
+    pub sync_test_branch: bool,
     // 仅比较配置身份；不向前端或日志传递可能包含凭据的真实 URL。
     #[serde(skip)]
     remote_identity: u64,
@@ -265,6 +267,32 @@ fn valid_branch(path: &Path, name: &str) -> Result<()> {
 }
 fn remote_ref(repo: &Repository, target: &str) -> String {
     format!("refs/remotes/{}/{target}", repo.remote)
+}
+// 只更新 remote-tracking refs；显式 refspec 不受用户 fetch 配置影响，也不移动本地分支。
+fn fetch_remote(path: &Path, repo: &Repository, task: Option<&tasks::Task>) -> Result<()> {
+    fetch_remote_checked(path, repo, || task.map_or(Ok(()), tasks::Task::check))
+}
+fn fetch_remote_checked(
+    path: &Path,
+    repo: &Repository,
+    check: impl Fn() -> Result<()>,
+) -> Result<()> {
+    check()?;
+    validate_remote(repo)?;
+    run_checked(
+        path,
+        &[
+            "fetch",
+            "--prune",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--",
+            &repo.remote,
+            &format!("+refs/heads/*:refs/remotes/{}/*", repo.remote),
+        ],
+        check,
+    )
+    .map(|_| ())
 }
 fn validate_remote(repo: &Repository) -> Result<()> {
     let path = Path::new(&repo.path);
@@ -545,6 +573,7 @@ fn snapshot_with_task(
             target_sha: remote_sha.clone(),
             create_tracking: false,
             remote_sha,
+            sync_test_branch: false,
             remote_identity: remote_identity(repo),
         });
     }
@@ -568,18 +597,25 @@ fn snapshot_with_task(
         Err(_) => return Err("目标分支不存在，且没有明确的远端分支".into()),
     };
     occupied(path, target, operation != "merge")?;
-    // 允许保留本地领先提交；落后或分叉必须由用户明确整理，绝不自动覆盖。
+    // 预检不移动本地分支：领先提交保留，落后允许执行时快进，仅分叉拒绝。
+    let mut sync_test_branch = false;
     if operation == "merge"
         && !remote_sha.is_empty()
         && target_sha != remote_sha
         && run(
             path,
             &["merge-base", "--is-ancestor", &remote_sha, &target_sha],
-            None,
+            task,
         )
         .is_err()
     {
-        return Err("本地测试分支落后于远端或已分叉，请先同步或处理分支".into());
+        run(
+            path,
+            &["merge-base", "--is-ancestor", &target_sha, &remote_sha],
+            task,
+        )
+        .map_err(|_| "本地测试分支与远端已分叉，请先处理分支后重新准备".to_string())?;
+        sync_test_branch = true;
     }
     let common = run(path, &["rev-parse", "--git-common-dir"], None)?;
     Ok(PlanRepository {
@@ -592,6 +628,7 @@ fn snapshot_with_task(
         target_sha,
         create_tracking,
         remote_sha,
+        sync_test_branch,
         remote_identity: remote_identity(repo),
     })
 }
@@ -662,6 +699,7 @@ fn revalidate_with_task(
         || now.target_sha != saved.target_sha
         || now.create_tracking != saved.create_tracking
         || now.remote_sha != saved.remote_sha
+        || now.sync_test_branch != saved.sync_test_branch
         || now.remote_identity != saved.remote_identity
     {
         return Err("仓库已变化，请重新准备操作".into());
@@ -699,19 +737,7 @@ pub fn prepare(
     tasks::run_backend(app.clone(), project_id.clone(), move |task| {
         let result = (|| {
             for repo in &fetch_repositories {
-                run(
-                    Path::new(&repo.path),
-                    &[
-                        "fetch",
-                        "--prune",
-                        "--no-tags",
-                        "--no-recurse-submodules",
-                        "--",
-                        &repo.remote,
-                        &format!("+refs/heads/*:refs/remotes/{}/*", repo.remote),
-                    ],
-                    Some(task),
-                )?;
+                fetch_remote(Path::new(&repo.path), repo, Some(task))?;
             }
             preflight_with_task(&repositories, &preflight_operation, Some(task))
         })();
@@ -1003,6 +1029,43 @@ fn perform_with_options(
     if sha(worktree, "HEAD")? != saved.target_sha {
         return Err("目标分支在创建工作区时已变化，已保留现场".into());
     }
+    // fetch 前也比较 tracking ref 和远端身份，避免覆盖并发变化而漏报。
+    if remote_identity(repo) != saved.remote_identity
+        || sha(path, &remote_ref(repo, &saved.target_branch)).unwrap_or_default()
+            != saved.remote_sha
+    {
+        return Err("仓库已变化，请重新准备操作；工作区已保留".into());
+    }
+    // 在独立工作区重新拉取，固定用户确认过的远端 SHA；远端变化必须重新准备。
+    if !run(path, &["remote"], task)?.is_empty() {
+        fetch_remote(worktree, repo, task)?;
+    }
+    validate_worktree(saved, worktree, task)?;
+    let current = status(repo)?;
+    if current.root != saved.root
+        || current.current_branch != saved.current_branch
+        || current.head != saved.source_sha
+        || current.dirty
+        || current.merging
+        || current.rebasing
+        || remote_identity(repo) != saved.remote_identity
+        || sha(path, &remote_ref(repo, &saved.target_branch)).unwrap_or_default()
+            != saved.remote_sha
+        || sha(worktree, "HEAD")? != saved.target_sha
+    {
+        return Err("仓库或远端在同步时已变化，请重新准备操作；工作区已保留".into());
+    }
+    if saved.sync_test_branch {
+        // 不使用 reset/rebase；--ff-only 即使发生并发变化也不能覆盖本地提交。
+        run(
+            worktree,
+            &["merge", "--ff-only", "--no-edit", "--", &saved.remote_sha],
+            task,
+        )?;
+        if sha(worktree, "HEAD")? != saved.remote_sha {
+            return Err("测试分支在快进时已变化，已保留现场".into());
+        }
+    }
     if let Err(error) = run(
         worktree,
         &["merge", "--no-edit", "--", &saved.source_sha],
@@ -1267,11 +1330,16 @@ fn complete_worktree(
         return Err("工作区仍有未提交修改，已保留".into());
     }
     let head = sha(worktree, "HEAD")?;
-    run(
-        worktree,
-        &["merge-base", "--is-ancestor", &saved.source_sha, &head],
-        task,
-    )?;
+    for baseline in [&saved.source_sha, &saved.target_sha]
+        .into_iter()
+        .chain(saved.sync_test_branch.then_some(&saved.remote_sha))
+    {
+        run(
+            worktree,
+            &["merge-base", "--is-ancestor", baseline, &head],
+            task,
+        )?;
+    }
     run(
         Path::new(&saved.root),
         &[
@@ -1290,8 +1358,10 @@ fn abort_worktree(
     task: Option<&tasks::Task>,
 ) -> Result<()> {
     validate_worktree(saved, worktree, task)?;
+    // 仅允许准备时基线或本次确认的快进基线；中止开发合并不撤销远端同步。
     // 合并已提交或用户手工移动过目标时，不把“移除工作区”冒充撤销合并。
-    if sha(worktree, "HEAD")? != saved.target_sha {
+    let head = sha(worktree, "HEAD")?;
+    if head != saved.target_sha && !(saved.sync_test_branch && head == saved.remote_sha) {
         return Err("测试分支已有新提交，不能自动中止；请确认后完成处理，提交不会被撤销".into());
     }
     let merge_head = run(worktree, &["rev-parse", "--git-path", "MERGE_HEAD"], task)?;
@@ -2629,7 +2699,7 @@ mod tests {
         assert_eq!(git(dir.path(), &["config", "branch.test.remote"]), "origin");
     }
     #[test]
-    fn behind_or_diverged_test_branch_is_rejected_without_overwriting_local_commits() {
+    fn behind_test_branch_is_planned_but_divergence_preserves_local_commits() {
         let (dir, repo) = fixture();
         let bare = tempdir().unwrap();
         git(bare.path(), &["init", "--bare", "--template="]);
@@ -2655,7 +2725,9 @@ mod tests {
         git(&checkout, &["push", "origin", "test"]);
         git(dir.path(), &["fetch", "origin"]);
         let original = git(dir.path(), &["rev-parse", "test"]);
-        assert!(snapshot(&repo, "merge").is_err());
+        let saved = snapshot(&repo, "merge").unwrap();
+        assert!(saved.sync_test_branch);
+        assert_eq!(saved.target_sha, original);
         assert_eq!(git(dir.path(), &["rev-parse", "test"]), original);
         git(dir.path(), &["switch", "test"]);
         change(dir.path(), "local commit to preserve\n");
@@ -2668,6 +2740,180 @@ mod tests {
             "local commit to preserve"
         );
     }
+    fn behind_merge_fixture(conflict: bool) -> (TempDir, Repository, TempDir) {
+        let (dir, repo, remote) = push_fixture(true);
+        let local = sha(dir.path(), "test").unwrap();
+        git(dir.path(), &["switch", "test"]);
+        if conflict {
+            change(dir.path(), "remote test edit\n");
+        } else {
+            fs::write(dir.path().join("remote-only"), "remote test commit\n").unwrap();
+            git(dir.path(), &["add", "remote-only"]);
+            git(dir.path(), &["commit", "-m", "remote test commit"]);
+        }
+        git(dir.path(), &["push", "origin", "test"]);
+        git(dir.path(), &["switch", "dev"]);
+        git(dir.path(), &["branch", "-f", "test", &local]);
+        change(dir.path(), "approved development\n");
+        (dir, repo, remote)
+    }
+
+    #[test]
+    fn merge_fast_forwards_behind_test_only_after_confirmation_and_preserves_remote_history() {
+        let (dir, repo, remote) = behind_merge_fixture(false);
+        let before = git(dir.path(), &["show-ref"]);
+        let saved = preflight(&[repo.clone()], "merge").unwrap().remove(0);
+        assert!(saved.sync_test_branch);
+        assert_eq!(git(dir.path(), &["show-ref"]), before);
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        perform(&saved, "merge", false, &worktree, None, || {
+            assert_eq!(sha(dir.path(), "test")?, saved.target_sha);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(git(dir.path(), &["rev-parse", "test^1"]), saved.remote_sha);
+        assert_eq!(git(dir.path(), &["rev-parse", "test^2"]), saved.source_sha);
+        assert_eq!(
+            git(dir.path(), &["show", "test:remote-only"]),
+            "remote test commit"
+        );
+        assert_eq!(
+            git(dir.path(), &["show", "test:file"]),
+            "approved development"
+        );
+        assert_eq!(
+            sha(remote.path(), "refs/heads/test").unwrap(),
+            saved.remote_sha
+        );
+        assert_eq!(branch(dir.path()), "dev");
+        assert_eq!(sha(dir.path(), "HEAD").unwrap(), saved.source_sha);
+        assert!(git(dir.path(), &["status", "--porcelain=v1"]).is_empty());
+        assert!(!worktree.exists());
+    }
+
+    #[test]
+    fn merge_sync_rejects_remote_changes_since_confirmation_even_without_external_fetch() {
+        for deleted in [false, true] {
+            let (dir, repo, remote) = behind_merge_fixture(false);
+            let saved = snapshot(&repo, "merge").unwrap();
+            if deleted {
+                git(remote.path(), &["update-ref", "-d", "refs/heads/test"]);
+            } else {
+                git(
+                    remote.path(),
+                    &["update-ref", "refs/heads/test", &saved.target_sha],
+                );
+            }
+            // 本地 tracking ref 仍旧匹配；必须由执行中的 fetch 检测真实远端变化。
+            revalidate(&saved, "merge").unwrap();
+            let tmp = tempdir().unwrap();
+            let worktree = tmp.path().join("merge");
+            assert!(perform(&saved, "merge", false, &worktree, None, || Ok(()))
+                .unwrap_err()
+                .contains("重新准备"));
+            assert_eq!(sha(dir.path(), "test").unwrap(), saved.target_sha);
+            assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.target_sha);
+            abort_worktree(&saved, &worktree, None).unwrap();
+            assert!(!worktree.exists());
+        }
+    }
+
+    #[test]
+    fn merge_fetch_cancels_before_and_after_git_starts_without_moving_local_branches() {
+        use std::cell::Cell;
+        let (dir, repo, _remote) = behind_merge_fixture(false);
+        let local = sha(dir.path(), "test").unwrap();
+        let source = sha(dir.path(), "dev").unwrap();
+        for cancel_at in [1, 3] {
+            let checks = Cell::new(0);
+            let started = Instant::now();
+            let result = fetch_remote_checked(dir.path(), &repo, || {
+                checks.set(checks.get() + 1);
+                if checks.get() >= cancel_at {
+                    Err("任务已取消".into())
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result.unwrap_err(), "任务已取消");
+            assert_eq!(checks.get(), cancel_at);
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert_eq!(sha(dir.path(), "test").unwrap(), local);
+            assert_eq!(sha(dir.path(), "dev").unwrap(), source);
+            assert_eq!(branch(dir.path()), "dev");
+        }
+    }
+
+    #[test]
+    fn merge_sync_rejects_source_target_tracking_and_identity_changes() {
+        for change_kind in ["source", "target", "tracking", "identity"] {
+            let (dir, repo, _remote) = behind_merge_fixture(false);
+            let saved = snapshot(&repo, "merge").unwrap();
+            let tmp = tempdir().unwrap();
+            let worktree = tmp.path().join("merge");
+            let result = perform(&saved, "merge", false, &worktree, None, || {
+                match change_kind {
+                    "source" => change(dir.path(), "unapproved development\n"),
+                    "target" => {
+                        git(
+                            dir.path(),
+                            &["update-ref", "refs/heads/test", &saved.remote_sha],
+                        );
+                    }
+                    "tracking" => {
+                        git(
+                            dir.path(),
+                            &["update-ref", "refs/remotes/origin/test", &saved.target_sha],
+                        );
+                    }
+                    "identity" => {
+                        git(
+                            dir.path(),
+                            &["remote", "set-url", "origin", tmp.path().to_str().unwrap()],
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+                Ok(())
+            });
+            assert!(result.is_err(), "{change_kind}");
+            if worktree.exists() {
+                assert_ne!(sha(&worktree, "HEAD").unwrap(), saved.source_sha);
+            }
+            assert_eq!(git(dir.path(), &["show", "test:file"]), "base");
+        }
+    }
+
+    #[test]
+    fn merge_sync_conflict_abort_keeps_fast_forward_and_rejects_committed_resolution() {
+        for committed in [false, true] {
+            let (dir, repo, remote) = behind_merge_fixture(true);
+            let saved = snapshot(&repo, "merge").unwrap();
+            let tmp = tempdir().unwrap();
+            let worktree = tmp.path().join("merge");
+            assert!(perform(&saved, "merge", false, &worktree, None, || Ok(())).is_err());
+            assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.remote_sha);
+            assert_eq!(branch(dir.path()), "dev");
+            if committed {
+                fs::write(worktree.join("file"), "resolved\n").unwrap();
+                git(&worktree, &["add", "file"]);
+                git(&worktree, &["commit", "-m", "resolve"]);
+                assert!(abort_worktree(&saved, &worktree, None).is_err());
+                complete_worktree(&saved, &worktree, None).unwrap();
+            } else {
+                abort_worktree(&saved, &worktree, None).unwrap();
+                assert_eq!(sha(dir.path(), "test").unwrap(), saved.remote_sha);
+                assert_eq!(git(dir.path(), &["show", "test:file"]), "remote test edit");
+            }
+            assert_eq!(
+                sha(remote.path(), "refs/heads/test").unwrap(),
+                saved.remote_sha
+            );
+            assert!(!worktree.exists());
+        }
+    }
+
     #[test]
     fn completed_repository_is_not_rolled_back_when_next_repository_fails() {
         let (first, repo) = fixture();
