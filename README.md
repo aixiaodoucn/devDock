@@ -4,29 +4,30 @@
 
 ## 界面预览
 
+### uniapp中的app 项目工作台
+
+选择 Android APK、Android WGT 或 iOS WGT 构建目标，配置版本并查看构建环境与历史记录。
+
+![app](docs/img/PixPin_2026-11-16_11-11-05.png)
+
 ### Node.js 项目工作台
 
 集中查看项目目录、当前 Git 分支和 Node.js 版本，执行已配置的终端命令。
 
-![Node.js 项目工作台](docs/img/PixPin_2026-11-16_11-11-05.png)
-
-### 小程序运行与发行
-
-通过 HBuilderX 菜单触发小程序开发运行与生产发行，并提供运行任务的停止入口。
-
-![小程序运行与发行](docs/img/PixPin_2026-11-16_11-12-11.png)
-
-### App 构建
-
-选择 Android APK、Android WGT 或 iOS WGT 构建目标，配置版本并查看构建环境与历史记录。
-
-![App 构建配置](docs/img/PixPin_2026-11-16_11-13-01.png)
+![nodejs](docs/img/PixPin_2026-11-16_11-12-11.png)
 
 ### 后端项目组与 SCM
 
 关联 SCM 项目与本地仓库，查看开发、测试及当前分支，并预检执行批量 Git 操作。
 
-![后端项目组、SCM 分支映射与 Git 批量操作](docs/img/PixPin_2026-11-16_11-13-18.png)
+![后端项目组与 SCM](docs/img/PixPin_2026-11-16_11-13-01.png)
+
+
+### uniapp中的小程序 项目工作台
+
+通过 HBuilderX 菜单触发小程序开发运行与生产发行，并提供运行任务的停止入口。
+
+![uniapp中的小程序 项目工作台](docs/img/PixPin_2026-11-16_11-13-18.png)
 
 ### 偏好设置
 
