@@ -365,9 +365,7 @@ watch(
                   >默认终端路径
                   <PathInput
                     v-model="draft.terminal"
-                    :placeholder="
-                      isWindows ? '选择 wt.exe、powershell.exe 或 pwsh.exe' : '手动指定终端应用路径'
-                    "
+                    :placeholder="isWindows ? '选择已适配终端的 EXE 文件' : '手动指定终端应用路径'"
                     :directory="!isWindows"
                     label="默认终端路径"
                     @error="emit('error', $event)"
@@ -413,8 +411,8 @@ watch(
         <div>
           <h3>{{ isWindows ? 'Windows 本地执行' : 'macOS 本地执行' }}</h3>
           <p v-if="isWindows">
-            终端命令通过 Windows Terminal 或 PowerShell 执行，日志和停止在终端中处理。HBuilderX
-            菜单自动化及 APK/WGT 构建暂不支持，不会修改系统执行策略。
+            终端命令在所选终端的 PowerShell 会话执行，日志和停止在终端中处理。Tabby 需确认 Run，Warp
+            需注册启动协议。HBuilderX 菜单自动化及 APK/WGT 构建暂不支持，不会修改系统执行策略。
           </p>
           <p v-else>
             HBuilderX 菜单操作需要辅助功能和自动化权限。终端任务在所选终端中查看日志和停止；App

@@ -162,7 +162,7 @@ pnpm exec tauri build
 
 - 项目管理、排序、Git 分支、读取 package.json、自定义终端命令、逐命令环境变量、JSON 导入导出可使用基础工作台逻辑。
 - 支持盘符和 UNC 路径，Windows 路径去重忽略大小写并统一分隔符；Mac 路径仍区分大小写。跨系统备份可导入，执行前需重新配置本机实际目录、终端和 Node 安装位置。
-- 默认终端为 PowerShell，也可在偏好设置检测 Windows Terminal / PowerShell 7 或手动选择 `wt.exe`、`powershell.exe`、`pwsh.exe`。在 Windows 上使用 Mac `.app` 终端路径会提示重新选择。
+- 默认终端为 PowerShell，也可检测 Windows Terminal、PowerShell 7、WezTerm、Alacritty、Tabby、Warp，或手动选择对应 EXE。检测覆盖 PATH、Program Files 与常见用户安装目录，便携版可手动选择。在 Windows 上使用 Mac `.app` 终端路径会提示重新选择。
 - 终端通过普通启动参数读取当前用户数据目录中的一次性 JSON，再删除该数据文件。目录、环境变量、命令内容按数据交接，无剪贴板模拟；目录切换失败时不继续执行命令。启动错误显示在保留的终端中，不修改执行策略、不提权。
 - Windows 命令遵循 PowerShell 语法，Mac 专用命令需要自行调整。读取 package.json 后提供 `npm.cmd` / `pnpm.cmd` / `yarn.cmd` 建议，使用工具官方 Windows 入口；手填命令若遇到 `npm.ps1` 策略限制，也可使用 `npm.cmd run dev`，应用不尝试绕过组织策略。
 - 支持终端默认环境、nvm-windows 与 fnm 已安装版本；所选 `node.exe` 目录只加入新会话的 PATH，不执行管理器的全局切换，不改变链接。版本不存在时在交接前失败，不自动下载或换版本。
@@ -345,7 +345,7 @@ WGT 确认框必须能通过辅助功能识别，具备 WGT 标识、目标项�
 
 ## 终端
 
-macOS 支持 Terminal、Ghostty、iTerm2、WezTerm、Kitty、Alacritty、Warp、Tabby、cmux，Windows 支持 Windows Terminal、PowerShell 及 PowerShell 7，均可手动指定终端路径。项目终端可以覆盖全局选择。
+macOS 支持 Terminal、Ghostty、iTerm2、WezTerm、Kitty、Alacritty、Warp、Tabby、cmux，Windows 支持 Windows Terminal、PowerShell、PowerShell 7、WezTerm、Alacritty、Tabby、Warp，均可手动指定终端路径。项目终端可以覆盖全局选择。
 
 - 项目「运行与发行」中的终端命令使用「项目名 · 执行命令」作为标签标题，不包含目录切换、环境变量或 Node 激活前缀。打开 AI/全局终端命令或仅打开目录时不主动设置标题。
 - Terminal 通过 AppleScript 打开终端执行。
@@ -360,7 +360,14 @@ macOS 支持 Terminal、Ghostty、iTerm2、WezTerm、Kitty、Alacritty、Warp、
 - Tabby 使用原生 `run` 创建新会话，必须在 Tabby 的确认框点击 **Run**；点击 Cancel 不会执行。DevDock 仅报告请求已发送，不能确认用户是否允许执行。
 - cmux 使用所选应用内的 CLI 创建新的 workspace，传入目录和命令。请先启动 cmux，并自行允许外部程序访问控制接口；默认仅允许 cmux 自身进程的配置可能拒绝 DevDock。应用不会改动 socket 权限、覆盖已有会话或自动重试。
 
-未知终端会在配置界面提示不支持，环境体检报错，执行时拒绝；不会退回按键模拟。当前按标准应用包名识别，请保留原始 `.app` 名称。新增的 macOS 适配不代表相同终端的 Windows 版本也已接入。
+未知终端会在配置界面提示不支持，环境体检报错，执行时拒绝；不会退回按键模拟。当前按标准应用包名或 EXE 名称识别，请保留原始名称。Windows 暂不接入 Ghostty、Kitty、iTerm2 或 cmux 桌面版；cmux Windows TUI 是另一种运行形态，本次未适配。
+
+Windows 的新增适配复用一次性 JSON 交接，统一在 PowerShell 中执行命令并保留用户 profile：
+
+- WezTerm 优先使用 `wezterm-gui.exe` 创建独立窗口，也支持 `wezterm.exe`；Alacritty 使用 `alacritty.exe -e` 创建窗口。
+- Tabby 使用 `Tabby.exe run --` 创建会话。等待用户确认时不会按普通启动超时删除交接数据；取消后未消费的数据由既有过期清理机制处理。
+- Warp 需要安装并注册 `warp://` 协议，由系统已注册的 Warp 处理请求；不假定 `warp.exe` 接受 URI 参数。配置写入 `%APPDATA%\warp\Warp\data\launch_configurations\DevDock-*.yaml`，终端消费 JSON 后或交接失败时清理本次配置。30 秒未消费会报告失败，不自动重试。便携版仅有 EXE 不保证协议可用。
+- 命令、环境变量和 Node 版本仍按数据传递；不更改 PowerShell 执行策略。新增终端的 Windows GUI 与安装包行为仍需实机验收。
 
 ### 执行 npm 命令需要辅助功能权限吗？
 
@@ -374,6 +381,7 @@ macOS 支持 Terminal、Ghostty、iTerm2、WezTerm、Kitty、Alacritty、Warp、
 | macOS WezTerm / Kitty / Alacritty             | 不需要                    | 使用原生命令行参数启动新窗口 |
 | macOS Warp / Tabby / cmux                    | 不需要                    | 原生配置或 CLI；分别受启动配置、执行确认、外部控制授权约束 |
 | Windows Terminal / PowerShell / PowerShell 7 | 不涉及 macOS 辅助功能权限 | 直接启动终端进程                                                               |
+| Windows WezTerm / Alacritty / Tabby / Warp | 不涉及 macOS 辅助功能权限 | 原生 CLI 或注册 URI；Tabby 需确认，Warp 需协议注册 |
 
 上述终端启动方式均不需要辅助功能权限。macOS 的「自动化」与「辅助功能」是两种独立权限，Terminal、Ghostty、iTerm2 首次使用时仍需按系统提示允许自动化控制；应用更新导致签名身份变化时，自动化授权也可能需要重新确认。HBuilderX 构建及菜单操作仍需要辅助功能权限。
 

@@ -22,7 +22,17 @@ describe('终端配置提示', () => {
       expect(terminalFeedback(path, false)).toEqual({ supported: true, message: '' });
     }
   });
-  it('按当前平台识别支持范围，Windows 仅接受已有启动入口', () => {
+  it('Windows 新增终端识别标准 EXE，Tabby 提示确认且不接受相对路径', () => {
+    for (const name of ['wezterm.exe', 'wezterm-gui.exe', 'Alacritty.exe', 'Tabby.exe', 'warp.exe']) {
+      expect(terminalFeedback(`C:\\Program Files\\${name}`, true).supported).toBe(true);
+      expect(terminalFeedback(name, true).supported).toBe(false);
+    }
+    expect(terminalFeedback('C:\\Tools\\TABBY.EXE', true).message).toContain('Run');
+    expect(terminalFeedback('C:\\Tools\\warp.exe', true).message).toContain('warp://');
+    expect(terminalFeedback('C:\\Tools\\kitty.exe', true).supported).toBe(false);
+    expect(terminalFeedback('C:\\Tools\\cmux.exe', true).supported).toBe(false);
+  });
+  it('按当前平台识别支持范围，Windows 仅接受已适配启动入口', () => {
     for (const path of ['PowerShell', 'WindowsTerminal', 'C:\\Program Files\\pwsh.exe']) {
       expect(terminalFeedback(path, true).supported).toBe(true);
       expect(terminalFeedback(path, false).supported).toBe(false);

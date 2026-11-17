@@ -597,8 +597,10 @@ pub fn action_with_title(
             }
             task.emit(
                 "log",
-                if terminal.ends_with("/Tabby.app") {
-                    "已向 Tabby 发送请求，请在 Tabby 中确认 Run；应用不能确认是否已执行，取消确认不会运行命令"
+                if terminal.ends_with("/Tabby.app")
+                    || terminal.replace('\\', "/").to_ascii_lowercase().ends_with("/tabby.exe")
+                {
+                    "已请求启动 Tabby，尚未确认命令执行；请检查 Tabby 是否打开并确认 Run，取消确认不会运行命令"
                 } else {
                     "命令已交给终端，应用不能确认其退出状态或取消终端进程"
                 },

@@ -308,6 +308,16 @@ fn check_terminal(report: &mut EnvironmentReport, terminal: &str, platform: &str
         );
         return;
     }
+    #[cfg(any(windows, test))]
+    if platform == "windows" && !crate::windows_terminal::is_supported(terminal) {
+        report.add(
+            "terminal",
+            "终端",
+            "error",
+            "此 Windows 终端尚未适配，请选择支持的终端 EXE",
+        );
+        return;
+    }
     match (platform, terminal) {
         ("macos", "" | "Terminal") => report.path(
             "terminal",
@@ -617,6 +627,28 @@ mod tests {
                 .unwrap();
             assert_eq!(item.status, expected, "{bundle}");
             assert!(item.detail.contains(detail), "{bundle}: {}", item.detail);
+        }
+    }
+
+    #[test]
+    fn windows_terminal_preflight_rejects_unadapted_executables() {
+        let (_dir, mut project, settings) = fixture();
+        project.project_type = "backend".into();
+        for (path, supported) in [
+            (r"C:\Tools\wezterm-gui.exe", true),
+            (r"C:\Tools\alacritty.exe", true),
+            (r"C:\Tools\Tabby.exe", true),
+            (r"C:\Tools\kitty.exe", false),
+            (r"C:\Tools\unknown.exe", false),
+        ] {
+            project.terminal = path.into();
+            let result = report(&project, &settings, "windows");
+            let item = result
+                .items
+                .iter()
+                .find(|item| item.id == "terminal")
+                .unwrap();
+            assert_eq!(!item.detail.contains("尚未适配"), supported, "{path}");
         }
     }
 

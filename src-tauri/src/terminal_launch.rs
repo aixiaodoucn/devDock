@@ -128,7 +128,7 @@ pub(crate) fn prepare(
     Ok(Some(launch))
 }
 
-fn warp_config(name: &str, cwd: &str, command: &str, title: &str) -> Result<Vec<u8>> {
+pub(crate) fn warp_config(name: &str, cwd: &str, command: &str, title: &str) -> Result<Vec<u8>> {
     // JSON 是合法 YAML，避免引号、换行、冒号或 Unicode 改变配置结构。
     // https://docs.warp.dev/terminal/sessions/launch-configurations
     let title = if title.is_empty() { "DevDock" } else { title };
@@ -143,7 +143,7 @@ fn warp_config(name: &str, cwd: &str, command: &str, title: &str) -> Result<Vec<
     .map_err(|e| format!("序列化 Warp 启动配置失败：{e}"))
 }
 
-fn write_new_config(path: &Path, payload: &[u8]) -> Result<()> {
+pub(crate) fn write_new_config(path: &Path, payload: &[u8]) -> Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

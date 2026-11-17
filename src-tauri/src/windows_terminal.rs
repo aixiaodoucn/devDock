@@ -57,13 +57,47 @@ fn startup(path: &Path) -> Result<String> {
     ))
 }
 
+// PowerShell -EncodedCommand 使用 UTF-16LE Base64，避免多层 Windows 参数解析破坏引号。
+fn encode_powershell(code: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes: Vec<u8> = code.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let value = ((chunk[0] as u32) << 16)
+            | ((chunk.get(1).copied().unwrap_or(0) as u32) << 8)
+            | chunk.get(2).copied().unwrap_or(0) as u32;
+        encoded.push(ALPHABET[((value >> 18) & 63) as usize] as char);
+        encoded.push(ALPHABET[((value >> 12) & 63) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            ALPHABET[((value >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            ALPHABET[(value & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
+pub(crate) fn is_supported(terminal: &str) -> bool {
+    terminal_basename(terminal).is_ok()
+}
+
 #[derive(Debug)]
 struct LaunchSpec {
     program: String,
     args: Vec<String>,
     new_console: bool,
+    confirmation_required: bool,
+    hide_console: bool,
 }
-fn specification(terminal: &str, title: Option<&str>, path: &Path) -> Result<LaunchSpec> {
+fn terminal_basename(terminal: &str) -> Result<String> {
+    if terminal.contains('\0') {
+        return Err("终端路径不能包含 NUL 字符".into());
+    }
     let normalized = terminal.replace('\\', "/");
     if normalized
         .split('/')
@@ -85,11 +119,39 @@ fn specification(terminal: &str, title: Option<&str>, path: &Path) -> Result<Lau
     if !canonical && !absolute {
         return Err("终端必须为 Windows 终端名称或绝对 exe 路径".into());
     }
+    if !canonical
+        && !matches!(
+            basename.as_str(),
+            "wt.exe"
+                | "windowsterminal.exe"
+                | "powershell.exe"
+                | "pwsh.exe"
+                | "wezterm.exe"
+                | "wezterm-gui.exe"
+                | "alacritty.exe"
+                | "tabby.exe"
+                | "warp.exe"
+        )
+    {
+        return Err(
+            "请选择 Windows Terminal、PowerShell、WezTerm、Alacritty、Tabby 或 Warp 的可执行文件"
+                .into(),
+        );
+    }
+    Ok(basename)
+}
+
+fn specification(terminal: &str, title: Option<&str>, path: &Path) -> Result<LaunchSpec> {
+    let basename = terminal_basename(terminal)?;
+    if basename == "warp.exe" {
+        return Err("Warp 必须通过启动配置和已注册的 URI 协议启动".into());
+    }
     let wt = terminal == "WindowsTerminal"
         || matches!(basename.as_str(), "wt.exe" | "windowsterminal.exe");
-    if !wt && !canonical && !matches!(basename.as_str(), "powershell.exe" | "pwsh.exe") {
-        return Err("请选择 wt.exe、WindowsTerminal.exe、powershell.exe 或 pwsh.exe".into());
-    }
+    let native = matches!(
+        basename.as_str(),
+        "wezterm.exe" | "wezterm-gui.exe" | "alacritty.exe" | "tabby.exe"
+    );
     let program = match terminal {
         "WindowsTerminal" => "wt.exe",
         "" | "PowerShell" => "powershell.exe",
@@ -108,12 +170,76 @@ fn specification(terminal: &str, title: Option<&str>, path: &Path) -> Result<Lau
         }
         args.push("powershell.exe".into());
     }
-    args.extend(["-NoExit".into(), "-Command".into(), startup(path)?]);
+    if native {
+        match basename.as_str() {
+            "wezterm.exe" | "wezterm-gui.exe" => {
+                args.extend(["start".into(), "--always-new-process".into(), "--".into()])
+            }
+            "alacritty.exe" => args.push("-e".into()),
+            // Tabby 使用 yargs，-- 保留后面的 PowerShell 选项，执行前仍有 Run/Cancel 确认。
+            "tabby.exe" => args.extend(["run".into(), "--".into()]),
+            _ => unreachable!(),
+        }
+        args.extend([
+            "powershell.exe".into(),
+            "-NoExit".into(),
+            "-EncodedCommand".into(),
+            encode_powershell(&startup(path)?),
+        ]);
+    } else {
+        args.extend(["-NoExit".into(), "-Command".into(), startup(path)?]);
+    }
     Ok(LaunchSpec {
         program,
         args,
-        new_console: !wt,
+        new_console: !wt && !native,
+        confirmation_required: basename == "tabby.exe",
+        hide_console: false,
     })
+}
+
+fn with_warp_config(
+    appdata: &Path,
+    data: &LaunchData,
+    handoff_path: &Path,
+    handoff: impl FnOnce(LaunchSpec) -> Result<()>,
+) -> Result<()> {
+    if !appdata.is_absolute() {
+        return Err("无法定位 Windows APPDATA，不能生成 Warp 启动配置".into());
+    }
+    let directory = appdata.join("warp/Warp/data/launch_configurations");
+    fs::create_dir_all(&directory).map_err(|e| format!("创建 Warp 配置目录失败：{e}"))?;
+    let name = format!("DevDock-{}", uuid::Uuid::new_v4());
+    let config_path = directory.join(format!("{name}.yaml"));
+    let bootstrap = format!(
+        "powershell.exe -NoExit -EncodedCommand {}",
+        encode_powershell(&startup(handoff_path)?)
+    );
+    let payload = crate::terminal_launch::warp_config(
+        &name,
+        &data.path,
+        &bootstrap,
+        data.title.as_deref().unwrap_or(""),
+    )?;
+    crate::terminal_launch::write_new_config(&config_path, &payload)?;
+    // Windows 官方入口是注册 URI；不假定 warp.exe 接受 URI 参数，也不使用 cmd /c。
+    let request = format!("try {{ Start-Process -FilePath 'warp://launch/{name}' -ErrorAction Stop }} catch {{ Write-Error 'Warp URI 启动失败，请检查 Warp 的安装和协议注册。'; exit 1 }}");
+    let spec = LaunchSpec {
+        program: "powershell.exe".into(),
+        // 此进程只打开 URI；业务终端仍加载用户 profile，且不修改 ExecutionPolicy。
+        args: vec![
+            "-NoProfile".into(),
+            "-EncodedCommand".into(),
+            encode_powershell(&request),
+        ],
+        new_console: false,
+        confirmation_required: false,
+        hide_console: true,
+    };
+    let result = handoff(spec);
+    // 成功表示终端已消费 JSON，此时配置必已读取；失败不留下失效的交接配置。
+    let _ = fs::remove_file(config_path);
+    result
 }
 
 fn write_data(dir: &Path, data: &LaunchData) -> Result<PathBuf> {
@@ -161,6 +287,21 @@ fn handoff_ready(exit_success: Option<bool>, consumed: bool) -> Result<bool> {
         return Err("终端启动进程退出失败".into());
     }
     Ok(consumed)
+}
+
+fn observe_confirmation_launch(
+    mut observe: impl FnMut() -> Result<(Option<bool>, bool)>,
+    mut pause: impl FnMut(),
+) -> Result<()> {
+    // 观察约两秒的早期启动失败；仍运行且未消费只代表待确认，不代表命令已执行。
+    for _ in 0..40 {
+        let (exit_success, consumed) = observe()?;
+        if handoff_ready(exit_success, consumed)? || exit_success == Some(true) {
+            return Ok(());
+        }
+        pause();
+    }
+    Ok(())
 }
 
 fn cleanup(dir: &Path, now: SystemTime, owner_alive: impl Fn(u32) -> bool) {
@@ -232,7 +373,6 @@ pub fn launch(
     title: Option<&str>,
     data_dir: &Path,
 ) -> Result<()> {
-    use std::{os::windows::process::CommandExt, process::Command, time::Instant};
     let data = launch_data(
         project,
         action,
@@ -242,32 +382,59 @@ pub fn launch(
     let dir = data_dir.join("terminal-handoffs");
     cleanup(&dir, SystemTime::now(), owner_alive);
     // 写入执行数据前先验证终端，再生成仅引用数据路径的启动代码。
-    specification(terminal, title, &dir.join("validation.json"))?;
+    let basename = terminal_basename(terminal)?;
+    if basename == "warp.exe" && !Path::new(terminal).is_file() {
+        return Err("所选 Warp EXE 不存在，请重新选择已安装的 Warp".into());
+    }
     with_data(&dir, &data, |path| {
-        let spec = specification(terminal, title, path)?;
-        let mut command = Command::new(spec.program);
-        // 保留控制台输入输出，不重定向到 NUL，以免隐藏启动错误。
-        command.args(spec.args);
-        if spec.new_console {
-            command.creation_flags(0x10);
-        } // CREATE_NEW_CONSOLE
-        let mut child = command.spawn().map_err(|e| format!("终端启动失败: {e}"))?;
-        let start = Instant::now();
-        loop {
-            // 启动器非零退出时不能误报命令交接成功。
-            let status = child.try_wait().map_err(|e| e.to_string())?;
-            if handoff_ready(status.map(|status| status.success()), !path.exists())? {
-                return Ok(());
-            }
-            if start.elapsed() > Duration::from_secs(15) {
-                return Err(
-                    "终端未读取启动数据；请检查终端、PowerShell profile 或组织策略。未尝试绕过策略"
-                        .into(),
-                );
-            }
-            std::thread::sleep(Duration::from_millis(50));
+        if basename == "warp.exe" {
+            let appdata = std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .ok_or("缺少 Windows APPDATA，无法创建 Warp 配置")?;
+            with_warp_config(&appdata, &data, path, |spec| launch_process(spec, path))
+                .map_err(|error| format!("Warp 交接失败：{error}。请确认 Warp 已安装并注册 warp:// 协议，且支持 Launch Configurations。"))
+        } else {
+            launch_process(specification(terminal, title, path)?, path)
         }
     })
+}
+
+#[cfg(windows)]
+fn launch_process(spec: LaunchSpec, path: &Path) -> Result<()> {
+    use std::{os::windows::process::CommandExt, process::Command, time::Instant};
+    let mut command = Command::new(spec.program);
+    // 业务终端保留控制台输入输出，只有 Warp 的 URI 启动器隐藏额外控制台。
+    command.args(spec.args);
+    if spec.new_console {
+        command.creation_flags(0x10); // CREATE_NEW_CONSOLE
+    } else if spec.hide_console {
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let mut child = command.spawn().map_err(|e| format!("终端启动失败: {e}"))?;
+    if spec.confirmation_required {
+        // 用户可能长时间停留在确认框，保留 JSON 等待 Run，不能按普通启动超时删除。
+        // 未消费的文件由既有的过期交接清理处理；这里只报告请求已发出。
+        return observe_confirmation_launch(
+            || {
+                let status = child.try_wait().map_err(|e| e.to_string())?;
+                Ok((status.map(|status| status.success()), !path.exists()))
+            },
+            || std::thread::sleep(Duration::from_millis(50)),
+        );
+    }
+    let start = Instant::now();
+    let timeout = Duration::from_secs(if spec.hide_console { 30 } else { 15 });
+    loop {
+        // 启动器非零退出时不能误报命令交接成功。
+        let status = child.try_wait().map_err(|e| e.to_string())?;
+        if handoff_ready(status.map(|status| status.success()), !path.exists())? {
+            return Ok(());
+        }
+        if start.elapsed() > timeout {
+            return Err("终端未读取启动数据；请检查终端、PowerShell profile 或组织策略；Warp 还需已注册 URI 协议。未自动重试。".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[cfg(test)]
@@ -329,6 +496,106 @@ mod tests {
             assert!(specification(bad, None, path).is_err());
         }
     }
+    #[test]
+    fn native_windows_terminals_keep_bootstrap_options_and_confirmation_separate() {
+        let path = Path::new(r"C:\用户 空间\a'b$`\data.json");
+        for (terminal, prefix, confirmation) in [
+            (
+                r"C:\Tools\wezterm-gui.exe",
+                vec!["start", "--always-new-process", "--"],
+                false,
+            ),
+            (r"C:\Tools\alacritty.exe", vec!["-e"], false),
+            (r"C:\Tools\Tabby.exe", vec!["run", "--"], true),
+        ] {
+            let spec = specification(terminal, Some("中文标题"), path).unwrap();
+            assert_eq!(&spec.args[..prefix.len()], prefix.as_slice());
+            assert_eq!(spec.args[prefix.len()], "powershell.exe");
+            assert_eq!(
+                &spec.args[prefix.len() + 1..spec.args.len() - 1],
+                ["-NoExit", "-EncodedCommand"]
+            );
+            assert!(spec
+                .args
+                .last()
+                .unwrap()
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)));
+            assert!(!spec.new_console);
+            assert_eq!(spec.confirmation_required, confirmation);
+        }
+        assert!(is_supported(r"C:\Tools\WEZTERM.EXE"));
+        assert!(!is_supported(r"C:\Tools\kitty.exe"));
+        assert!(!is_supported("alacritty.exe"));
+    }
+
+    #[test]
+    fn powershell_bootstrap_encoding_uses_utf16le() {
+        assert_eq!(encode_powershell("A"), "QQA=");
+        assert_eq!(encode_powershell("😀"), "PdgA3g==");
+        assert_eq!(encode_powershell(""), "");
+    }
+
+    #[test]
+    fn warp_uses_roaming_config_and_registered_uri_then_cleans_owned_file() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("warp/Warp/data/launch_configurations");
+        fs::create_dir_all(&directory).unwrap();
+        let existing = directory.join("user.yaml");
+        fs::write(&existing, "keep").unwrap();
+        let data = LaunchData {
+            path: r"C:\中文 '目录".into(),
+            env: vec![],
+            command: "user-command-secret".into(),
+            node_bin: None,
+            title: Some("标题".into()),
+        };
+        let payload = Path::new(r"C:\用户\handoff.json");
+        let mut names = vec![];
+        for fail in [false, true] {
+            let result = with_warp_config(root.path(), &data, payload, |spec| {
+                assert_eq!(spec.program, "powershell.exe");
+                assert!(spec.hide_console);
+                assert!(!spec.new_console);
+                assert_eq!(&spec.args[..2], ["-NoProfile", "-EncodedCommand"]);
+                let file = fs::read_dir(&directory)
+                    .unwrap()
+                    .flatten()
+                    .map(|e| e.path())
+                    .find(|p| p != &existing)
+                    .unwrap();
+                let value: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+                let name = value["name"].as_str().unwrap();
+                assert_eq!(file.file_stem().unwrap().to_str().unwrap(), name);
+                names.push(name.to_owned());
+                let tab = &value["windows"][0]["tabs"][0];
+                assert_eq!(tab["layout"]["cwd"], data.path);
+                assert_eq!(tab["title"], "标题");
+                let code = tab["layout"]["commands"][0]["exec"].as_str().unwrap();
+                assert_eq!(
+                    code,
+                    format!(
+                        "powershell.exe -NoExit -EncodedCommand {}",
+                        encode_powershell(&startup(payload).unwrap())
+                    )
+                );
+                assert!(!code.contains(&data.command));
+                if fail {
+                    Err("synthetic launch failure".into())
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+            assert_eq!(fs::read_to_string(&existing).unwrap(), "keep");
+        }
+        assert_ne!(names[0], names[1]);
+        assert!(is_supported(r"C:\Programs\Warp\warp.exe"));
+        assert!(with_warp_config(Path::new("relative"), &data, payload, |_| Ok(())).is_err());
+    }
+
     #[test]
     fn payload_is_json_data_and_startup_only_interpolates_quoted_filename() {
         let dir = tempfile::tempdir().unwrap();
@@ -420,6 +687,56 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
+    #[test]
+    fn confirmation_launch_reports_delayed_startup_failure_without_expiring_pending_data() {
+        let mut statuses = [(None, false), (Some(false), false)].into_iter();
+        assert!(observe_confirmation_launch(|| Ok(statuses.next().unwrap()), || {}).is_err());
+        let mut polls = 0;
+        observe_confirmation_launch(
+            || {
+                polls += 1;
+                Ok((None, false))
+            },
+            || {},
+        )
+        .unwrap();
+        assert_eq!(polls, 40);
+        observe_confirmation_launch(
+            || Ok((Some(true), false)),
+            || panic!("启动器正常转交后无需等待GUI退出"),
+        )
+        .unwrap();
+        observe_confirmation_launch(|| Ok((None, true)), || panic!("已消费数据无需继续等待"))
+            .unwrap();
+    }
+
+    #[test]
+    fn confirmation_request_keeps_unconsumed_data_for_late_acceptance() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = LaunchData {
+            path: r"C:\项目".into(),
+            env: vec![],
+            command: "npm run dev".into(),
+            node_bin: None,
+            title: None,
+        };
+        with_data(dir.path(), &data, |path| {
+            let spec = specification(r"C:\Tools\Tabby.exe", None, path)?;
+            assert!(spec.confirmation_required);
+            assert!(!handoff_ready(Some(true), false)?);
+            Ok(())
+        })
+        .unwrap();
+        let files: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(files.len(), 1);
+        cleanup(
+            dir.path(),
+            SystemTime::now() + Duration::from_secs(172800),
+            |_| true,
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
     #[test]
     fn cleanup_keeps_recent_live_and_unrelated_files() {
         let dir = tempfile::tempdir().unwrap();

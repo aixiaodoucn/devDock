@@ -70,6 +70,26 @@ fn add_jdk(jdks: &mut Vec<Tool>, path: PathBuf) {
     });
 }
 
+#[cfg(any(windows, test))]
+fn add_terminal(
+    terminals: &mut Vec<Tool>,
+    name: &str,
+    candidates: impl IntoIterator<Item = PathBuf>,
+) {
+    if let Some(path) = candidates.into_iter().find(|path| path.is_file()) {
+        let path = path.to_string_lossy().into_owned();
+        if !terminals
+            .iter()
+            .any(|tool| tool.path.eq_ignore_ascii_case(&path))
+        {
+            terminals.push(Tool {
+                name: name.into(),
+                path,
+            });
+        }
+    }
+}
+
 #[cfg(windows)]
 pub fn windows_tools() -> Tools {
     let env_path = |key| std::env::var_os(key).map(PathBuf::from);
@@ -105,6 +125,35 @@ pub fn windows_tools() -> Tools {
             name: "Windows PowerShell".into(),
             path: path.to_string_lossy().into_owned(),
         });
+    }
+    // 优先 GUI 入口，保留 PATH 与常见安装目录兜底；便携版仍可手动选择 EXE。
+    for (name, executables, install_directory) in [
+        (
+            "WezTerm",
+            &["wezterm-gui.exe", "wezterm.exe"][..],
+            "WezTerm",
+        ),
+        ("Alacritty", &["alacritty.exe"][..], "Alacritty"),
+        ("Tabby", &["Tabby.exe"][..], "Tabby"),
+        ("Warp", &["warp.exe"][..], "Warp"),
+    ] {
+        let mut candidates = vec![];
+        for executable in executables {
+            if let Some(path) = path_executable(executable) {
+                candidates.push(path);
+            }
+            if let Some(root) = programs.as_ref() {
+                candidates.push(root.join(install_directory).join(executable));
+            }
+            if let Some(root) = local.as_ref() {
+                candidates.push(
+                    root.join("Programs")
+                        .join(install_directory)
+                        .join(executable),
+                );
+            }
+        }
+        add_terminal(&mut terminals, name, candidates);
     }
     let mut jdks = vec![];
     if let Some(path) = env_path("JAVA_HOME") {
@@ -180,6 +229,22 @@ mod tests {
         );
         assert!(open_command(Path::new("/tmp"), false, "linux").is_err());
     }
+    #[test]
+    fn terminal_detection_skips_missing_candidates_without_executing_files() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("missing.exe");
+        let installed = root.path().join("Tabby.exe");
+        fs::write(&installed, b"not an executable").unwrap();
+        let mut found = vec![];
+        add_terminal(&mut found, "Tabby", [missing, installed.clone()]);
+        add_terminal(&mut found, "Tabby duplicate", [installed.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "Tabby");
+        assert_eq!(found[0].path, installed.to_string_lossy());
+        add_terminal(&mut found, "directory", [root.path().to_path_buf()]);
+        assert_eq!(found.len(), 1);
+    }
+
     #[test]
     fn jdk_detection_requires_java_exe_and_deduplicates_candidates() {
         let root = tempfile::tempdir().unwrap();
