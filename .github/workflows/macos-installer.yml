@@ -1,6 +1,19 @@
 name: macOS Installer
 
 on:
+  # GitHub 缓存按 ref 隔离；默认分支预热后，后续发布标签才可复用编译缓存。
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/macos-installer.yml'
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'index.html'
+      - 'vite.config.*'
+      - 'tsconfig*.json'
   workflow_dispatch:
   workflow_call:
     secrets:
@@ -12,7 +25,81 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  # 只取消过时的默认分支预热，不中断发布标签或手动打包。
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
 jobs:
+  # 与打包并行；调用方的 macos reusable job 仍须等待全部 job 成功才能发布。
+  test-macos:
+    name: macOS Tests
+    runs-on: macos-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: 配置项目指定版本的 pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
+        with:
+          run_install: false
+
+      - name: 配置 Node.js 22 与依赖缓存
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: 校验项目版本
+        run: node scripts/version.mjs check
+
+      - name: 测试版本同步工具
+        run: node --test scripts/test-version.mjs
+
+      - name: 验证发布流程
+        run: node --test scripts/test-release.mjs scripts/test-updater-manifest.mjs
+
+      - name: 配置原生测试 Rust 工具链
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup show active-toolchain
+          rustc --version
+
+      - name: 恢复 Rust 测试依赖缓存
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: macos-test
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: 安装锁定版本的项目依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 运行前端测试
+        run: pnpm test
+
+      - name: 运行原生测试
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
+
+      - name: 验证 macOS 自动化脚本
+        run: |
+          bash scripts/test-hbuilderx.sh
+          bash scripts/test-terminal.sh
+          bash scripts/test-build.sh
+
   build-macos:
     name: macOS Universal DMG
     runs-on: macos-latest
@@ -23,13 +110,14 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUSTUP_TOOLCHAIN: stable
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       # 使用 ad-hoc 签名，不要求 Apple Developer 证书或公证凭据。
       APPLE_SIGNING_IDENTITY: '-'
 
     steps:
       - name: 检查更新签名私钥
+        if: github.event_name != 'push' || github.ref != 'refs/heads/master'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           if [[ -z "${TAURI_SIGNING_PRIVATE_KEY//[[:space:]]/}" ]]; then
             printf '缺少 TAURI_SIGNING_PRIVATE_KEY，请配置 GitHub Actions secret 后重试\n' >&2
@@ -41,22 +129,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 配置 Node.js 22
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: '22'
-          package-manager-cache: false
-
-      - name: 校验项目版本
-        run: node scripts/version.mjs check
-
-      - name: 测试版本同步工具
-        run: node --test scripts/test-version.mjs
-
       - name: 配置项目指定版本的 pnpm
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
         with:
           run_install: false
+
+      - name: 配置 Node.js 22 与依赖缓存
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: 校验项目版本
+        run: node scripts/version.mjs check
 
       - name: 配置 Intel 与 Apple Silicon Rust 目标
         run: |
@@ -74,24 +161,30 @@ jobs:
           done
           xcodebuild -version
 
+      - name: 恢复 Rust 通用版依赖缓存
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: macos-universal
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
       - name: 安装锁定版本的项目依赖
         run: pnpm install --frozen-lockfile
 
-      - name: 运行前端与原生测试
-        run: |
-          pnpm test
-          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- --test-threads=1
-
-      - name: 验证 macOS 自动化脚本
-        run: |
-          bash scripts/test-hbuilderx.sh
-          bash scripts/test-terminal.sh
-          bash scripts/test-build.sh
+      - name: 预热通用版编译缓存
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: pnpm exec tauri build --ci --target universal-apple-darwin --no-bundle
 
       - name: 构建通用版 DMG 安装包
+        if: github.event_name != 'push' || github.ref != 'refs/heads/master'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm exec tauri build --ci --target universal-apple-darwin --bundles app,dmg
 
       - name: 生成安装包 SHA256 校验文件
+        if: github.event_name != 'push' || github.ref != 'refs/heads/master'
         run: |
           shopt -s nullglob
           installers=(src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
@@ -106,6 +199,7 @@ jobs:
           done
 
       - name: 验证 app 更新包与签名
+        if: github.event_name != 'push' || github.ref != 'refs/heads/master'
         run: |
           # Tauri 2 的 app 更新归档在 bundle/macos，而非 bundle/dmg。
           archive='src-tauri/target/universal-apple-darwin/release/bundle/macos/DevDock.app.tar.gz'
@@ -116,6 +210,7 @@ jobs:
           tar -tzf "$archive" > /dev/null
 
       - name: 上传安装包
+        if: github.event_name != 'push' || github.ref != 'refs/heads/master'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: DevDock-macos-universal-${{ github.run_number }}

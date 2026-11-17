@@ -152,7 +152,14 @@ pnpm exec tauri build
 3. 成功后在运行详情底部 **Artifacts** 下载 `DevDock-macos-universal-运行编号`。
 4. 解压 ZIP，`dmg/` 中为 `.dmg` 和 `.dmg.sha256`，`macos/` 中为 app 更新包及 `.sig`；DMG 中包含 `DevDock.app`。产物保留 7 天。
 
-工作流安装锁定版本依赖，配置两个架构的 Rust 标准库，运行前后端测试及纯脚本测试，然后以 `universal-apple-darwin` 目标构建 DMG。安装包使用 ad-hoc 签名，无需 Apple Developer 证书；更新包另需配置上节的更新签名 Secret。它不包含 Developer ID 签名和 Apple 公证，macOS 可能提示开发者未验证，正式分发仍需另外配置签名与公证。
+工作流分为两个并行 job：`test-macos` 运行前后端测试及纯脚本测试，`build-macos` 配置两个架构的 Rust 标准库，并以 `universal-apple-darwin` 目标构建 DMG。Release Draft 仍等待两个 job 都成功后才继续发布流程。安装包使用 ad-hoc 签名，无需 Apple Developer 证书；更新包另需配置上节的更新签名 Secret。它不包含 Developer ID 签名和 Apple 公证，macOS 可能提示开发者未验证，正式分发仍需另外配置签名与公证。
+
+构建缓存与预热：
+
+- pnpm 依赖按锁文件缓存；Rust 测试与通用版编译分别缓存依赖产物，工具链和依赖变化由缓存键处理。应用本身仍会重新编译，测试、签名和产物校验不会因缓存命中而跳过。
+- `master` 上源码、构建配置、脚本或依赖文件变化时，自动运行测试及 Universal `--no-bundle` 编译预热，不需要签名私钥，不生成或上传安装包。连续推送会取消过时的预热；发布标签和手动打包不会因此被取消。
+- Rust 缓存仅由 `master` 保存，发布标签从默认分支恢复，避免不同标签间缓存隔离导致每次冷编译。首次合入后先等待默认分支预热完成，再触发发布，才能利用这次缓存；首次运行、工具链变化或缓存被淘汰时仍可能冷编译。
+- 并行测试与打包会占用两个 macOS runner；预热也会增加默认分支的 CI 运行。实际加速受缓存命中、runner 调度和测试耗时影响，以后续 Actions 日志为准。
 
 仅上传安装包和校验文件，不创建 Release，也不向仓库提交或推送。配置检查不代表 GitHub 构建已经成功，实际结果以 Actions 运行日志和安装验收为准。
 

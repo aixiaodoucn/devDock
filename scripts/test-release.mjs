@@ -255,6 +255,79 @@ test('缺少更新包、签名或签名为空时，任何 GitHub 操作前失败
   }
 });
 
+test('macOS 测试与打包并行，保留测试和发布产物校验', () => {
+  const macos = readFileSync(join(root, '.github/workflows/macos-installer.yml'), 'utf8');
+  assert.match(macos, /^  test-macos:/m);
+  assert.match(macos, /^  build-macos:/m);
+  const testJob = macos.slice(macos.indexOf('  test-macos:'), macos.indexOf('  build-macos:'));
+  const buildJob = macos.slice(macos.indexOf('  build-macos:'));
+  assert.doesNotMatch(buildJob, /^    needs:/m);
+  assert.doesNotMatch(testJob, /^    needs:/m);
+  assert.match(testJob, /pnpm test/);
+  assert.match(testJob, /cargo test --locked .*--lib -- --test-threads=1/);
+  for (const script of [
+    'test-version.mjs',
+    'test-release.mjs',
+    'test-updater-manifest.mjs',
+    'test-hbuilderx.sh',
+    'test-terminal.sh',
+    'test-build.sh',
+  ]) {
+    assert.ok(testJob.includes(script), script);
+  }
+  assert.doesNotMatch(testJob, /TAURI_SIGNING_PRIVATE_KEY/);
+  assert.match(buildJob, /--target universal-apple-darwin --bundles app,dmg/);
+  assert.match(buildJob, /DevDock-macos-universal-\$\{\{ github.run_number \}\}/);
+  assert.match(buildJob, /DevDock\.app\.tar\.gz/);
+  assert.match(buildJob, /tar -tzf/);
+  assert.match(buildJob, /shasum -a 256/);
+});
+
+test('macOS 缓存在默认分支预热，标签只恢复且预热不发布产物', () => {
+  const macos = readFileSync(join(root, '.github/workflows/macos-installer.yml'), 'utf8');
+  assert.match(macos, /push:\s*\n\s*branches: \[master\]/);
+  assert.match(
+    macos,
+    /cancel-in-progress: \$\{\{ github.event_name == 'push' && github.ref == 'refs\/heads\/master' \}\}/,
+  );
+  assert.equal((macos.match(/uses: Swatinem\/rust-cache@[a-f0-9]{40}/g) || []).length, 2);
+  assert.equal((macos.match(/workspaces: src-tauri -> target/g) || []).length, 2);
+  assert.equal(
+    (macos.match(/save-if: \$\{\{ github.ref == 'refs\/heads\/master' \}\}/g) || []).length,
+    2,
+  );
+  assert.match(macos, /shared-key: macos-test/);
+  assert.match(macos, /shared-key: macos-universal/);
+  assert.match(
+    macos,
+    /if: github.event_name == 'push' && github.ref == 'refs\/heads\/master'\s*\n\s*run: pnpm exec tauri build .*--no-bundle/,
+  );
+  for (const name of [
+    '检查更新签名私钥',
+    '构建通用版 DMG 安装包',
+    '生成安装包 SHA256 校验文件',
+    '验证 app 更新包与签名',
+    '上传安装包',
+  ]) {
+    // reusable workflow 继承调用方事件，发布标签也是 push，不能只按 event_name 排除打包。
+    assert.ok(
+      macos.includes(
+        `- name: ${name}\n        if: github.event_name != 'push' || github.ref != 'refs/heads/master'`,
+      ),
+      name,
+    );
+  }
+  for (const job of ['test-macos', 'build-macos']) {
+    const start = macos.indexOf(`  ${job}:`);
+    const end = macos.indexOf('\n  build-macos:', start + 1);
+    const body = macos.slice(start, end < 0 ? undefined : end);
+    assert.ok(body.indexOf('uses: pnpm/action-setup@') < body.indexOf('uses: actions/setup-node@'));
+    assert.match(body, /cache: pnpm/);
+    assert.match(body, /cache-dependency-path: pnpm-lock.yaml/);
+    assert.match(body, /pnpm install --frozen-lockfile/);
+  }
+});
+
 test('Tag 发布必须经过版本检查和两个平台构建', () => {
   assert.match(workflow, /tags:\s*\n\s*- 'v\*'/);
   assert.match(workflow, /check --tag "\$RELEASE_TAG"/);
