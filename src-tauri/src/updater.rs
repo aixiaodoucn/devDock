@@ -142,13 +142,10 @@ fn begin_install(runtime: &Runtime) -> Result<()> {
     Ok(())
 }
 
-fn unlock_instance_files(current: &std::fs::File, legacy: Option<&std::fs::File>) -> Result<()> {
-    // Tauri 重启会先拉起新进程，再结束旧进程；需提前释放两个发布身份的实例锁。
-    if let Some(legacy) = legacy {
-        legacy
-            .unlock()
-            .map_err(|error| format!("释放旧版实例锁失败：{error}"))?;
-    }
+fn unlock_instance_file<R: tauri::Runtime>(app: &impl Manager<R>) -> Result<()> {
+    // 与启动时 app.manage(lock) 的类型保持一致，避免安装成功后因状态类型不匹配而 panic。
+    // Tauri 重启会先拉起新进程，再结束旧进程，因此需要提前释放当前实例锁。
+    let current = app.try_state::<std::fs::File>().ok_or("未找到应用实例锁")?;
     current
         .unlock()
         .map_err(|error| format!("释放实例锁失败：{error}"))
@@ -193,9 +190,7 @@ pub async fn install_update(app: AppHandle, window: WebviewWindow) -> Result<()>
             Err(format!("更新任务异常，请重试：{error}"))
         }
         Ok(Ok(())) => {
-            let locks = app.state::<(std::fs::File, Option<std::fs::File>)>();
-            let (current, legacy) = locks.inner();
-            if let Err(error) = unlock_instance_files(current, legacy.as_ref()) {
+            if let Err(error) = unlock_instance_file(&app) {
                 finish_failed_install(&app.state::<Runtime>());
                 return Err(format!(
                     "更新已安装，但{error}；请手动退出并重新打开 DevDock"
@@ -297,28 +292,35 @@ mod tests {
     }
 
     #[test]
-    fn instance_locks_are_released_before_starting_the_new_process() {
+    fn registered_instance_lock_is_released_before_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let open = |name| {
+        let open = || {
             std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
                 .truncate(false)
-                .open(dir.path().join(name))
+                .open(dir.path().join("instance.lock"))
                 .unwrap()
         };
-        let current = open("current.lock");
-        let legacy = open("legacy.lock");
+        let current = open();
         current.try_lock().unwrap();
-        legacy.try_lock().unwrap();
-        let next_current = open("current.lock");
-        let next_legacy = open("legacy.lock");
-        assert!(next_current.try_lock().is_err());
-        assert!(next_legacy.try_lock().is_err());
-        unlock_instance_files(&current, Some(&legacy)).unwrap();
-        next_current.try_lock().unwrap();
-        next_legacy.try_lock().unwrap();
+        let app = tauri::test::mock_builder()
+            .manage(current)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let next = open();
+        assert!(next.try_lock().is_err());
+        unlock_instance_file(&app).unwrap();
+        next.try_lock().unwrap();
+    }
+
+    #[test]
+    fn missing_instance_lock_returns_an_error_instead_of_panicking() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        assert!(unlock_instance_file(&app).is_err());
     }
 
     #[test]
