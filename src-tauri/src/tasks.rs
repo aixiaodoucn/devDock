@@ -558,22 +558,50 @@ pub fn action_with_title(
                 if terminal != "Terminal" && !Path::new(terminal).is_absolute() {
                     return Err("终端必须使用绝对路径".into());
                 }
+                if !crate::terminal_launch::is_supported_macos(terminal) {
+                    return Err("此终端尚未适配，请在设置中选择支持的终端并保留应用原包名".into());
+                }
                 // 仅 Node shell 动作有明确选择时激活；交给终端前再次验证安装文件。
                 let command = nvm::command_for(&project, &action)?;
                 // 交接前先收起快捷面板，让原生终端窗口显示在前台。
                 crate::tray::hide_quick_panel(task.app.clone())?;
                 let terminal_title = title.clone().unwrap_or_default();
-                let mut c = Command::new("/usr/bin/osascript");
-                c.arg(scripts.join("terminal.applescript"))
-                    .arg(terminal)
-                    .arg(&project.path)
-                    .arg(command)
-                    .arg(terminal_title);
-                task.command(c, 30)?;
+                let home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default();
+                let native = crate::terminal_launch::prepare(
+                    terminal,
+                    &project.path,
+                    &command,
+                    &terminal_title,
+                    &home,
+                )?;
+                let c = if let Some(native) = native {
+                    native
+                } else {
+                    let mut c = Command::new("/usr/bin/osascript");
+                    c.arg(scripts.join("terminal.applescript"))
+                        .arg(terminal)
+                        .arg(&project.path)
+                        .arg(command)
+                        .arg(terminal_title);
+                    c
+                };
+                task.command(c, 30).map_err(|error| {
+                    if terminal.ends_with("/cmux.app") {
+                        format!("cmux 交接失败：{error}。请先启动 cmux，并在 cmux 中允许外部程序访问控制接口；未自动重试。")
+                    } else {
+                        error
+                    }
+                })?;
             }
             task.emit(
                 "log",
-                "命令已交给终端，应用不能确认其退出状态或取消终端进程",
+                if terminal.ends_with("/Tabby.app") {
+                    "已向 Tabby 发送请求，请在 Tabby 中确认 Run；应用不能确认是否已执行，取消确认不会运行命令"
+                } else {
+                    "命令已交给终端，应用不能确认其退出状态或取消终端进程"
+                },
                 None,
                 None,
             );

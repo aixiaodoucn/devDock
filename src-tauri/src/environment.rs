@@ -298,6 +298,16 @@ fn check_jdk(
 }
 
 fn check_terminal(report: &mut EnvironmentReport, terminal: &str, platform: &str) {
+    // 路径存在不等于已适配，体检阶段先检查支持范围，避免执行时才发现。
+    if platform == "macos" && !crate::terminal_launch::is_supported_macos(terminal) {
+        report.add(
+            "terminal",
+            "终端",
+            "error",
+            "此终端尚未适配，请选择支持的终端并保留应用原包名",
+        );
+        return;
+    }
     match (platform, terminal) {
         ("macos", "" | "Terminal") => report.path(
             "terminal",
@@ -317,6 +327,21 @@ fn check_terminal(report: &mut EnvironmentReport, terminal: &str, platform: &str
         _ => {
             let path = Path::new(terminal);
             report.path("terminal", "终端", path, platform == "macos");
+            if platform == "macos" {
+                let item = report.items.last_mut().unwrap();
+                if item.status == "pass" {
+                    let notice = match path.file_name().and_then(|name| name.to_str()) {
+                        Some("Warp.app") => Some("通过 Warp 启动配置交接；配置将保留供异步读取，实际执行结果请在 Warp 中确认"),
+                        Some("Tabby.app") => Some("Tabby 会弹出 Run/Cancel 确认框；取消后不会执行命令"),
+                        Some("cmux.app") => Some("请先启动 cmux 并允许外部程序访问控制接口；体检不会连接 socket 或修改权限"),
+                        _ => None,
+                    };
+                    if let Some(notice) = notice {
+                        item.status = "warning".into();
+                        item.detail = notice.into();
+                    }
+                }
+            }
         }
     }
 }
@@ -569,6 +594,30 @@ mod tests {
             status(&report(&project, &settings, "macos"), "manifest"),
             "error"
         );
+    }
+
+    #[test]
+    fn existing_unknown_terminal_is_rejected_and_conditional_adapters_are_explained() {
+        let (dir, mut project, settings) = fixture();
+        project.project_type = "backend".into();
+        for (bundle, expected, detail) in [
+            ("Unknown.app", "error", "尚未适配"),
+            ("Warp.app", "warning", "启动配置"),
+            ("Tabby.app", "warning", "Run/Cancel"),
+            ("cmux.app", "warning", "外部程序"),
+        ] {
+            let path = dir.path().join(bundle);
+            fs::create_dir(&path).unwrap();
+            project.terminal = path.to_string_lossy().into_owned();
+            let result = report(&project, &settings, "macos");
+            let item = result
+                .items
+                .iter()
+                .find(|item| item.id == "terminal")
+                .unwrap();
+            assert_eq!(item.status, expected, "{bundle}");
+            assert!(item.detail.contains(detail), "{bundle}: {}", item.detail);
+        }
     }
 
     #[test]

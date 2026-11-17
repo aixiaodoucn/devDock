@@ -36,7 +36,7 @@ const features = [
   {
     icon: Terminal,
     title: '终端命令与 Node 版本',
-    text: '读取 package.json 脚本，macOS 使用 Ghostty、Terminal、iTerm2、WezTerm、Kitty 或 Alacritty，Windows 使用 Windows Terminal 或 PowerShell。可跟随终端默认环境，或选择本地 nvm / nvm-windows / fnm 已安装版本。',
+    text: '读取 package.json 脚本，macOS 使用 Ghostty、Terminal、iTerm2、WezTerm、Kitty、Alacritty、Warp、Tabby 或 cmux，Windows 使用 Windows Terminal 或 PowerShell。可跟随终端默认环境，或选择本地 nvm / nvm-windows / fnm 已安装版本。',
   },
   {
     icon: Terminal,
@@ -176,7 +176,7 @@ const faqs = [
   {
     question: '执行 npm run dev 也需要辅助功能权限吗？',
     answer:
-      'npm 本身不需要。DevDock 支持的 macOS 终端均通过原生 AppleScript 或命令行启动，不需要辅助功能权限。Terminal、Ghostty、iTerm2 首次可能需要允许自动化控制；WezTerm、Kitty、Alacritty 通过原生命令行创建新窗口。项目终端配置会覆盖全局设置。HBuilderX 构建和菜单操作仍需要辅助功能权限。Windows Terminal / PowerShell 不涉及 macOS 辅助功能权限。',
+      'npm 本身不需要。DevDock 支持的 macOS 终端均通过原生 AppleScript 或命令行启动，不需要辅助功能权限。Terminal、Ghostty、iTerm2 首次可能需要允许自动化控制；WezTerm、Kitty、Alacritty 通过原生命令行创建新窗口；Warp 使用启动配置，Tabby 需确认 Run，cmux 需先启动并允许外部控制。项目终端配置会覆盖全局设置。HBuilderX 构建和菜单操作仍需要辅助功能权限。Windows Terminal / PowerShell 不涉及 macOS 辅助功能权限。',
   },
   {
     question: '为什么脚本读取、HBuilderX 菜单读取或执行失败？',
@@ -201,7 +201,7 @@ const faqs = [
   {
     question: '点击执行后终端没有正确运行命令怎么办？',
     answer:
-      '检查项目目录与终端路径。Ghostty 需要支持 AppleScript 的新版，确认 macos-applescript 未设为 false；Terminal、Ghostty、iTerm2 需要允许 DevDock 自动化控制。WezTerm、Kitty、Alacritty 使用原生参数创建新窗口，请在终端中检查命令执行结果和 shell 配置。Windows 请确认终端为 Windows Terminal 或 PowerShell，命令使用 PowerShell 语法；npm.ps1 被策略限制时可使用 npm.cmd run dev，不修改组织执行策略。',
+      '检查项目目录与终端路径。Ghostty 需要支持 AppleScript 的新版，确认 macos-applescript 未设为 false；Terminal、Ghostty、iTerm2 需要允许 DevDock 自动化控制。WezTerm、Kitty、Alacritty 使用原生参数创建新窗口，请在终端中检查命令执行结果和 shell 配置。Warp 需支持 Launch Configurations；Tabby 请确认已点击 Run；cmux 请先启动并允许外部控制，失败时不会自动重试。Windows 请确认终端为 Windows Terminal 或 PowerShell，命令使用 PowerShell 语法；npm.ps1 被策略限制时可使用 npm.cmd run dev，不修改组织执行策略。',
   },
   {
     question: 'APK 构建报 JDK 或 Gradle 错误怎么办？',

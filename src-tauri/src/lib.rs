@@ -13,6 +13,7 @@ mod paths;
 mod scm;
 mod system_tools;
 mod tasks;
+mod terminal_launch;
 mod tray;
 mod tray_geometry;
 #[cfg(target_os = "macos")]
@@ -416,6 +417,9 @@ fn detect_macos_tools() -> Result<Tools> {
             ("WezTerm", "WezTerm.app"),
             ("Kitty", "kitty.app"),
             ("Alacritty", "Alacritty.app"),
+            ("Warp", "Warp.app"),
+            ("Tabby", "Tabby.app"),
+            ("cmux", "cmux.app"),
         ] {
             let path = directory.join(bundle);
             if path.is_dir() {

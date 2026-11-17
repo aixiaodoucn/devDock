@@ -345,7 +345,7 @@ WGT 确认框必须能通过辅助功能识别，具备 WGT 标识、目标项�
 
 ## 终端
 
-macOS 支持 Terminal、Ghostty、iTerm2、WezTerm、Kitty、Alacritty，Windows 支持 Windows Terminal、PowerShell 及 PowerShell 7，均可手动指定终端路径。项目终端可以覆盖全局选择。
+macOS 支持 Terminal、Ghostty、iTerm2、WezTerm、Kitty、Alacritty、Warp、Tabby、cmux，Windows 支持 Windows Terminal、PowerShell 及 PowerShell 7，均可手动指定终端路径。项目终端可以覆盖全局选择。
 
 - 项目「运行与发行」中的终端命令使用「项目名 · 执行命令」作为标签标题，不包含目录切换、环境变量或 Node 激活前缀。打开 AI/全局终端命令或仅打开目录时不主动设置标题。
 - Terminal 通过 AppleScript 打开终端执行。
@@ -356,7 +356,11 @@ macOS 支持 Terminal、Ghostty、iTerm2、WezTerm、Kitty、Alacritty，Windows
 - 工作目录安全引用，用户自定义命令按原意执行。终端任务只显示「已触发」，运行日志与服务停止在对应终端中处理。
 - 取消 DevDock 构建可以停止它管理的子进程，无法保证撤回 HBuilderX 已开始的内部发行或终端已收到的命令；请在对应工具中确认。
 
-Warp、Tabby、cmux 暂未接入本版本：Warp 执行命令需要生成并管理启动配置；Tabby 的 `run` 接口会要求用户确认；cmux 默认限制外部进程访问控制 socket。它们尚不能直接复用以上启动方式，手动指定这些应用路径会明确提示不支持。
+- Warp 使用原生 Launch Configuration 传入目录和命令，通过 URI 启动会话。每次请求生成唯一配置，保存在 `~/.warp/launch_configurations/DevDock-*.yaml`，文件仅当前用户可读写；为避免异步读取失败，启动后不会立即删除，可在不再使用时手动清理。需要 Warp 支持 Launch Configurations。
+- Tabby 使用原生 `run` 创建新会话，必须在 Tabby 的确认框点击 **Run**；点击 Cancel 不会执行。DevDock 仅报告请求已发送，不能确认用户是否允许执行。
+- cmux 使用所选应用内的 CLI 创建新的 workspace，传入目录和命令。请先启动 cmux，并自行允许外部程序访问控制接口；默认仅允许 cmux 自身进程的配置可能拒绝 DevDock。应用不会改动 socket 权限、覆盖已有会话或自动重试。
+
+未知终端会在配置界面提示不支持，环境体检报错，执行时拒绝；不会退回按键模拟。当前按标准应用包名识别，请保留原始 `.app` 名称。新增的 macOS 适配不代表相同终端的 Windows 版本也已接入。
 
 ### 执行 npm 命令需要辅助功能权限吗？
 
@@ -368,6 +372,7 @@ Warp、Tabby、cmux 暂未接入本版本：Warp 执行命令需要生成并管�
 | macOS Ghostty                               | 不需要                    | 使用原生 AppleScript 创建终端并执行命令；首次可能需要允许自动化控制 |
 | macOS iTerm2                                | 不需要                    | 使用原生 AppleScript 创建会话；首次可能需要允许自动化控制 |
 | macOS WezTerm / Kitty / Alacritty             | 不需要                    | 使用原生命令行参数启动新窗口 |
+| macOS Warp / Tabby / cmux                    | 不需要                    | 原生配置或 CLI；分别受启动配置、执行确认、外部控制授权约束 |
 | Windows Terminal / PowerShell / PowerShell 7 | 不涉及 macOS 辅助功能权限 | 直接启动终端进程                                                               |
 
 上述终端启动方式均不需要辅助功能权限。macOS 的「自动化」与「辅助功能」是两种独立权限，Terminal、Ghostty、iTerm2 首次使用时仍需按系统提示允许自动化控制；应用更新导致签名身份变化时，自动化授权也可能需要重新确认。HBuilderX 构建及菜单操作仍需要辅助功能权限。

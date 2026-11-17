@@ -26,9 +26,9 @@ on run argv
  set testDirectory to "/tmp/中文 路径' $HOME `literal`"
  set testTitle to "项目 '标题' $(literal)"
  set testCommand to "exec '/bin/zsh' -l -i -c 'printf hello'"
- repeat with bundle in {"/Applications/WezTerm.app", "/Applications/kitty.app", "/Applications/Alacritty.app"}
+ repeat with bundle in {"/Applications/WezTerm.app", "/Applications/kitty.app", "/Applications/Alacritty.app", "/Applications/Tabby.app"}
   set cliArgs to automation's cliArguments(contents of bundle, testDirectory, testCommand, testTitle)
-  if cliArgs does not contain testDirectory then error "CLI 缺少完整目录参数"
+  if contents of bundle is not "/Applications/Tabby.app" and cliArgs does not contain testDirectory then error "CLI 缺少完整目录参数"
   if last item of cliArgs is not testCommand then error "CLI 命令必须完整传入"
   set actualArgs to do shell script ("printf '%s\\n' " & automation's quoteArguments(cliArgs)) without altering line endings
   set expectedArgs to ""
@@ -44,6 +44,8 @@ on run argv
  if kittyArgs contains "--title" then error "未指定标题时应保留 Kitty 默认标题"
  set alacrittyArgs to automation's cliArguments("/Applications/Alacritty.app", testDirectory, testCommand, "")
  if items 1 thru 4 of alacrittyArgs is not {"--working-directory", testDirectory, "-e", "/bin/sh"} then error "Alacritty 的 -e 后必须直接跟启动程序"
+ set tabbyArgs to automation's cliArguments("/Applications/Tabby.app", testDirectory, testCommand, "")
+ if tabbyArgs is not {"run", "--", "/bin/sh", "-c", testCommand} then error "Tabby 必须使用原生 run 并用 -- 保留 shell 选项"
  set unknownRejected to false
  try
   automation's cliArguments("/Applications/Unknown.app", testDirectory, testCommand, testTitle)

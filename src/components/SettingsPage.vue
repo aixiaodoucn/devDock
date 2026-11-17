@@ -16,6 +16,7 @@ import { api, desktop } from '../api';
 import PathInput from './PathInput.vue';
 import AiToolsEditor from './AiToolsEditor.vue';
 import { isWindows } from '../platform';
+import { terminalFeedback } from '../terminal';
 const props = defineProps<{
   settings: Settings;
   tools: Tools;
@@ -35,6 +36,7 @@ const emit = defineEmits<{
 // 设置草稿需深拷贝，编辑终端命令时不能提前修改已保存的配置。
 const cloneSettings = (settings: Settings): Settings => JSON.parse(JSON.stringify(settings));
 const draft = ref(cloneSettings(props.settings));
+const terminalNotice = computed(() => terminalFeedback(draft.value.terminal));
 const settingsForm = ref<HTMLFormElement>();
 const nodeMode = computed({
   get: () => draft.value.nodeManager || '',
@@ -372,6 +374,9 @@ watch(
                   />
                 </label>
               </div>
+              <p v-if="terminalNotice.message" class="note" role="status">
+                {{ terminalNotice.message }}
+              </p>
             </template>
           </AiToolsEditor>
         </section>

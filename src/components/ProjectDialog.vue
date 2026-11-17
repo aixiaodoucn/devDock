@@ -15,6 +15,7 @@ import BackendRepositoriesEditor, {
   repositoryMetadata,
 } from './BackendRepositoriesEditor.vue';
 import { isWindows, isAbsolutePath, pathKey } from '../platform';
+import { terminalFeedback } from '../terminal';
 const props = defineProps<{
   project: Project;
   settings?: Settings;
@@ -26,6 +27,9 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ close: []; save: [project: Project]; detect: [] }>();
 const draft = ref<Project>(normalizeProjectPlatforms(JSON.parse(JSON.stringify(props.project))));
+const terminalNotice = computed(() =>
+  terminalFeedback(draft.value.terminal || props.settings?.terminal || ''),
+);
 draft.value.subProjects = (draft.value.subProjects ?? []).map(repositoryMetadata);
 draft.value.scmDevelopmentProjectId ??= '';
 draft.value.scmTestProjectId ??= '';
@@ -697,6 +701,9 @@ function submit() {
               </option>
             </select></label
           >
+          <div v-if="terminalNotice.message" class="note" role="status">
+            {{ terminalNotice.message }}
+          </div>
           <div class="note">项目只记录目录和配置。删除项目记录不会删除本地文件。</div>
         </div>
         <div v-show="tab === 'build'" class="form-stack">

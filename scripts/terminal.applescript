@@ -66,6 +66,9 @@ on cliArguments(terminalPath, workingDirectory, launchCommand, windowTitle)
   if windowTitle is not "" then set args to args & {"--title", windowTitle}
   -- Alacritty 的 -e 必须位于选项末尾，后续参数全部属于启动程序。
   set args to args & {"-e"}
+ else if terminalPath ends with "/Tabby.app" then
+  -- -- 防止 Tabby 的参数解析器吞掉 shell 的 -c；原生 run 仍会请求用户确认。
+  set args to {"run", "--"}
  else
   error "此终端尚未接入原生命令行接口，请选择支持的终端。"
  end if
@@ -106,11 +109,12 @@ on run argv
  else if terminalPath ends with "/iTerm.app" or terminalPath ends with "/iTerm2.app" then
   if windowTitle is not "" then set commandText to (my oscTitleCommand(windowTitle)) & commandText
   my openITerm(terminalPath, commandText)
- else if terminalPath ends with "/WezTerm.app" or terminalPath ends with "/kitty.app" or terminalPath ends with "/Alacritty.app" then
+ else if terminalPath ends with "/WezTerm.app" or terminalPath ends with "/kitty.app" or terminalPath ends with "/Alacritty.app" or terminalPath ends with "/Tabby.app" then
   if windowTitle is not "" then set commandText to (my oscTitleCommand(windowTitle)) & commandText
   my openCliTerminal(terminalPath, workingDirectory, commandText, windowTitle)
  else
-  error "暂不支持此终端；请选择 Terminal、Ghostty、iTerm2、WezTerm、Kitty 或 Alacritty。"
+  error "此终端没有可用的原生启动适配，请在设置中重新选择支持的终端。"
  end if
+ if terminalPath ends with "/Tabby.app" then return "已向 Tabby 发送请求，请在 Tabby 中确认 Run；取消确认不会执行命令。"
  return "终端命令已触发，退出状态由终端显示"
 end run
