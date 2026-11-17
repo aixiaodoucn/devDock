@@ -269,6 +269,8 @@ it('切换master不依赖测试目标，预检后确认执行且不采用合并�
       false,
     );
     expect(panel.root.querySelector('.plan')?.textContent).toContain('切换master分支');
+    expect(panel.root.querySelector('.plan')?.textContent).toContain('只允许快进');
+    expect(panel.root.querySelector('.plan')?.textContent).toContain('执行时重新获取远端');
     expect([...panel.root.querySelectorAll('.plan-branch code')].at(-1)?.textContent).toBe(
       'master',
     );
@@ -1840,6 +1842,7 @@ it.each([
     );
     const plan = panel.root.querySelector('.plan')!;
     expect(plan.querySelector('p')?.textContent).toContain(label);
+    expect(plan.textContent?.includes('执行时重新获取远端')).toBe(operation === 'switch-test');
     expect([...plan.querySelectorAll('.plan-branch code')].at(-1)?.textContent).toBe(target);
     if (operation === 'push-dev') {
       expect(plan.textContent).toContain('本地开发分支：develop');

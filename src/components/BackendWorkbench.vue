@@ -882,14 +882,20 @@ onBeforeUnmount(() => {
         ><button
           class="button small"
           :disabled="!!switchTestDisabledReason"
-          :title="switchTestDisabledReason || '获取远端并预检，确认计划后切换到测试分支。'"
+          :title="
+            switchTestDisabledReason ||
+            '获取远端并预检，确认后切换到测试分支，仅快进同步远端最新代码。'
+          "
           @click="prepare('switch-test')"
         >
           切换到测试分支</button
         ><button
           class="button small"
           :disabled="!!switchMasterDisabledReason"
-          :title="switchMasterDisabledReason || '获取远端并预检，确认计划后切换master分支。'"
+          :title="
+            switchMasterDisabledReason ||
+            '获取远端并预检，确认后切换 master，仅快进同步远端最新代码。'
+          "
           @click="prepare('switch-master')"
         >
           切换master分支</button
@@ -919,6 +925,10 @@ onBeforeUnmount(() => {
                 ? '将推送测试分支'
                 : '不推送远端'
           }}
+        </p>
+        <p v-if="plan.operation === 'switch-test' || plan.operation === 'switch-master'">
+          切换后只允许快进同步：执行时重新获取远端，以当时最新提交为准；本地领先时保留提交，分叉时停止，不创建合并提交。
+          有未提交修改时拒绝操作；无远端的本地仓库仅切换，不进行远程同步。
         </p>
         <p v-if="plan.operation === 'merge'">
           pom.xml 冲突处理：{{ plan.keepTestPom ? '保留测试分支版本' : '暂停并手动处理' }}

@@ -692,13 +692,16 @@ fn revalidate_with_task(
     task: Option<&tasks::Task>,
 ) -> Result<()> {
     let now = snapshot_with_task(&saved.repository, operation, task)?;
+    // 切换目标以执行时远端为准；仅远端跟踪引用变化不使计划失效。
+    // 尚未创建的本地目标，其 target_sha 也来自远端，需与本地分支变化区分。
+    let sync_switch = ["switch-test", "switch-master"].contains(&operation);
     if now.root != saved.root
         || now.common_dir != saved.common_dir
         || now.current_branch != saved.current_branch
         || now.source_sha != saved.source_sha
-        || now.target_sha != saved.target_sha
+        || (now.target_sha != saved.target_sha && !(sync_switch && saved.create_tracking))
         || now.create_tracking != saved.create_tracking
-        || now.remote_sha != saved.remote_sha
+        || (!sync_switch && now.remote_sha != saved.remote_sha)
         || now.sync_test_branch != saved.sync_test_branch
         || now.remote_identity != saved.remote_identity
     {
@@ -950,6 +953,95 @@ fn resolve_test_pom_conflicts(worktree: &Path, task: Option<&tasks::Task>) -> Re
     run(worktree, &["commit", "--no-edit"], task).map(|_| ())
 }
 
+// 切换后以已确认的本地目标 SHA 为基线；fetch 只能改变远端引用，不能改变本地现场。
+fn validate_switched_target(saved: &PlanRepository) -> Result<()> {
+    let repo = &saved.repository;
+    let path = Path::new(&saved.root);
+    let current = status(repo)?;
+    let common = run(path, &["rev-parse", "--git-common-dir"], None)?;
+    if current.root != saved.root
+        || canonical(&path.join(common))? != saved.common_dir
+        || current.current_branch != saved.target_branch
+        || current.head != saved.target_sha
+        || sha(path, &format!("refs/heads/{}", saved.target_branch))? != saved.target_sha
+        || current.dirty
+        || current.merging
+        || current.rebasing
+        || remote_identity(repo) != saved.remote_identity
+    {
+        return Err("仓库在切换或同步期间已变化，现场已保留".into());
+    }
+    Ok(())
+}
+fn sync_switched_target(saved: &PlanRepository, task: Option<&tasks::Task>) -> Result<()> {
+    let repo = &saved.repository;
+    let path = Path::new(&saved.root);
+    validate_switched_target(saved)?;
+    if run(path, &["remote"], task)?.is_empty() {
+        if let Some(task) = task {
+            task.emit(
+                "log",
+                "已切换本地分支；仓库未配置远端，未执行远端同步",
+                None,
+                None,
+            );
+        }
+        return Ok(());
+    }
+    fetch_remote(path, repo, task)?;
+    validate_switched_target(saved)?;
+    let remote_sha = sha(path, &remote_ref(repo, &saved.target_branch))
+        .map_err(|_| "远端目标分支不存在，无法同步".to_string())?;
+    // 允许远端在预检后更新；只快进执行时 fetch 到的提交，本地领先时保持原样。
+    let local_ahead = run(
+        path,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &remote_sha,
+            &saved.target_sha,
+        ],
+        task,
+    )
+    .is_ok();
+    if !local_ahead
+        && run(
+            path,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &saved.target_sha,
+                &remote_sha,
+            ],
+            task,
+        )
+        .is_err()
+    {
+        return Err("本地目标分支与远端已分叉，请手工处理；未创建合并提交".into());
+    }
+    validate_switched_target(saved)?;
+    if sha(path, &remote_ref(repo, &saved.target_branch))? != remote_sha {
+        return Err("远端引用在同步期间已变化，请重新准备".into());
+    }
+    run(
+        path,
+        &[
+            "merge",
+            "--ff-only",
+            "--no-edit",
+            "--no-autostash",
+            "--",
+            &remote_sha,
+        ],
+        task,
+    )?;
+    let mut synced = saved.clone();
+    if !local_ahead {
+        synced.target_sha = remote_sha;
+    }
+    validate_switched_target(&synced)
+}
+
 #[cfg(test)]
 fn perform(
     saved: &PlanRepository,
@@ -975,6 +1067,19 @@ fn perform_with_options(
         task.check()?;
     }
     revalidate_with_task(saved, operation, task)?;
+    // 新建跟踪分支时使用刚重验过的远端 tip，后续仍按实际创建基线保护本地 SHA。
+    let tracking_saved =
+        if ["switch-test", "switch-master"].contains(&operation) && saved.create_tracking {
+            let mut updated = saved.clone();
+            updated.target_sha = sha(
+                Path::new(&saved.root),
+                &remote_ref(&saved.repository, &saved.target_branch),
+            )?;
+            Some(updated)
+        } else {
+            None
+        };
+    let saved = tracking_saved.as_ref().unwrap_or(saved);
     let repo = &saved.repository;
     let path = Path::new(&saved.root);
     if operation == "push-dev" {
@@ -1013,7 +1118,26 @@ fn perform_with_options(
         )?;
     }
     if ["switch", "switch-test", "switch-master"].contains(&operation) {
-        run(path, &["switch", "--no-guess", &saved.target_branch], task)?;
+        if let Err(error) = run(path, &["switch", "--no-guess", &saved.target_branch], task) {
+            // post-checkout 钩子失败时 Git 可能已切换成功，不能误报为尚未切换。
+            return Err(
+                if ["switch-test", "switch-master"].contains(&operation)
+                    && branch(path) == saved.target_branch
+                {
+                    format!("已切换到 {}，未同步远端；{error}", saved.target_branch)
+                } else {
+                    error
+                },
+            );
+        }
+        if ["switch-test", "switch-master"].contains(&operation) {
+            return sync_switched_target(saved, task).map_err(|error| {
+                format!(
+                    "已切换到 {}，无法确认远端同步成功；现场已保留；{error}",
+                    saved.target_branch
+                )
+            });
+        }
         return Ok(());
     }
     if worktree.exists() {
@@ -1463,6 +1587,279 @@ mod tests {
                 "+refs/heads/*:refs/remotes/origin/*",
             ],
         );
+    }
+    fn switch_sync_fixture(operation: &str) -> (TempDir, Repository, TempDir, String) {
+        let (dir, repo, remote) = push_fixture(true);
+        let target = if operation == "switch-master" {
+            "master"
+        } else {
+            "test"
+        };
+        if target == "master" {
+            git(dir.path(), &["branch", target]);
+            git(dir.path(), &["push", "origin", target]);
+        }
+        (dir, repo, remote, target.into())
+    }
+    fn child_commit(path: &Path, parent: &str, message: &str) -> String {
+        git(
+            path,
+            &[
+                "commit-tree",
+                &format!("{parent}^{{tree}}"),
+                "-p",
+                parent,
+                "-m",
+                message,
+            ],
+        )
+    }
+    #[test]
+    fn switch_sync_fetches_latest_and_preserves_ahead_or_diverged_history() {
+        for operation in ["switch-test", "switch-master"] {
+            for relation in ["behind", "ahead", "diverged"] {
+                let (dir, repo, remote, target) = switch_sync_fixture(operation);
+                let base = sha(dir.path(), "HEAD").unwrap();
+                let local = child_commit(dir.path(), &base, "local");
+                let upstream = child_commit(dir.path(), &base, "upstream");
+                if relation != "behind" {
+                    git(
+                        dir.path(),
+                        &["update-ref", &format!("refs/heads/{target}"), &local],
+                    );
+                }
+                let saved = snapshot(&repo, operation).unwrap();
+                // 预检后远端才更新，执行必须重新 fetch，不能只使用确认时的 tracking ref。
+                if relation != "ahead" {
+                    git(
+                        dir.path(),
+                        &[
+                            "push",
+                            remote.path().to_str().unwrap(),
+                            &format!("{upstream}:refs/heads/{target}"),
+                        ],
+                    );
+                }
+                let result = perform(
+                    &saved,
+                    operation,
+                    false,
+                    &remote.path().join("unused"),
+                    None,
+                    || Ok(()),
+                );
+                assert_eq!(branch(dir.path()), target);
+                if relation == "diverged" {
+                    let error = result.unwrap_err();
+                    assert!(
+                        error.contains("分叉")
+                            && error.contains("已切换")
+                            && error.contains("无法确认远端同步成功"),
+                        "{error}"
+                    );
+                    assert_eq!(sha(dir.path(), "HEAD").unwrap(), local);
+                    assert!(!dir.path().join(".git/MERGE_HEAD").exists());
+                } else {
+                    result.unwrap();
+                    assert_eq!(
+                        sha(dir.path(), "HEAD").unwrap(),
+                        if relation == "behind" {
+                            upstream
+                        } else {
+                            local
+                        }
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn switch_sync_accepts_remote_tracking_updates_but_not_new_local_targets() {
+        for operation in ["switch-test", "switch-master"] {
+            for local_exists in [false, true] {
+                let (dir, repo, remote, target) = switch_sync_fixture(operation);
+                if !local_exists {
+                    git(dir.path(), &["branch", "-D", &target]);
+                }
+                let saved = snapshot(&repo, operation).unwrap();
+                let next = child_commit(dir.path(), &saved.target_sha, "remote advanced");
+                git(
+                    dir.path(),
+                    &["push", "origin", &format!("{next}:refs/heads/{target}")],
+                );
+                fetch_fixture(&repo);
+                if !local_exists {
+                    git(dir.path(), &["branch", &target, &next]);
+                    assert!(revalidate(&saved, operation).is_err());
+                    git(dir.path(), &["branch", "-D", &target]);
+                }
+                perform(
+                    &saved,
+                    operation,
+                    false,
+                    &remote.path().join("unused"),
+                    None,
+                    || Ok(()),
+                )
+                .unwrap();
+                assert_eq!(branch(dir.path()), target);
+                assert_eq!(sha(dir.path(), "HEAD").unwrap(), next);
+            }
+        }
+    }
+    #[test]
+    fn switch_sync_reports_fetch_failure_and_deleted_remote_branch() {
+        for operation in ["switch-test", "switch-master"] {
+            for deleted in [false, true] {
+                let (dir, repo, remote, target) = switch_sync_fixture(operation);
+                let saved = snapshot(&repo, operation).unwrap();
+                if deleted {
+                    git(
+                        remote.path(),
+                        &["update-ref", "-d", &format!("refs/heads/{target}")],
+                    );
+                } else {
+                    // URL 身份不变，但服务端已不可读取。
+                    fs::rename(
+                        remote.path().join("HEAD"),
+                        remote.path().join("hidden-head"),
+                    )
+                    .unwrap();
+                }
+                let error = perform(
+                    &saved,
+                    operation,
+                    false,
+                    &remote.path().join("unused"),
+                    None,
+                    || Ok(()),
+                )
+                .unwrap_err();
+                assert!(
+                    error.contains("已切换") && error.contains("无法确认远端同步成功"),
+                    "{error}"
+                );
+                if deleted {
+                    assert!(error.contains("远端目标分支不存在"), "{error}");
+                }
+                assert_eq!(branch(dir.path()), target);
+                assert_eq!(sha(dir.path(), "HEAD").unwrap(), saved.target_sha);
+            }
+        }
+    }
+    #[test]
+    fn switch_sync_rejects_all_dirty_states_before_and_after_preflight() {
+        for operation in ["switch-test", "switch-master"] {
+            for kind in ["unstaged", "staged", "untracked"] {
+                let (dir, repo, remote, _) = switch_sync_fixture(operation);
+                let saved = snapshot(&repo, operation).unwrap();
+                let file = if kind == "untracked" {
+                    "new-file"
+                } else {
+                    "file"
+                };
+                fs::write(dir.path().join(file), "user edit\n").unwrap();
+                if kind == "staged" {
+                    git(dir.path(), &["add", file]);
+                }
+                assert!(snapshot(&repo, operation).is_err());
+                assert!(perform(
+                    &saved,
+                    operation,
+                    false,
+                    &remote.path().join("unused"),
+                    None,
+                    || Ok(())
+                )
+                .is_err());
+                assert_eq!(branch(dir.path()), "dev");
+                assert_eq!(
+                    fs::read_to_string(dir.path().join(file)).unwrap(),
+                    "user edit\n"
+                );
+            }
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn switch_sync_stops_when_local_state_changes_during_fetch() {
+        use std::os::unix::fs::PermissionsExt;
+        for operation in ["switch-test", "switch-master"] {
+            for changed in [
+                "unstaged",
+                "staged",
+                "untracked",
+                "head",
+                "branch",
+                "remote",
+            ] {
+                let (dir, repo, remote, target) = switch_sync_fixture(operation);
+                let saved = snapshot(&repo, operation).unwrap();
+                let next = child_commit(dir.path(), &saved.target_sha, "upstream");
+                git(
+                    dir.path(),
+                    &[
+                        "push",
+                        remote.path().to_str().unwrap(),
+                        &format!("{next}:refs/heads/{target}"),
+                    ],
+                );
+                let mutation = match changed {
+                    "unstaged" => "printf 'user edit\\n' > file".to_string(),
+                    "staged" => "printf 'user edit\\n' > file; git add file".to_string(),
+                    "untracked" => "printf 'user edit\\n' > new-file".to_string(),
+                    "head" => format!("git update-ref refs/heads/{target} {next}"),
+                    "branch" => "git symbolic-ref HEAD refs/heads/dev".to_string(),
+                    _ => "git remote set-url origin /missing-remote".to_string(),
+                };
+                // 本地 upload-pack 在 fetch 进行中修改调用方现场，稳定覆盖网络等待窗口。
+                let script = remote.path().join("upload-pack-fixture");
+                let quoted_path = repo.path.replace('\'', "'\\''");
+                fs::write(&script, format!("#!/bin/sh\n(cd '{quoted_path}' && {mutation}) || exit 1\nexec git-upload-pack \"$@\"\n")).unwrap();
+                fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+                git(
+                    dir.path(),
+                    &[
+                        "config",
+                        "remote.origin.uploadpack",
+                        script.to_str().unwrap(),
+                    ],
+                );
+                let error = perform(
+                    &saved,
+                    operation,
+                    false,
+                    &remote.path().join("unused"),
+                    None,
+                    || Ok(()),
+                )
+                .unwrap_err();
+                assert!(
+                    error.contains("已切换") && error.contains("无法确认远端同步成功"),
+                    "{changed}: {error}"
+                );
+                if ["unstaged", "staged", "untracked"].contains(&changed) {
+                    let file = if changed == "untracked" {
+                        "new-file"
+                    } else {
+                        "file"
+                    };
+                    assert_eq!(
+                        fs::read_to_string(dir.path().join(file)).unwrap(),
+                        "user edit\n"
+                    );
+                }
+                assert_eq!(
+                    sha(dir.path(), &format!("refs/heads/{target}")).unwrap(),
+                    if changed == "head" {
+                        next
+                    } else {
+                        saved.target_sha
+                    }
+                );
+                assert!(!dir.path().join(".git/MERGE_HEAD").exists());
+            }
+        }
     }
     fn push_saved(saved: &PlanRepository, worktree: &Path) -> Result<()> {
         perform(saved, "push-dev", true, worktree, None, || {
@@ -2235,7 +2632,6 @@ mod tests {
             "dirty",
             "source",
             "target",
-            "remote-sha",
             "remote-url",
             "occupied",
             "MERGE_HEAD",
@@ -2261,11 +2657,11 @@ mod tests {
             );
             match changed {
                 "dirty" => fs::write(dir.path().join("file"), "preserve edits").unwrap(),
-                "source" | "target" | "remote-sha" => {
-                    let reference = match changed {
-                        "source" => "refs/heads/dev",
-                        "target" => "refs/heads/master",
-                        _ => "refs/remotes/origin/master",
+                "source" | "target" => {
+                    let reference = if changed == "source" {
+                        "refs/heads/dev"
+                    } else {
+                        "refs/heads/master"
                     };
                     git(dir.path(), &["update-ref", reference, &next]);
                 }
@@ -2531,7 +2927,7 @@ mod tests {
 
     #[test]
     fn switch_test_revalidation_rejects_source_target_remote_and_identity_changes() {
-        for changed in ["source", "target", "remote-sha", "remote-url"] {
+        for changed in ["source", "target", "remote-url"] {
             let (dir, repo) = fixture();
             let bare = tempdir().unwrap();
             git(bare.path(), &["init", "--bare", "--template="]);
@@ -2558,12 +2954,6 @@ mod tests {
                 }
                 "target" => {
                     git(dir.path(), &["update-ref", "refs/heads/test", &next]);
-                }
-                "remote-sha" => {
-                    git(
-                        dir.path(),
-                        &["update-ref", "refs/remotes/origin/test", &next],
-                    );
                 }
                 _ => {
                     git(
