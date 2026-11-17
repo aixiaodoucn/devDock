@@ -64,6 +64,10 @@ pub struct PlanRepository {
     pub common_dir: String,
     pub current_branch: String,
     pub source_sha: String,
+    #[serde(default)]
+    pub development_remote_sha: String,
+    #[serde(default)]
+    pub sync_development_branch: bool,
     pub target_branch: String,
     pub target_sha: String,
     pub create_tracking: bool,
@@ -569,6 +573,8 @@ fn snapshot_with_task(
             common_dir: canonical(&path.join(common))?,
             current_branch: status.current_branch,
             source_sha,
+            development_remote_sha: String::new(),
+            sync_development_branch: false,
             target_branch: repo.development_branch.clone(),
             target_sha: remote_sha.clone(),
             create_tracking: false,
@@ -617,6 +623,39 @@ fn snapshot_with_task(
         .map_err(|_| "本地测试分支与远端已分叉，请先处理分支后重新准备".to_string())?;
         sync_test_branch = true;
     }
+    let development_remote_sha = if operation == "merge" {
+        sha(path, &remote_ref(repo, &repo.development_branch)).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let mut sync_development_branch = false;
+    if !development_remote_sha.is_empty()
+        && development_remote_sha != status.head
+        && run(
+            path,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &development_remote_sha,
+                &status.head,
+            ],
+            task,
+        )
+        .is_err()
+    {
+        run(
+            path,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &status.head,
+                &development_remote_sha,
+            ],
+            task,
+        )
+        .map_err(|_| "本地开发分支与远端已分叉，请先处理分支后重新准备".to_string())?;
+        sync_development_branch = true;
+    }
     let common = run(path, &["rev-parse", "--git-common-dir"], None)?;
     Ok(PlanRepository {
         repository: repo.clone(),
@@ -624,6 +663,8 @@ fn snapshot_with_task(
         common_dir: canonical(&path.join(common))?,
         current_branch: status.current_branch,
         source_sha: status.head,
+        development_remote_sha,
+        sync_development_branch,
         target_branch: target.to_owned(),
         target_sha,
         create_tracking,
@@ -702,6 +743,8 @@ fn revalidate_with_task(
         || (now.target_sha != saved.target_sha && !(sync_switch && saved.create_tracking))
         || now.create_tracking != saved.create_tracking
         || (!sync_switch && now.remote_sha != saved.remote_sha)
+        || now.development_remote_sha != saved.development_remote_sha
+        || now.sync_development_branch != saved.sync_development_branch
         || now.sync_test_branch != saved.sync_test_branch
         || now.remote_identity != saved.remote_identity
     {
@@ -1053,6 +1096,54 @@ fn perform(
 ) -> Result<()> {
     perform_with_options(saved, operation, push, false, worktree, task, on_worktree)
 }
+// source_sha 始终保留预检本地 HEAD；合并与恢复使用确认同步后的来源。
+fn merge_source(saved: &PlanRepository) -> &str {
+    if saved.sync_development_branch {
+        &saved.development_remote_sha
+    } else {
+        &saved.source_sha
+    }
+}
+
+fn validate_merge_state(
+    saved: &PlanRepository,
+    worktree: &Path,
+    source: &str,
+    target: &str,
+    task: Option<&tasks::Task>,
+) -> Result<()> {
+    let repo = &saved.repository;
+    let path = Path::new(&saved.root);
+    validate_worktree(saved, worktree, task)?;
+    let current = status(repo)?;
+    let common = run(path, &["rev-parse", "--git-common-dir"], task)?;
+    if current.root != saved.root
+        || canonical(&path.join(common))? != saved.common_dir
+        || current.current_branch != saved.current_branch
+        || current.head != source
+        || current.dirty
+        || current.merging
+        || current.rebasing
+        || remote_identity(repo) != saved.remote_identity
+        || sha(path, &remote_ref(repo, &saved.target_branch)).unwrap_or_default()
+            != saved.remote_sha
+        || sha(path, &remote_ref(repo, &repo.development_branch)).unwrap_or_default()
+            != saved.development_remote_sha
+        || sha(path, &format!("refs/heads/{}", repo.development_branch))? != source
+        || sha(worktree, "HEAD")? != target
+        || !run(worktree, &["status", "--porcelain=v1"], task)?.is_empty()
+    {
+        return Err("仓库或远端在同步时已变化，请重新准备操作；工作区已保留".into());
+    }
+    for name in ["MERGE_HEAD", "rebase-merge", "rebase-apply"] {
+        let marker = run(worktree, &["rev-parse", "--git-path", name], task)?;
+        if worktree.join(marker).exists() {
+            return Err("测试工作区正在 merge/rebase，已保留现场".into());
+        }
+    }
+    Ok(())
+}
+
 fn perform_with_options(
     saved: &PlanRepository,
     operation: &str,
@@ -1153,46 +1244,68 @@ fn perform_with_options(
     if sha(worktree, "HEAD")? != saved.target_sha {
         return Err("目标分支在创建工作区时已变化，已保留现场".into());
     }
-    // fetch 前也比较 tracking ref 和远端身份，避免覆盖并发变化而漏报。
-    if remote_identity(repo) != saved.remote_identity
-        || sha(path, &remote_ref(repo, &saved.target_branch)).unwrap_or_default()
-            != saved.remote_sha
-    {
-        return Err("仓库已变化，请重新准备操作；工作区已保留".into());
-    }
+    // fetch 前后均检查两个分支，避免覆盖并发 tracking ref 变化而漏报。
+    validate_merge_state(saved, worktree, &saved.source_sha, &saved.target_sha, task)?;
     // 在独立工作区重新拉取，固定用户确认过的远端 SHA；远端变化必须重新准备。
     if !run(path, &["remote"], task)?.is_empty() {
         fetch_remote(worktree, repo, task)?;
     }
-    validate_worktree(saved, worktree, task)?;
-    let current = status(repo)?;
-    if current.root != saved.root
-        || current.current_branch != saved.current_branch
-        || current.head != saved.source_sha
-        || current.dirty
-        || current.merging
-        || current.rebasing
-        || remote_identity(repo) != saved.remote_identity
-        || sha(path, &remote_ref(repo, &saved.target_branch)).unwrap_or_default()
-            != saved.remote_sha
-        || sha(worktree, "HEAD")? != saved.target_sha
-    {
-        return Err("仓库或远端在同步时已变化，请重新准备操作；工作区已保留".into());
+    validate_merge_state(saved, worktree, &saved.source_sha, &saved.target_sha, task)?;
+    if saved.sync_development_branch {
+        // 不自动暂存或重写开发历史；失败保留已经完成的快进与 hooks 现场。
+        run(
+            path,
+            &[
+                "merge",
+                "--ff-only",
+                "--no-edit",
+                "--no-autostash",
+                "--",
+                &saved.development_remote_sha,
+            ],
+            task,
+        )?;
     }
+    validate_merge_state(
+        saved,
+        worktree,
+        merge_source(saved),
+        &saved.target_sha,
+        task,
+    )?;
     if saved.sync_test_branch {
         // 不使用 reset/rebase；--ff-only 即使发生并发变化也不能覆盖本地提交。
         run(
             worktree,
-            &["merge", "--ff-only", "--no-edit", "--", &saved.remote_sha],
+            &[
+                "merge",
+                "--ff-only",
+                "--no-edit",
+                "--no-autostash",
+                "--",
+                &saved.remote_sha,
+            ],
             task,
         )?;
         if sha(worktree, "HEAD")? != saved.remote_sha {
             return Err("测试分支在快进时已变化，已保留现场".into());
         }
     }
+    let target = if saved.sync_test_branch {
+        &saved.remote_sha
+    } else {
+        &saved.target_sha
+    };
+    validate_merge_state(saved, worktree, merge_source(saved), target, task)?;
     if let Err(error) = run(
         worktree,
-        &["merge", "--no-edit", "--", &saved.source_sha],
+        &[
+            "merge",
+            "--no-edit",
+            "--no-autostash",
+            "--",
+            merge_source(saved),
+        ],
         task,
     ) {
         let marker = run(worktree, &["rev-parse", "--git-path", "MERGE_HEAD"], task)?;
@@ -1207,6 +1320,15 @@ fn perform_with_options(
             };
         }
         resolve_test_pom_conflicts(worktree, task)?;
+    }
+    let merged_head = sha(worktree, "HEAD")?;
+    validate_merge_state(saved, worktree, merge_source(saved), &merged_head, task)?;
+    for baseline in [merge_source(saved), target.as_str()] {
+        run(
+            worktree,
+            &["merge-base", "--is-ancestor", baseline, &merged_head],
+            task,
+        )?;
     }
     if push {
         validate_remote(repo)?;
@@ -1457,6 +1579,11 @@ fn complete_worktree(
     for baseline in [&saved.source_sha, &saved.target_sha]
         .into_iter()
         .chain(saved.sync_test_branch.then_some(&saved.remote_sha))
+        .chain(
+            saved
+                .sync_development_branch
+                .then_some(&saved.development_remote_sha),
+        )
     {
         run(
             worktree,
@@ -1490,6 +1617,10 @@ fn abort_worktree(
     }
     let merge_head = run(worktree, &["rev-parse", "--git-path", "MERGE_HEAD"], task)?;
     if worktree.join(merge_head).exists() {
+        // 开发快进已留在原仓库，只允许中止本次确认来源的测试合并。
+        if run(worktree, &["rev-parse", "MERGE_HEAD"], task)? != merge_source(saved) {
+            return Err("合并来源已变化，拒绝中止；工作区已保留".into());
+        }
         run(worktree, &["merge", "--abort"], task)?;
     }
     if !run(worktree, &["status", "--porcelain=v1"], task)?.is_empty() {
@@ -3146,6 +3277,217 @@ mod tests {
         git(dir.path(), &["branch", "-f", "test", &local]);
         change(dir.path(), "approved development\n");
         (dir, repo, remote)
+    }
+
+    // 将已提交的开发变更放到真实 bare 远端，再恢复本地落后状态。
+    fn behind_development_fixture(conflict: bool) -> (TempDir, Repository, TempDir) {
+        let (dir, repo, remote) = behind_merge_fixture(conflict);
+        let base = sha(dir.path(), "dev^").unwrap();
+        git(dir.path(), &["push", "origin", "dev"]);
+        git(dir.path(), &["reset", "--hard", &base]);
+        (dir, repo, remote)
+    }
+
+    #[test]
+    fn development_sync_plans_relations_without_changing_local_refs() {
+        for relation in ["behind", "ahead", "diverged", "missing"] {
+            let (dir, repo, remote) = behind_development_fixture(false);
+            let upstream = sha(remote.path(), "dev").unwrap();
+            match relation {
+                "ahead" => {
+                    git(dir.path(), &["reset", "--hard", &upstream]);
+                    change(dir.path(), "ahead\n");
+                }
+                "diverged" => change(dir.path(), "diverged\n"),
+                "missing" => {
+                    git(remote.path(), &["update-ref", "-d", "refs/heads/dev"]);
+                    fetch_fixture(&repo);
+                    change(dir.path(), "local committed source\n");
+                }
+                _ => {}
+            }
+            let before = git(dir.path(), &["show-ref"]);
+            let result = snapshot(&repo, "merge");
+            assert_eq!(git(dir.path(), &["show-ref"]), before);
+            if relation == "diverged" {
+                assert!(result.is_err());
+                continue;
+            }
+            let saved = result.unwrap();
+            let json = serde_json::to_value(&saved).unwrap();
+            assert_eq!(json["syncDevelopmentBranch"], relation == "behind");
+            let source = sha(dir.path(), "HEAD").unwrap();
+            assert_eq!(saved.source_sha, source);
+            let tmp = tempdir().unwrap();
+            perform(
+                &saved,
+                "merge",
+                false,
+                &tmp.path().join("merge"),
+                None,
+                || Ok(()),
+            )
+            .unwrap();
+            let expected = if relation == "behind" {
+                &upstream
+            } else {
+                &source
+            };
+            assert_eq!(sha(dir.path(), "HEAD").unwrap(), *expected);
+            git(
+                dir.path(),
+                &["merge-base", "--is-ancestor", expected, "test"],
+            );
+            git(
+                dir.path(),
+                &["merge-base", "--is-ancestor", &saved.remote_sha, "test"],
+            );
+            assert_eq!(sha(remote.path(), "test").unwrap(), saved.remote_sha);
+            if relation == "missing" {
+                assert!(sha(remote.path(), "refs/heads/dev").is_err());
+            } else {
+                assert_eq!(sha(remote.path(), "refs/heads/dev").unwrap(), upstream);
+            }
+        }
+    }
+
+    #[test]
+    fn development_sync_rejects_new_remote_commits_and_dirty_states() {
+        for mutation in [
+            "remote",
+            "unstaged",
+            "staged",
+            "untracked",
+            "merge",
+            "rebase",
+        ] {
+            let (dir, repo, remote) = behind_development_fixture(false);
+            let saved = snapshot(&repo, "merge").unwrap();
+            match mutation {
+                "remote" => {
+                    let next = child_commit(dir.path(), "origin/dev", "new remote");
+                    git(
+                        dir.path(),
+                        &[
+                            "push",
+                            remote.path().to_str().unwrap(),
+                            &format!("{next}:refs/heads/dev"),
+                        ],
+                    );
+                }
+                "unstaged" | "staged" => {
+                    fs::write(dir.path().join("file"), "dirty").unwrap();
+                    if mutation == "staged" {
+                        git(dir.path(), &["add", "file"]);
+                    }
+                }
+                "untracked" => fs::write(dir.path().join("untracked"), "dirty").unwrap(),
+                "merge" => {
+                    fs::write(dir.path().join(".git/MERGE_HEAD"), &saved.source_sha).unwrap()
+                }
+                "rebase" => fs::create_dir(dir.path().join(".git/rebase-merge")).unwrap(),
+                _ => unreachable!(),
+            }
+            let tmp = tempdir().unwrap();
+            assert!(
+                perform(
+                    &saved,
+                    "merge",
+                    false,
+                    &tmp.path().join("merge"),
+                    None,
+                    || Ok(())
+                )
+                .is_err(),
+                "{mutation}"
+            );
+            assert_eq!(sha(dir.path(), "HEAD").unwrap(), saved.source_sha);
+            assert_eq!(sha(dir.path(), "test").unwrap(), saved.target_sha);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn development_sync_preserves_changes_made_by_fast_forward_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        for action in [
+            "printf dirty > file",
+            "git switch --detach",
+            "git update-ref refs/remotes/origin/dev HEAD^",
+            "git remote set-url origin changed",
+            "git update-ref refs/heads/test HEAD",
+            "exit 1",
+        ] {
+            let (dir, repo, _remote) = behind_development_fixture(false);
+            let saved = snapshot(&repo, "merge").unwrap();
+            let hook = dir.path().join(".git/hooks/post-merge");
+            fs::create_dir_all(hook.parent().unwrap()).unwrap();
+            fs::write(&hook, format!("#!/bin/sh\n{action}\n")).unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+            let tmp = tempdir().unwrap();
+            let worktree = tmp.path().join("merge");
+            // Git 本身忽略 post-merge 退出码，故退出码场景只保证提交不丢失。
+            let result = perform(&saved, "merge", false, &worktree, None, || Ok(()));
+            if action != "exit 1" {
+                assert!(result.is_err(), "{action}");
+                assert!(worktree.exists());
+            }
+            assert_eq!(
+                sha(dir.path(), "HEAD").unwrap(),
+                saved.development_remote_sha
+            );
+            if action == "printf dirty > file" {
+                assert_eq!(
+                    fs::read_to_string(dir.path().join("file")).unwrap(),
+                    "dirty"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn development_sync_old_journal_fields_default() {
+        let (_dir, repo) = fixture();
+        let mut json = serde_json::to_value(snapshot(&repo, "merge").unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("developmentRemoteSha");
+        json.as_object_mut()
+            .unwrap()
+            .remove("syncDevelopmentBranch");
+        let saved: PlanRepository = serde_json::from_value(json).unwrap();
+        assert!(saved.development_remote_sha.is_empty());
+        assert!(!saved.sync_development_branch);
+        assert_eq!(merge_source(&saved), saved.source_sha);
+    }
+
+    #[test]
+    fn development_sync_conflict_recovery_keeps_confirmed_development() {
+        for finish in ["abort", "complete", "incomplete"] {
+            let (dir, repo, _remote) = behind_development_fixture(true);
+            let saved = snapshot(&repo, "merge").unwrap();
+            let upstream = sha(dir.path(), "origin/dev").unwrap();
+            let tmp = tempdir().unwrap();
+            let worktree = tmp.path().join("merge");
+            assert!(perform(&saved, "merge", false, &worktree, None, || Ok(())).is_err());
+            assert_eq!(sha(dir.path(), "HEAD").unwrap(), upstream);
+            if finish == "abort" {
+                let marker = git(&worktree, &["rev-parse", "--git-path", "MERGE_HEAD"]);
+                let marker = worktree.join(marker);
+                fs::write(&marker, &saved.source_sha).unwrap();
+                assert!(abort_worktree(&saved, &worktree, None).is_err());
+                fs::write(&marker, &upstream).unwrap();
+                abort_worktree(&saved, &worktree, None).unwrap();
+            } else if finish == "complete" {
+                fs::write(worktree.join("file"), "resolved\n").unwrap();
+                git(&worktree, &["add", "file"]);
+                git(&worktree, &["commit", "-m", "resolve"]);
+                complete_worktree(&saved, &worktree, None).unwrap();
+            } else {
+                git(&worktree, &["merge", "--abort"]);
+                assert!(complete_worktree(&saved, &worktree, None).is_err());
+                abort_worktree(&saved, &worktree, None).unwrap();
+            }
+            assert_eq!(sha(dir.path(), "HEAD").unwrap(), upstream);
+        }
     }
 
     #[test]

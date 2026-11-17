@@ -53,6 +53,9 @@ export interface BackendGitPlanRepository {
   createTracking: boolean;
   syncTestBranch?: boolean;
   remoteSha: string;
+  // 可选以兼容旧的合并计划；新计划记录开发分支远端快照与快进需求。
+  developmentRemoteSha?: string;
+  syncDevelopmentBranch?: boolean;
 }
 export interface BackendGitPlan {
   planId: string;

@@ -950,6 +950,22 @@ onBeforeUnmount(() => {
                   : item.targetBranch
               }}</code>
             </div>
+            <p
+              v-if="plan.operation === 'merge' && item.developmentRemoteSha !== undefined"
+              data-development-sync
+            >
+              <span v-if="item.syncDevelopmentBranch" class="warning">
+                开发分支落后于远端，确认执行后先快进同步开发分支，再合并到测试分支。
+                后续合并失败或中止时，已完成的开发分支快进不会回滚。
+              </span>
+              <span v-else-if="!item.developmentRemoteSha">
+                远端未找到同名开发分支，本次使用本地已提交的开发代码。
+              </span>
+              <span v-else-if="item.sourceSha !== item.developmentRemoteSha" class="warning">
+                开发分支已有本地未推送提交，将保留并参与本次合并。
+              </span>
+              <span v-else>开发分支已与远端同步。</span>
+            </p>
             <span v-if="plan.operation === 'merge' && item.syncTestBranch" class="warning">
               本地测试分支落后于远端，执行时将先快进同步远端最新代码，再合并开发分支。
             </span>

@@ -840,6 +840,46 @@ it.each([true, false])(
   },
 );
 
+it.each([
+  ['落后', 'remote-dev', true, '开发分支落后于远端'],
+  ['领先', 'remote-dev', false, '开发分支已有本地未推送提交'],
+  ['一致', 'local-dev', false, '开发分支已与远端同步'],
+  ['无远端开发分支', '', false, '使用本地已提交的开发代码'],
+  ['旧计划', undefined, undefined, ''],
+] as const)(
+  '合并计划展示开发分支状态：%s，确认前不执行同步',
+  async (_state, developmentRemoteSha, syncDevelopmentBranch, notice) => {
+    const prepare = vi.mocked(api.prepareBackendGit).getMockImplementation()!;
+    vi.mocked(api.prepareBackendGit).mockImplementation(async (...args) => {
+      const plan = await prepare(...args);
+      return {
+        ...plan,
+        repositories: plan.repositories.map((item) => ({
+          ...item,
+          sourceSha: 'local-dev',
+          developmentRemoteSha,
+          syncDevelopmentBranch,
+        })),
+      };
+    });
+    const panel = await ready();
+    try {
+      click(panel.root, '合并到测试分支');
+      await flush();
+      const detail = panel.root.querySelector('[data-development-sync]');
+      if (notice) expect(detail?.textContent).toContain(notice);
+      else expect(detail).toBeNull();
+      expect(api.executeBackendGit).not.toHaveBeenCalled();
+      click(panel.root, '取消计划');
+      click(panel.root, '切换开发分支');
+      await flush();
+      expect(panel.root.querySelector('[data-development-sync]')).toBeNull();
+    } finally {
+      panel.close();
+    }
+  },
+);
+
 it('pom 冲突策略默认关闭，只有合并预检携带，修改后旧计划失效', async () => {
   const panel = await ready();
   try {
