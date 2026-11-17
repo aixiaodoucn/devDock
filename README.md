@@ -56,7 +56,7 @@ pnpm test                        # 配置合并测试
 cargo test --manifest-path src-tauri/Cargo.toml
 bash scripts/test-hbuilderx.sh    # macOS：WGT 匹配和菜单占位项，不触发打包
 bash scripts/test-hbuilderx.sh --live-menus # 只读检查当前 HBuilderX 菜单，不点击运行/发行
-bash scripts/test-terminal.sh     # macOS：长命令分块切分，不打开终端
+bash scripts/test-terminal.sh     # macOS：原生终端参数与引用测试，不打开终端
 bash scripts/test-build.sh        # macOS：伪 JDK/Gradle 验证兼容参数与资源复制
 pnpm tauri build                 # 构建本机架构的 macOS 应用与 DMG
 ```
@@ -272,7 +272,7 @@ SCM 适配目前使用普通表单登录与 HTML 读取：`/kpi/loginSmt`、`/kp
 
 - 内容按项目分组，展开后可执行已配置的运行、发行或终端命令，支持搜索项目和命令。
 - 项目右侧箭头会打开主窗口并定位对应项目；未配置快捷命令的项目可直接进入主窗口操作区。
-- 快捷执行复用主窗口的权限检查、所选 Node 管理器、版本和终端配置；任务日志可在主窗口查看。每次打开都会刷新项目配置，并跟随当前主题。向 Ghostty/iTerm 等终端交接命令前先收起快捷窗并释放键盘焦点，避免新标签或粘贴按键落入弹框。
+- 快捷执行复用主窗口的权限检查、所选 Node 管理器、版本和终端配置；任务日志可在主窗口查看。每次打开都会刷新项目配置，并跟随当前主题。向终端交接命令前先收起快捷窗并释放键盘焦点，让终端窗口正常显示。
 - 关闭主窗口后应用保留在菜单栏。右键菜单栏图标可「打开 DevDock」或「退出 DevDock」；退出仍会先取消应用管理的任务并恢复 AppID。
 
 浏览器预览 `/?view=quick` 可以查看弹框布局，但不执行本地命令；真实菜单栏交互需使用 `pnpm tauri dev` 启动的桌面开发版。
@@ -335,7 +335,7 @@ HBuilderX 的运行命令旁提供「停止」按钮，快捷弹框也提供停�
 
 执行前打开目标项目的 `App.vue`，校验前台窗口的项目上下文和菜单可用状态。窗口标题需能识别项目目录名与 App.vue；不同 HBuilderX 版本或自定义显示名称可能需要调整适配。菜单任务串行执行，避免跨项目抢占前台。
 
-用户触发 HBuilderX 构建、HBuilderX 菜单读取/执行或 Ghostty / iTerm 操作时，DevDock 会先检测辅助功能权限；缺少权限时自动打开「系统设置 → 隐私与安全性 → 辅助功能」并暂停操作，构建尚未写入版本或切换 AppID。请手动开启 DevDock 权限，重启应用后重试。若执行过程中仍收到 `-25211`，也会打开设置并显示授权提示；设置打开失败时会提示手动前往。系统对控制 System Events、HBuilderX 或终端的自动化授权仍需按提示允许。
+用户触发 HBuilderX 构建、HBuilderX 菜单读取/执行操作时，DevDock 会先检测辅助功能权限；缺少权限时自动打开「系统设置 → 隐私与安全性 → 辅助功能」并暂停操作，构建尚未写入版本或切换 AppID。请手动开启 DevDock 权限，返回应用后重试。若执行过程中仍收到 `-25211`，也会打开设置并显示授权提示；设置打开失败时会提示手动前往。系统对控制 System Events、HBuilderX 或终端的自动化授权仍需按提示允许。
 
 WGT 确认框必须能通过辅助功能识别，具备 WGT 标识、目标项目的输出路径及对应按钮。支持嵌套控件和 `确定(O)` 等 Qt 快捷键后缀；无法唯一识别时明确失败，不盲按回车。
 
@@ -345,13 +345,18 @@ WGT 确认框必须能通过辅助功能识别，具备 WGT 标识、目标项�
 
 ## 终端
 
-macOS 支持 Terminal、Ghostty、iTerm，Windows 支持 Windows Terminal、PowerShell 及 PowerShell 7，均可手动指定终端路径。项目终端可以覆盖全局选择。
+macOS 支持 Terminal、Ghostty、iTerm2、WezTerm、Kitty、Alacritty，Windows 支持 Windows Terminal、PowerShell 及 PowerShell 7，均可手动指定终端路径。项目终端可以覆盖全局选择。
 
 - 项目「运行与发行」中的终端命令使用「项目名 · 执行命令」作为标签标题，不包含目录切换、环境变量或 Node 激活前缀。打开 AI/全局终端命令或仅打开目录时不主动设置标题。
 - Terminal 通过 AppleScript 打开终端执行。
-- Ghostty / iTerm 使用前台自动化创建标签页并粘贴命令；需要默认的新标签页快捷键和辅助功能权限。包含大量环境变量的长命令会按 400 字符分块粘贴，块间留出终端处理时间，全部粘贴完成后再回车并恢复剪贴板，避免命令被截断。
+- Ghostty 使用原生 AppleScript 创建标签页，无窗口时创建窗口，通过登录 shell 执行命令，结束后保留交互 shell；不模拟按键、不使用剪贴板、不需要辅助功能权限。需要支持原生 AppleScript 的新版 Ghostty，且 `macos-applescript` 未关闭；首次可能需要允许自动化控制。
+- iTerm2 使用原生 AppleScript，按默认 profile 创建标签页，无窗口时创建窗口；使用登录交互 shell 执行命令，不模拟按键或使用剪贴板，首次可能需要允许自动化控制。
+- WezTerm、Kitty、Alacritty 通过 macOS Launch Services 和原生命令行参数创建新窗口，传入工作目录和命令；无需辅助功能或远程控制权限。Alacritty 不提供原生标签页。命令通过登录交互 shell 加载环境，结束后保留交互 shell。
+- 自动检测支持 `/Applications` 与 `~/Applications` 的标准应用包，也可手动选择路径。CLI 启动成功只表示系统已接受启动请求，不代表命令运行成功。
 - 工作目录安全引用，用户自定义命令按原意执行。终端任务只显示「已触发」，运行日志与服务停止在对应终端中处理。
 - 取消 DevDock 构建可以停止它管理的子进程，无法保证撤回 HBuilderX 已开始的内部发行或终端已收到的命令；请在对应工具中确认。
+
+Warp、Tabby、cmux 暂未接入本版本：Warp 执行命令需要生成并管理启动配置；Tabby 的 `run` 接口会要求用户确认；cmux 默认限制外部进程访问控制 socket。它们尚不能直接复用以上启动方式，手动指定这些应用路径会明确提示不支持。
 
 ### 执行 npm 命令需要辅助功能权限吗？
 
@@ -360,12 +365,14 @@ macOS 支持 Terminal、Ghostty、iTerm，Windows 支持 Windows Terminal、Powe
 | 系统与终端                                   | 辅助功能权限              | 启动方式                                                                       |
 | -------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------ |
 | macOS Terminal                               | 不需要                    | 使用原生 AppleScript `do script`；首次可能需要允许 DevDock 自动化控制 Terminal |
-| macOS Ghostty / iTerm                        | 需要                      | 通过 System Events 模拟新建标签、粘贴命令与回车                                |
+| macOS Ghostty                               | 不需要                    | 使用原生 AppleScript 创建终端并执行命令；首次可能需要允许自动化控制 |
+| macOS iTerm2                                | 不需要                    | 使用原生 AppleScript 创建会话；首次可能需要允许自动化控制 |
+| macOS WezTerm / Kitty / Alacritty             | 不需要                    | 使用原生命令行参数启动新窗口 |
 | Windows Terminal / PowerShell / PowerShell 7 | 不涉及 macOS 辅助功能权限 | 直接启动终端进程                                                               |
 
-提示「辅助功能权限不足，已暂停本次操作」时，命令尚未交给终端。继续使用 Ghostty / iTerm，需要在「系统设置 → 隐私与安全性 → 辅助功能」允许 DevDock，重启应用后重试。
+上述终端启动方式均不需要辅助功能权限。macOS 的「自动化」与「辅助功能」是两种独立权限，Terminal、Ghostty、iTerm2 首次使用时仍需按系统提示允许自动化控制；应用更新导致签名身份变化时，自动化授权也可能需要重新确认。HBuilderX 构建及菜单操作仍需要辅助功能权限。
 
-如果不希望授予辅助功能权限，可以在「偏好设置 → 终端命令」将默认终端改为 Terminal 并保存，同时检查项目的终端配置：项目单独指定的终端优先于全局设置，需将项目终端改为跟随全局或直接选择 Terminal。macOS 的「自动化」与「辅助功能」是两种独立权限，切换 Terminal 后仍需按系统提示允许自动化控制。
+项目单独指定的终端优先于全局设置，切换默认终端后请同时检查项目是否覆盖了该配置。
 
 ### 打开项目目录并执行命令
 

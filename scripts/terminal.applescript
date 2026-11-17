@@ -1,21 +1,83 @@
--- 按字符切分长命令，分块粘贴避免终端异步读取剪贴板时截断。
-on chunkText(theText, chunkSize)
- set parts to {}
- set totalLength to count of characters of theText
- set chunkStart to 1
- repeat while chunkStart <= totalLength
-  set chunkEnd to chunkStart + chunkSize - 1
-  if chunkEnd > totalLength then set chunkEnd to totalLength
-  set end of parts to text chunkStart thru chunkEnd of theText
-  set chunkStart to chunkEnd + 1
- end repeat
- return parts
-end chunkText
+on loginShellCommand(commandText, shellPath)
+ if shellPath is "" then set shellPath to "/bin/zsh"
+ -- 登录交互 shell 同时加载 zprofile/zshrc 等用户环境；命令结束后保留交互 shell。
+ return quoted form of shellPath & " -l -i -c " & quoted form of (commandText & linefeed & "exec " & quoted form of shellPath & " -l")
+end loginShellCommand
+
+-- Ghostty 使用原生 Apple Events 四字符代码，避免其他终端用户编译脚本时必须安装 Ghostty。
+on openGhostty(terminalPath, workingDirectory, commandText)
+ set launchCommand to my loginShellCommand(commandText, system attribute "SHELL")
+ try
+  tell application terminalPath
+   set surfaceConfig to «event GhstNSCf» given «class GScS»:{«class GScD»:workingDirectory, «class GScC»:launchCommand, «class GScW»:true}
+   if (count of «class Gwnd») > 0 then
+    «event GhstNTab» given «class GNtW»:front «class Gwnd», «class GNtS»:surfaceConfig
+   else
+    «event GhstNWin» given «class GNwS»:surfaceConfig
+   end if
+   activate
+  end tell
+ on error errText number errNumber
+  if errNumber is -1743 then error "请在系统设置 → 隐私与安全性 → 自动化中允许 DevDock 控制 Ghostty。" number errNumber
+  error "Ghostty 原生接口调用失败，请使用支持 AppleScript 的新版 Ghostty，并确认 macos-applescript 未设为 false；未自动重试，以免重复执行命令。原始错误：" & errText number errNumber
+ end try
+end openGhostty
+
+-- 事件代码来自 iTerm2 官方 iTerm2.sdef；不依赖本机安装 iTerm2 才能编译脚本。
+on openITerm(terminalPath, commandText)
+ set launchCommand to my loginShellCommand(commandText, system attribute "SHELL")
+ try
+  tell application terminalPath
+   if (count of windows) > 0 then
+    «event Itrmntwn» front window given «class Nwcm»:launchCommand
+   else
+    «event Itrmnwwn» given «class Nwcm»:launchCommand
+   end if
+   activate
+  end tell
+ on error errText number errNumber
+  if errNumber is -1743 then error "请在系统设置 → 隐私与安全性 → 自动化中允许 DevDock 控制 iTerm2。" number errNumber
+  error "iTerm2 原生接口调用失败；请确认使用支持 AppleScript 的 iTerm2。未自动重试，以免重复执行命令。原始错误：" & errText number errNumber
+ end try
+end openITerm
 
 -- OSC 0 设置终端标签标题，兼容 iTerm 与 Ghostty。
 on oscTitleCommand(theTitle)
  return "printf '\\033]0;%s\\007' " & quoted form of theTitle & " && "
 end oscTitleCommand
+
+-- 每个参数单独引用，不把用户目录或命令拼成未经引用的外层 shell 代码。
+on quoteArguments(values)
+ set resultText to ""
+ repeat with value in values
+  set resultText to resultText & quoted form of (contents of value as text) & " "
+ end repeat
+ return resultText
+end quoteArguments
+
+on cliArguments(terminalPath, workingDirectory, launchCommand, windowTitle)
+ if terminalPath ends with "/WezTerm.app" then
+  set args to {"start", "--always-new-process", "--cwd", workingDirectory, "--"}
+ else if terminalPath ends with "/kitty.app" then
+  set args to {"--directory", workingDirectory}
+  if windowTitle is not "" then set args to args & {"--title", windowTitle}
+ else if terminalPath ends with "/Alacritty.app" then
+  set args to {"--working-directory", workingDirectory}
+  if windowTitle is not "" then set args to args & {"--title", windowTitle}
+  -- Alacritty 的 -e 必须位于选项末尾，后续参数全部属于启动程序。
+  set args to args & {"-e"}
+ else
+  error "此终端尚未接入原生命令行接口，请选择支持的终端。"
+ end if
+ return args & {"/bin/sh", "-c", launchCommand}
+end cliArguments
+
+on openCliTerminal(terminalPath, workingDirectory, commandText, windowTitle)
+ set launchCommand to "exec " & my loginShellCommand(commandText, system attribute "SHELL")
+ set args to my cliArguments(terminalPath, workingDirectory, launchCommand, windowTitle)
+ -- Launch Services 启动独立窗口，避免终端继承任务进程组后被 DevDock 的清理流程终止。
+ do shell script "/usr/bin/open -n -a " & quoted form of terminalPath & " --args " & my quoteArguments(args)
+end openCliTerminal
 
 -- 授权命令作为参数传入，工作目录通过 shell 安全引用。
 on run argv
@@ -38,42 +100,17 @@ on run argv
     end try
    end if
   end tell
- else if terminalPath ends with "/iTerm.app" or terminalPath ends with "/iTerm2.app" or terminalPath ends with "/Ghostty.app" then
-  set processName to "iTerm2"
-  if terminalPath ends with "/Ghostty.app" then set processName to "Ghostty"
-  -- iTerm 与 Ghostty 通过 OSC 0 设置当前标签标题。
+ else if terminalPath ends with "/Ghostty.app" then
   if windowTitle is not "" then set commandText to (my oscTitleCommand(windowTitle)) & commandText
-  do shell script "/usr/bin/open -a " & quoted form of terminalPath
-  delay 1
-  tell application "System Events"
-   tell process processName
-    set frontmost to true
-    if (count of windows) = 0 then error "终端没有可用窗口，请先手动打开一个终端窗口后重试；未发送命令"
-    if frontmost is not true then error "无法确认终端处于前台；未发送命令"
-    keystroke "t" using command down
-    delay 0.5
-    if (count of windows) = 0 or frontmost is not true then error "无法确认终端新标签页上下文；未发送命令"
-    -- 通过粘贴避免键盘布局破坏命令内容，完成后恢复原剪贴板。
-    -- 分块粘贴：长命令一次粘贴可能被终端异步读取剪贴板截断，块间留出处理时间。
-    set commandChunks to my chunkText(commandText, 400)
-    set oldClipboard to the clipboard
-    try
-     repeat with piece in commandChunks
-      set the clipboard to contents of piece
-      keystroke "v" using command down
-      delay 0.35
-     end repeat
-     key code 36
-     delay 0.5
-     set the clipboard to oldClipboard
-    on error errText
-     set the clipboard to oldClipboard
-     error errText
-    end try
-   end tell
-  end tell
+  my openGhostty(terminalPath, workingDirectory, commandText)
+ else if terminalPath ends with "/iTerm.app" or terminalPath ends with "/iTerm2.app" then
+  if windowTitle is not "" then set commandText to (my oscTitleCommand(windowTitle)) & commandText
+  my openITerm(terminalPath, commandText)
+ else if terminalPath ends with "/WezTerm.app" or terminalPath ends with "/kitty.app" or terminalPath ends with "/Alacritty.app" then
+  if windowTitle is not "" then set commandText to (my oscTitleCommand(windowTitle)) & commandText
+  my openCliTerminal(terminalPath, workingDirectory, commandText, windowTitle)
  else
-  error "暂不支持此终端；请选择 Terminal、iTerm 或 Ghostty"
+  error "暂不支持此终端；请选择 Terminal、Ghostty、iTerm2、WezTerm、Kitty 或 Alacritty。"
  end if
  return "终端命令已触发，退出状态由终端显示"
 end run

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 只验证长命令分块纯函数；不打开终端或执行命令。
+# 验证标题、原生 shell 和 CLI 参数；仅运行测试替身，不打开终端。
 set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
 compiled_script=$(mktemp "${TMPDIR:-/tmp/}dev-dock-terminal-test.XXXXXX")

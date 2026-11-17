@@ -397,25 +397,33 @@ fn detect_tools() -> Result<Tools> {
 fn detect_macos_tools() -> Result<Tools> {
     let home = std::env::var("HOME").unwrap_or_default();
     let mut terminals = vec![];
-    for (name, path) in [
-        ("Terminal", "/System/Applications/Utilities/Terminal.app"),
-        ("Ghostty", "/Applications/Ghostty.app"),
-        ("iTerm", "/Applications/iTerm.app"),
-    ] {
-        if Path::new(path).is_dir() {
-            terminals.push(Tool {
-                name: name.into(),
-                path: path.into(),
-            })
-        }
+    let system_terminal = "/System/Applications/Utilities/Terminal.app";
+    if Path::new(system_terminal).is_dir() {
+        terminals.push(Tool {
+            name: "Terminal".into(),
+            path: system_terminal.into(),
+        });
     }
-    for name in ["Ghostty", "iTerm"] {
-        let p = Path::new(&home).join(format!("Applications/{name}.app"));
-        if p.is_dir() {
-            terminals.push(Tool {
-                name: name.into(),
-                path: p.to_string_lossy().into(),
-            })
+    // 系统与用户安装目录使用同一份支持列表，名称与实际 .app 包名分开。
+    for directory in [
+        PathBuf::from("/Applications"),
+        Path::new(&home).join("Applications"),
+    ] {
+        for (name, bundle) in [
+            ("Ghostty", "Ghostty.app"),
+            ("iTerm2", "iTerm.app"),
+            ("iTerm2", "iTerm2.app"),
+            ("WezTerm", "WezTerm.app"),
+            ("Kitty", "kitty.app"),
+            ("Alacritty", "Alacritty.app"),
+        ] {
+            let path = directory.join(bundle);
+            if path.is_dir() {
+                terminals.push(Tool {
+                    name: name.into(),
+                    path: path.to_string_lossy().into(),
+                });
+            }
         }
     }
     let mut jdks = vec![];

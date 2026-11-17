@@ -147,13 +147,10 @@ fn check_with(
             .commands
             .iter()
             .any(|a| a.kind == "menu" && project.platforms.contains(&a.platform));
-    let terminal_ax = platform == "macos"
-        && ["/Ghostty.app", "/iTerm.app", "/iTerm2.app"]
-            .iter()
-            .any(|suffix| terminal.ends_with(suffix));
-    if platform == "macos" && (terminal_ax || app || menu) {
+    // 终端均使用原生接口，仅 uniapp 的 HBuilderX App 构建或菜单操作需要 AX。
+    if platform == "macos" && (app || menu) {
         let granted = trusted();
-        report.add("accessibility", "辅助功能权限", if granted { "pass" } else { "warning" }, if granted { "当前进程已获辅助功能权限；HBuilderX 本地菜单运行和 Ghostty/iTerm 终端操作需要该权限" } else { "未获辅助功能权限；Ghostty/iTerm 及 uniapp 本地 HBuilderX 菜单运行需要授权，Terminal 终端本身不需要；体检未请求权限" });
+        report.add("accessibility", "辅助功能权限", if granted { "pass" } else { "warning" }, if granted { "当前进程已获辅助功能权限；uniapp 的 HBuilderX App 构建和本地菜单运行需要该权限" } else { "未获辅助功能权限；uniapp 的 HBuilderX App 构建和本地菜单运行需要授权；体检未请求权限" });
         if !granted {
             report.items.last_mut().unwrap().action = Some("request-accessibility".into());
         }
@@ -861,33 +858,72 @@ mod tests {
             .contains("PATH"));
     }
     #[test]
-    fn permission_query_is_read_only_and_terminal_is_overridable() {
+    fn backend_terminals_never_query_accessibility() {
         let (_dir, mut project, mut settings) = fixture();
         project.project_type = "backend".into();
-        project.platforms.clear();
+        for terminal in [
+            "Terminal",
+            "/Applications/Ghostty.app",
+            "/Users/test/Applications/Ghostty.app",
+            "/Applications/iTerm.app",
+            "/Applications/iTerm2.app",
+            "/Applications/WezTerm.app",
+            "/Applications/kitty.app",
+            "/Applications/Alacritty.app",
+        ] {
+            // 项目配置与全局回退均不应因终端触发 AX 查询。
+            for inherit in [false, true] {
+                project.terminal = if inherit { "" } else { terminal }.into();
+                settings.terminal = terminal.into();
+                let result = check_with(&project, &settings, "macos", || {
+                    panic!("终端 {terminal} 不需 AX，继承全局：{inherit}")
+                })
+                .unwrap();
+                assert!(!result.items.iter().any(|i| i.id == "accessibility"));
+            }
+        }
+    }
+
+    #[test]
+    fn uniapp_app_and_menu_query_accessibility_read_only() {
+        let (_dir, mut project, settings) = fixture();
         project.terminal = "/Applications/Ghostty.app".into();
-        let queried = Cell::new(0);
-        let result = check_with(&project, &settings, "macos", || {
-            queried.set(queried.get() + 1);
-            false
-        })
-        .unwrap();
-        assert_eq!(queried.get(), 1);
-        assert_eq!(status(&result, "accessibility"), "warning");
-        assert_eq!(
-            result
-                .items
-                .iter()
-                .find(|i| i.id == "accessibility")
-                .unwrap()
-                .action
-                .as_deref(),
-            Some("request-accessibility")
-        );
-        settings.terminal = "/Applications/iTerm.app".into();
-        project.terminal = "Terminal".into();
+        for platform in ["app", "web"] {
+            project.platforms = vec![platform.into()];
+            project.commands = serde_json::from_value(serde_json::json!([
+                {"id":"dev", "name":"Dev", "platform":"web", "kind":"menu", "menuPath":[], "command":""}
+            ])).unwrap();
+            for granted in [false, true] {
+                let queried = Cell::new(0);
+                let result = check_with(&project, &settings, "macos", || {
+                    queried.set(queried.get() + 1);
+                    granted
+                })
+                .unwrap();
+                assert_eq!(queried.get(), 1, "{platform}");
+                let item = result
+                    .items
+                    .iter()
+                    .find(|i| i.id == "accessibility")
+                    .unwrap();
+                assert_eq!(item.status, if granted { "pass" } else { "warning" });
+                assert_eq!(
+                    item.action.as_deref(),
+                    if granted {
+                        None
+                    } else {
+                        Some("request-accessibility")
+                    }
+                );
+            }
+            let result =
+                check_with(&project, &settings, "windows", || panic!("Windows 不需 AX")).unwrap();
+            assert!(!result.items.iter().any(|i| i.id == "accessibility"));
+        }
+        // 未启用平台的菜单不应要求辅助功能权限。
+        project.platforms = vec!["miniapp".into()];
         let result =
-            check_with(&project, &settings, "macos", || panic!("Terminal 不需 AX")).unwrap();
+            check_with(&project, &settings, "macos", || panic!("未启用菜单不需 AX")).unwrap();
         assert!(!result.items.iter().any(|i| i.id == "accessibility"));
     }
     #[test]

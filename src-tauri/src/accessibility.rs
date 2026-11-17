@@ -181,13 +181,6 @@ pub(crate) fn is_automation_command(command: &Command) -> bool {
             }))
 }
 
-#[cfg(any(not(windows), test))]
-pub(crate) fn terminal_needs_accessibility(terminal: &str) -> bool {
-    ["/Ghostty.app", "/iTerm.app", "/iTerm2.app"]
-        .iter()
-        .any(|suffix| terminal.ends_with(suffix))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,24 +380,6 @@ mod tests {
             let mut command = Command::new(program);
             command.arg("/tmp/scripts/build.sh").arg("build-app.sh");
             assert!(!is_automation_command(&command));
-        }
-    }
-
-    #[test]
-    fn only_supported_ui_terminals_need_accessibility() {
-        for terminal in [
-            "/Applications/Ghostty.app",
-            "/Applications/iTerm.app",
-            "/Applications/iTerm2.app",
-        ] {
-            assert!(terminal_needs_accessibility(terminal));
-        }
-        for terminal in [
-            "Terminal",
-            "/System/Applications/Utilities/Terminal.app",
-            "/Applications/Other.app",
-        ] {
-            assert!(!terminal_needs_accessibility(terminal));
         }
     }
 }

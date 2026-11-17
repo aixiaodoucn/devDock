@@ -558,12 +558,9 @@ pub fn action_with_title(
                 if terminal != "Terminal" && !Path::new(terminal).is_absolute() {
                     return Err("终端必须使用绝对路径".into());
                 }
-                if accessibility::terminal_needs_accessibility(terminal) {
-                    task.control.permission_prompt.lock().unwrap().ensure()?;
-                }
                 // 仅 Node shell 动作有明确选择时激活；交给终端前再次验证安装文件。
                 let command = nvm::command_for(&project, &action)?;
-                // 非激活面板可能仍持有键盘焦点；先收起再让终端接收新标签和粘贴按键。
+                // 交接前先收起快捷面板，让原生终端窗口显示在前台。
                 crate::tray::hide_quick_panel(task.app.clone())?;
                 let terminal_title = title.clone().unwrap_or_default();
                 let mut c = Command::new("/usr/bin/osascript");
