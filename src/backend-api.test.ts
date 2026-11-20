@@ -87,6 +87,45 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     );
     expect(invoke).not.toHaveBeenCalledWith('execute_backend_git', expect.anything());
   });
+  it('继续只发送原计划标识并返回新预检计划', async () => {
+    const plan = { planId: 'remaining' };
+    vi.mocked(invoke).mockResolvedValue(plan);
+    await expect(api.prepareRemainingBackendGit('paused')).resolves.toEqual(plan);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('prepare_remaining_backend_git', {
+      planId: 'paused',
+    });
+  });
+  it('选择 POM 仅发送计划、仓库标识和分支侧', async () => {
+    await api.resolveBackendPomConflict('plan', 'repo', 'development');
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('resolve_backend_pom_conflict', {
+      planId: 'plan',
+      repoId: 'repo',
+      side: 'development',
+    });
+  });
+  it('逐块应用 POM 只发送文件、行号和选中的分支', async () => {
+    const choices = [{ path: 'api/pom.xml', line: 12, side: 'test' }] as const;
+    await api.resolveBackendPomBlocks('plan', 'repo', [...choices]);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('resolve_backend_pom_blocks', {
+      planId: 'plan',
+      repoId: 'repo',
+      choices,
+    });
+  });
+  it('在 IDEA 中打开只发送计划与仓库标识，不传文件路径', async () => {
+    await api.openBackendWorktreeInIdea('plan', 'repo');
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('open_backend_worktree_in_idea', {
+      planId: 'plan',
+      repoId: 'repo',
+    });
+  });
+  it('在 WebStorm 中打开只发送计划与仓库标识，不传文件路径', async () => {
+    await api.openBackendWorktreeInWebStorm('plan', 'repo');
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('open_backend_worktree_in_webstorm', {
+      planId: 'plan',
+      repoId: 'repo',
+    });
+  });
   it('中止和手工完成仅发送计划与子仓库标识', async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
     await api.abortBackendGit('plan', 'repo');

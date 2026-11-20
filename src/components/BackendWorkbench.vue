@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { api, desktop } from '../api';
 import { syncBackendModules, scmProjectId } from '../backend-mapping';
@@ -7,6 +7,7 @@ import type {
   Project,
   BackendGitPlan,
   BackendGitOperation,
+  PomBlockChoice,
   BackendRepositoryStatus,
   ScmModule,
   ScmProject,
@@ -30,8 +31,17 @@ const error = ref('');
 const notice = ref('');
 const activity = ref('');
 const waiting = ref('');
-const plan = ref<BackendGitPlan | null>(null);
+const plan = ref<(BackendGitPlan & { continuedFrom?: string }) | null>(null);
+const planHeading = ref<HTMLElement | null>(null);
 const operation = ref<BackendGitOperation | null>(null);
+const canContinue = computed(() => {
+  const current = operation.value;
+  return (
+    current?.status === 'paused' &&
+    current.repositories.some((repo) => repo.status === 'pending') &&
+    current.repositories.every((repo) => !repo.worktreePath)
+  );
+});
 const history = ref<BackendGitOperation[]>([]);
 const operationLabels: Record<BackendGitOperation['status'], string> = {
   prepared: '等待执行',
@@ -94,7 +104,7 @@ function needsRecovery(item: BackendGitOperation): boolean {
   );
 }
 const push = ref(false);
-const keepTestPom = ref(false);
+const pomChoices = ref<Record<string, PomBlockChoice['side']>>({});
 const cleanConfirmed = ref<Record<string, boolean>>({});
 const connected = ref(false);
 const sessionExpired = ref(false);
@@ -452,8 +462,8 @@ watch(
       loadedTestId.value = undefined;
       statusIdentities.value = {};
       push.value = false;
-      keepTestPom.value = false;
       cleanConfirmed.value = {};
+      pomChoices.value = {};
       waiting.value = '';
       notice.value = '';
       error.value = '';
@@ -525,7 +535,7 @@ watch(
   },
 );
 watch(
-  [selected, push, keepTestPom],
+  [selected, push],
   () => {
     plan.value = null;
   },
@@ -592,9 +602,21 @@ function prepare(operationType: BackendGitPlan['operation']) {
       repositories,
       operationType,
       operationType === 'push-dev' || (operationType === 'merge' && push.value),
-      operationType === 'merge' && keepTestPom.value,
+      false,
     );
     if (valid(token) && result.projectId === props.project.id) plan.value = result;
+  });
+}
+function prepareRemaining() {
+  const current = operation.value;
+  if (!canContinue.value || !current || dirty.value || locked.value) return;
+  plan.value = null;
+  void perform('预检未执行的仓库', async (token) => {
+    const result = await api.prepareRemainingBackendGit(current.planId);
+    if (!valid(token) || result.projectId !== props.project.id) return;
+    plan.value = { ...result, continuedFrom: current.planId };
+    await nextTick();
+    if (valid(token)) planHeading.value?.focus();
   });
 }
 function execute() {
@@ -603,6 +625,10 @@ function execute() {
   void perform('执行 Git 计划', async (token) => {
     const taskId = await api.executeBackendGit(confirmed.planId);
     if (!valid(token)) return;
+    if (confirmed.continuedFrom) {
+      ++historySequence;
+      history.value = history.value.filter((item) => item.planId !== confirmed.continuedFrom);
+    }
     operation.value = {
       planId: confirmed.planId,
       taskId,
@@ -643,6 +669,42 @@ function resolveWorktree(repoId: string, action: 'abort' | 'complete') {
     if (valid(token)) await refreshState(current.planId);
   });
 }
+function resolvePomConflict(repoId: string, side: 'test' | 'development') {
+  const current = operation.value;
+  if (!current || current.status !== 'paused') return;
+  void perform('采用选中的 POM 版本', async (token) => {
+    await api.resolveBackendPomConflict(current.planId, repoId, side);
+    if (valid(token)) await refreshState(current.planId);
+  });
+}
+type GitRepositoryResult = BackendGitOperation['repositories'][number];
+function pomChoiceKey(repoId: string, path: string, line: number) {
+  return encodeURIComponent(JSON.stringify([operation.value?.planId, repoId, path, line]));
+}
+function selectedPomChoices(item: GitRepositoryResult): PomBlockChoice[] | null {
+  const choices: PomBlockChoice[] = [];
+  for (const file of item.pomConflictFiles ?? []) {
+    for (const { line } of file.blocks) {
+      const side = pomChoices.value[pomChoiceKey(item.repoId, file.path, line)];
+      if (!side) return null;
+      choices.push({ path: file.path, line, side });
+    }
+  }
+  return choices.length ? choices : null;
+}
+function applyPomChoices(item: GitRepositoryResult) {
+  const current = operation.value;
+  const choices = selectedPomChoices(item);
+  if (current?.status !== 'paused' || !item.pomBlocksResolution || !choices) return;
+  void perform('应用 POM 冲突选择', async (token) => {
+    await api.resolveBackendPomBlocks(current.planId, item.repoId, choices);
+    if (valid(token)) {
+      for (const { path, line } of choices)
+        delete pomChoices.value[pomChoiceKey(item.repoId, path, line)];
+      await refreshState(current.planId);
+    }
+  });
+}
 async function openPath(path: string) {
   if (!desktop) return;
   const token = generation;
@@ -651,6 +713,14 @@ async function openPath(path: string) {
   } catch (reason) {
     if (valid(token)) failure(reason);
   }
+}
+function openWorktreeInIde(repoId: string, ide: 'IDEA' | 'WebStorm') {
+  const current = operation.value;
+  if (!current) return;
+  void perform(`在 ${ide} 中打开工作树`, async () => {
+    const open = ide === 'IDEA' ? api.openBackendWorktreeInIdea : api.openBackendWorktreeInWebStorm;
+    await open(current.planId, repoId);
+  });
 }
 onMounted(() => {
   if (!desktop) return;
@@ -909,13 +979,9 @@ onBeforeUnmount(() => {
         ><label class="checkbox"
           ><input v-model="push" type="checkbox" :disabled="locked" />合并成功后推送测试分支</label
         >
-        <label class="checkbox">
-          <input v-model="keepTestPom" data-keep-test-pom type="checkbox" :disabled="locked" />
-          pom.xml 冲突时保留测试分支版本
-        </label>
       </div>
       <div v-if="plan" class="plan">
-        <h4>确认 Git 计划</h4>
+        <h4 ref="planHeading" tabindex="-1">确认 Git 计划</h4>
         <p>
           {{ gitActionLabels[plan.operation] }} ·
           {{
@@ -930,9 +996,7 @@ onBeforeUnmount(() => {
           切换后只允许快进同步：执行时重新获取远端，以当时最新提交为准；本地领先时保留提交，分叉时停止，不创建合并提交。
           有未提交修改时拒绝操作；无远端的本地仓库仅切换，不进行远程同步。
         </p>
-        <p v-if="plan.operation === 'merge'">
-          pom.xml 冲突处理：{{ plan.keepTestPom ? '保留测试分支版本' : '暂停并手动处理' }}
-        </p>
+        <p v-if="plan.operation === 'merge'">可逐处选择 pom.xml 冲突内容，其他冲突需手工处理。</p>
         <ul>
           <li v-for="item in plan.repositories" :key="item.repository.id">
             <strong>{{ item.repository.name }}</strong>
@@ -1019,13 +1083,24 @@ onBeforeUnmount(() => {
           >
             取消任务
           </button>
+          <button
+            v-if="canContinue"
+            class="button small"
+            :disabled="locked || dirty"
+            title="只重新预检未执行的仓库，确认计划后执行"
+            @click="prepareRemaining"
+          >
+            继续
+          </button>
         </div>
         <p class="hint">{{ operationSummary(operation) }}</p>
         <p v-if="operation.status === 'paused'" class="warning">
-          操作已暂停，已成功的仓库不会回滚；未执行的仓库需重新预检后操作。
+          操作已暂停，已成功的仓库不会回滚。{{
+            canContinue ? '点击「继续」重新预检未执行的仓库。' : ''
+          }}
         </p>
         <p v-if="operation.repositories.some((item) => item.worktreePath)" class="warning">
-          有保留的工作树，请按下方提示处理；完成处理不会自动推送。
+          有保留的工作树，请按下方提示处理。
         </p>
         <div v-for="item in operation.repositories" :key="item.repoId" class="result">
           <div class="result-heading">
@@ -1035,6 +1110,138 @@ onBeforeUnmount(() => {
             }}</span>
           </div>
           <p>{{ repositoryMessage(item) }}</p>
+          <div
+            v-if="item.worktreePath && (item.pomConflictFiles?.length || item.pomConflict)"
+            class="pom-conflict"
+          >
+            <div v-for="file in item.pomConflictFiles" :key="file.path" class="pom-file">
+              <strong
+                ><code>{{ file.path }}</code></strong
+              >
+              <div
+                v-for="block in file.blocks"
+                :key="block.line"
+                :data-pom-block="block.line"
+                class="pom-block"
+              >
+                <p v-if="block.context" class="pom-context">{{ block.context }}</p>
+                <p class="hint">合并冲突 · 工作树第 {{ block.line }} 行</p>
+                <div class="pom-versions">
+                  <section>
+                    <strong>测试分支</strong>
+                    <pre v-if="block.testContent" class="pom-test" tabindex="0">{{
+                      block.testContent
+                    }}</pre>
+                    <p v-else class="hint">此侧无内容</p>
+                    <label v-if="item.pomBlocksResolution" class="checkbox">
+                      <input
+                        v-model="pomChoices[pomChoiceKey(item.repoId, file.path, block.line)]"
+                        :name="pomChoiceKey(item.repoId, file.path, block.line)"
+                        type="radio"
+                        value="test"
+                        :disabled="locked || operation.status !== 'paused'"
+                      />采用此处测试分支
+                    </label>
+                  </section>
+                  <section>
+                    <strong>开发分支</strong>
+                    <pre v-if="block.developmentContent" class="pom-development" tabindex="0">{{
+                      block.developmentContent
+                    }}</pre>
+                    <p v-else class="hint">此侧无内容</p>
+                    <label v-if="item.pomBlocksResolution" class="checkbox">
+                      <input
+                        v-model="pomChoices[pomChoiceKey(item.repoId, file.path, block.line)]"
+                        :name="pomChoiceKey(item.repoId, file.path, block.line)"
+                        type="radio"
+                        value="development"
+                        :disabled="locked || operation.status !== 'paused'"
+                      />采用此处开发分支
+                    </label>
+                  </section>
+                </div>
+              </div>
+              <details v-if="file.branchDiff" open class="pom-branch-diff">
+                <summary>两分支的全部差异</summary>
+                <p class="hint">− 测试分支，+ 开发分支。每组开头标出两侧文件的行号。</p>
+                <pre tabindex="0" class="pom-diff"><span
+                  v-for="(line, index) in file.branchDiff.replace(/\n$/, '').split('\n')"
+                  :key="index"
+                  :class="{
+                    'pom-diff-range': line.startsWith('@@ '),
+                    'pom-test': line.startsWith('-'),
+                    'pom-development': line.startsWith('+'),
+                  }"
+                ><template v-if="file.diffContexts?.[line]"><strong class="pom-context">{{ file.diffContexts[line] }}</strong>{{ '  ' }}</template><span class="pom-diff-text">{{ line }}</span></span></pre>
+              </details>
+            </div>
+            <template v-if="item.pomBlocksResolution">
+              <p class="hint">
+                {{
+                  item.pomBlocksResolution.manualRemaining
+                    ? '应用后仍需在工作树处理其余冲突。'
+                    : '选齐后统一应用并保留 Git 已自动合并的内容。成功后继续原批次。'
+                }}
+              </p>
+              <button
+                class="button small"
+                :disabled="locked || operation.status !== 'paused' || !selectedPomChoices(item)"
+                @click="applyPomChoices(item)"
+              >
+                {{
+                  item.pomBlocksResolution.manualRemaining
+                    ? '应用所选 POM 内容'
+                    : item.pomBlocksResolution.push
+                      ? '应用所选内容、提交并推送'
+                      : '应用所选内容并提交'
+                }}
+              </button>
+            </template>
+            <p v-else-if="!item.pomConflict" class="hint">请打开工作树，按文件和行号手工合并。</p>
+            <template v-else-if="item.pomConflict">
+              <p>
+                <code>{{ item.pomConflict.path }}</code> · 选择要保留的整份文件
+              </p>
+              <p class="hint">采用一侧的整份 POM 会舍弃另一侧独有的改动。</p>
+              <p class="hint">
+                {{
+                  item.pomConflict.push
+                    ? '选定后提交并推送到测试分支。'
+                    : '选定后提交到本地测试分支。'
+                }}
+              </p>
+              <div class="pom-versions">
+                <section>
+                  <strong>测试分支 · {{ item.pomConflict.testBranch }}</strong>
+                  <details :open="!item.pomConflictFiles?.length">
+                    <summary>查看完整 POM</summary>
+                    <pre tabindex="0">{{ item.pomConflict.testContent }}</pre>
+                  </details>
+                  <button
+                    class="button small"
+                    :disabled="locked"
+                    @click="resolvePomConflict(item.repoId, 'test')"
+                  >
+                    采用测试分支版本
+                  </button>
+                </section>
+                <section>
+                  <strong>开发分支 · {{ item.pomConflict.developmentBranch }}</strong>
+                  <details :open="!item.pomConflictFiles?.length">
+                    <summary>查看完整 POM</summary>
+                    <pre tabindex="0">{{ item.pomConflict.developmentContent }}</pre>
+                  </details>
+                  <button
+                    class="button small"
+                    :disabled="locked"
+                    @click="resolvePomConflict(item.repoId, 'development')"
+                  >
+                    采用开发分支版本
+                  </button>
+                </section>
+              </div>
+            </template>
+          </div>
           <template v-if="item.worktreePath"
             ><code>{{ item.worktreePath }}</code>
             <label class="checkbox"
@@ -1045,8 +1252,22 @@ onBeforeUnmount(() => {
               />已手工提交并确认工作树干净</label
             >
             <div class="toolbar">
-              <button class="button small" @click="openPath(item.worktreePath)">打开工作树</button
-              ><button
+              <button class="button small" @click="openPath(item.worktreePath)">打开工作树</button>
+              <button
+                class="button small"
+                :disabled="locked"
+                @click="openWorktreeInIde(item.repoId, 'IDEA')"
+              >
+                在 IDEA 中打开
+              </button>
+              <button
+                class="button small"
+                :disabled="locked"
+                @click="openWorktreeInIde(item.repoId, 'WebStorm')"
+              >
+                在 WebStorm 中打开工作树
+              </button>
+              <button
                 class="button small"
                 :disabled="locked || !cleanConfirmed[`${operation.planId}:${item.repoId}`]"
                 @click="resolveWorktree(item.repoId, 'complete')"
@@ -1061,7 +1282,7 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <small
-              >完成前请手工解决冲突、提交并确认工作树干净；完成处理不会自动推送。</small
+              >请在工作树中解决冲突并提交。确认干净后，点击「完成处理」继续原批次。手工提交需自行推送。</small
             ></template
           >
         </div>
@@ -1071,6 +1292,53 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.pom-conflict {
+  margin-block: 10px;
+}
+.pom-versions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 12px;
+}
+.pom-file + .pom-file,
+.pom-block + .pom-block {
+  margin-top: 12px;
+}
+.pom-versions section {
+  min-width: 0;
+}
+.pom-versions pre {
+  max-height: 250px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  padding: 8px;
+}
+.pom-branch-diff {
+  margin-block: 12px;
+}
+.pom-diff {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--line);
+}
+.pom-diff > span {
+  display: block;
+  min-width: max-content;
+  padding-inline: 8px;
+}
+.pom-diff-range {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--line) 45%, transparent);
+}
+.pom-test {
+  border-inline-start: 3px solid #bf711e;
+  background: color-mix(in srgb, #bf711e 14%, transparent);
+}
+.pom-development {
+  border-inline-start: 3px solid #378366;
+  background: color-mix(in srgb, #378366 14%, transparent);
+}
+
 .backend-workbench {
   display: grid;
   gap: 14px;

@@ -168,13 +168,26 @@ async fn prepare_backend_git(
     .map_err(|_| "Git 预检任务异常".to_owned())?
 }
 #[tauri::command]
-fn execute_backend_git(
+async fn prepare_remaining_backend_git(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    plan_id: String,
+) -> Result<backend_git::Plan> {
+    ensure_backend_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || backend_git::prepare_remaining(&app, plan_id))
+        .await
+        .map_err(|_| "Git 续跑预检任务异常".to_owned())?
+}
+#[tauri::command]
+async fn execute_backend_git(
     app: AppHandle,
     window: tauri::WebviewWindow,
     plan_id: String,
 ) -> Result<String> {
     ensure_backend_window(&window)?;
-    backend_git::execute(app, plan_id)
+    tauri::async_runtime::spawn_blocking(move || backend_git::execute(app, plan_id))
+        .await
+        .map_err(|_| "Git 执行启动异常".to_owned())?
 }
 #[tauri::command]
 fn backend_git_state(app: AppHandle, plan_id: String) -> Result<backend_git::OperationState> {
@@ -188,6 +201,34 @@ async fn backend_git_operations(
     tauri::async_runtime::spawn_blocking(move || backend_git::list_operations(&app, project_id))
         .await
         .map_err(|_| "读取 Git 操作记录异常".to_owned())?
+}
+#[tauri::command]
+async fn open_backend_worktree_in_idea(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    plan_id: String,
+    repo_id: String,
+) -> Result<()> {
+    ensure_backend_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_git::open_worktree_in_idea(&app, plan_id, repo_id)
+    })
+    .await
+    .map_err(|_| "在 IntelliJ IDEA 中打开工作区任务异常".to_owned())?
+}
+#[tauri::command]
+async fn open_backend_worktree_in_webstorm(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    plan_id: String,
+    repo_id: String,
+) -> Result<()> {
+    ensure_backend_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_git::open_worktree_in_webstorm(&app, plan_id, repo_id)
+    })
+    .await
+    .map_err(|_| "在 WebStorm 中打开工作区任务异常".to_owned())?
 }
 #[tauri::command]
 async fn complete_backend_git(
@@ -212,6 +253,36 @@ async fn abort_backend_git(
     tauri::async_runtime::spawn_blocking(move || backend_git::abort(&app, plan_id, repo_id))
         .await
         .map_err(|_| "中止合并任务异常".to_owned())?
+}
+#[tauri::command]
+async fn resolve_backend_pom_conflict(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    plan_id: String,
+    repo_id: String,
+    side: backend_git::PomSide,
+) -> Result<()> {
+    ensure_backend_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_git::resolve_pom(&app, plan_id, repo_id, side)
+    })
+    .await
+    .map_err(|_| "处理 POM 冲突任务异常".to_owned())?
+}
+#[tauri::command]
+async fn resolve_backend_pom_blocks(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    plan_id: String,
+    repo_id: String,
+    choices: Vec<backend_git::PomBlockChoice>,
+) -> Result<()> {
+    ensure_backend_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_git::resolve_pom_blocks(&app, plan_id, repo_id, choices)
+    })
+    .await
+    .map_err(|_| "处理 POM 冲突块任务异常".to_owned())?
 }
 #[tauri::command]
 async fn scm_status(app: AppHandle, window: tauri::WebviewWindow) -> Result<scm::Status> {
@@ -878,11 +949,16 @@ pub fn run() {
             scan_backend_children,
             backend_repository_statuses,
             prepare_backend_git,
+            prepare_remaining_backend_git,
             execute_backend_git,
             backend_git_state,
             backend_git_operations,
+            open_backend_worktree_in_idea,
+            open_backend_worktree_in_webstorm,
             abort_backend_git,
             complete_backend_git,
+            resolve_backend_pom_conflict,
+            resolve_backend_pom_blocks,
             scm_status,
             scm_login,
             scm_logout,

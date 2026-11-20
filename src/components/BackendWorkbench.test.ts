@@ -26,13 +26,18 @@ vi.mock('../api', () => ({
     scmProjectModules: vi.fn(),
     backendRepositoryStatuses: vi.fn(),
     prepareBackendGit: vi.fn(),
+    prepareRemainingBackendGit: vi.fn(),
     executeBackendGit: vi.fn(),
     backendGitState: vi.fn(),
     backendGitOperations: vi.fn(),
     openPath: vi.fn(),
+    openBackendWorktreeInIdea: vi.fn(),
+    openBackendWorktreeInWebStorm: vi.fn(),
     cancel: vi.fn(),
     abortBackendGit: vi.fn(),
     completeBackendGit: vi.fn(),
+    resolveBackendPomConflict: vi.fn(),
+    resolveBackendPomBlocks: vi.fn(),
   },
 }));
 async function flush() {
@@ -251,7 +256,7 @@ it('切换master不依赖测试目标，预检后确认执行且不采用合并�
   initial.subProjects[0].testBranch = '';
   const panel = await ready(initial);
   try {
-    for (const text of ['合并成功后推送测试分支', 'pom.xml 冲突时保留测试分支版本']) {
+    for (const text of ['合并成功后推送测试分支']) {
       const checkbox = [...panel.root.querySelectorAll('label')]
         .find((label) => label.textContent?.includes(text))!
         .querySelector('input')!;
@@ -880,56 +885,201 @@ it.each([
   },
 );
 
-it('pom 冲突策略默认关闭，只有合并预检携带，修改后旧计划失效', async () => {
-  const panel = await ready();
+it.each(['test', 'development'] as const)('显示两侧 POM 并明确选择 %s', async (side) => {
+  vi.mocked(api.backendGitOperations).mockResolvedValue([
+    {
+      planId: 'paused',
+      taskId: 'task',
+      status: 'paused',
+      repositories: [
+        {
+          repoId: 'repo',
+          status: 'error',
+          message: '',
+          worktreePath: '/example/worktree',
+          pomConflictFiles: [
+            {
+              path: 'module/pom.xml',
+              blocks: [
+                {
+                  line: 10,
+                  testContent: '<version>1-test</version>',
+                  developmentContent: '<version>2-dev</version>',
+                },
+              ],
+            },
+          ],
+          pomConflict: {
+            path: 'module/pom.xml',
+            testBranch: 'test',
+            developmentBranch: 'develop',
+            testContent: '<version>1-test</version>',
+            developmentContent: '<version>2-dev</version>',
+          },
+        },
+      ],
+    },
+  ]);
+  const panel = await mount();
   try {
-    const checkbox = panel.root.querySelector<HTMLInputElement>('[data-keep-test-pom]');
-    expect(checkbox).not.toBeNull();
-    const toggle = async (checked: boolean) => {
-      checkbox!.checked = checked;
-      checkbox!.dispatchEvent(new Event('change', { bubbles: true }));
-      await flush();
-    };
-    expect(checkbox!.checked).toBe(false);
-    click(panel.root, '合并到测试分支');
+    expect(panel.root.textContent).toContain('module/pom.xml');
+    expect(panel.root.textContent).toContain('<version>1-test</version>');
+    expect(panel.root.textContent).toContain('<version>2-dev</version>');
+    expect(api.resolveBackendPomConflict).not.toHaveBeenCalled();
+    click(panel.root, side === 'test' ? '采用测试分支版本' : '采用开发分支版本');
     await flush();
-    expect(api.prepareBackendGit).toHaveBeenLastCalledWith(
-      'example',
-      expect.any(Array),
-      'merge',
-      false,
-      false,
-    );
-    expect(panel.root.querySelector('.plan')?.textContent).toContain('暂停并手动处理');
-    await toggle(true);
-    expect(panel.root.querySelector('.plan')).toBeNull();
-    click(panel.root, '合并到测试分支');
-    await flush();
-    expect(api.prepareBackendGit).toHaveBeenLastCalledWith(
-      'example',
-      expect.any(Array),
-      'merge',
-      false,
-      true,
-    );
-    expect(panel.root.querySelector('.plan')?.textContent).toContain('保留测试分支版本');
-    expect(api.executeBackendGit).not.toHaveBeenCalled();
-    await toggle(false);
-    expect(panel.root.querySelector('.plan')).toBeNull();
-    await toggle(true);
-    click(panel.root, '切换开发分支');
-    await flush();
-    expect(api.prepareBackendGit).toHaveBeenLastCalledWith(
-      'example',
-      expect.any(Array),
-      'switch',
-      false,
-      false,
-    );
+    expect(api.resolveBackendPomConflict).toHaveBeenCalledExactlyOnceWith('paused', 'repo', side);
   } finally {
     panel.close();
   }
 });
+
+it('按文件和工作树行号展示多个 POM 冲突块，提供手工处理入口', async () => {
+  vi.mocked(api.backendGitOperations).mockResolvedValue([
+    {
+      planId: 'paused',
+      taskId: 'task',
+      status: 'paused',
+      repositories: [
+        {
+          repoId: 'repo',
+          status: 'error',
+          message: '',
+          worktreePath: '/example/worktree',
+          pomConflictFiles: [
+            {
+              path: 'pom.xml',
+              branchDiff:
+                '@@ -12 +12 @@\n-<version>1</version>\n+<version>2</version>\n@@ -42 +42 @@\n-<artifactId>old</artifactId>\n+<artifactId>new</artifactId>\n',
+              diffContexts: { '@@ -12 +12 @@': '依赖 org.example:client' },
+              blocks: [
+                {
+                  line: 12,
+                  context: '依赖 org.example:client',
+                  testContent: '<version>1</version>',
+                  developmentContent: '<version>2</version>',
+                },
+                { line: 32, testContent: '', developmentContent: '<module>api</module>' },
+              ],
+            },
+            {
+              path: 'api/pom.xml',
+              blocks: [{ line: 7, testContent: 'test line', developmentContent: 'dev line' }],
+            },
+          ],
+        },
+      ],
+    },
+  ]);
+  const panel = await mount();
+  try {
+    const preview = panel.root.querySelector('.pom-conflict')!;
+    expect(preview.textContent).toContain('api/pom.xml');
+    expect(
+      [...preview.querySelectorAll('[data-pom-block]')].map((block) =>
+        block.getAttribute('data-pom-block'),
+      ),
+    ).toEqual(['12', '32', '7']);
+    expect(preview.textContent).toContain('<version>1</version>');
+    expect(preview.textContent).toContain('<version>2</version>');
+    expect(preview.textContent).toContain('此侧无内容');
+    expect(preview.querySelector('[data-pom-block="12"] .pom-context')?.textContent).toBe(
+      '依赖 org.example:client',
+    );
+    expect(preview.querySelector('.pom-diff .pom-context')?.textContent).toBe(
+      '依赖 org.example:client',
+    );
+    expect(
+      [...preview.querySelectorAll('.pom-diff-range .pom-diff-text')].map(
+        (line) => line.textContent,
+      ),
+    ).toEqual(['@@ -12 +12 @@', '@@ -42 +42 @@']);
+    expect(preview.querySelector('.pom-diff .pom-test')?.textContent).toBe('-<version>1</version>');
+    expect(preview.querySelector('.pom-diff .pom-development')?.textContent).toBe(
+      '+<version>2</version>',
+    );
+    expect(preview.querySelector('.pom-diff')?.textContent).toContain(
+      '<artifactId>new</artifactId>',
+    );
+    expect(preview.textContent).not.toContain('采用测试分支版本');
+    click(panel.root, '打开工作树');
+    expect(api.openPath).toHaveBeenCalledExactlyOnceWith('/example/worktree');
+    expect(api.openBackendWorktreeInIdea).not.toHaveBeenCalled();
+    click(panel.root, '在 IDEA 中打开');
+    await flush();
+    expect(api.openBackendWorktreeInIdea).toHaveBeenCalledExactlyOnceWith('paused', 'repo');
+    expect(api.openBackendWorktreeInWebStorm).not.toHaveBeenCalled();
+    expect(button(panel.root, '在 IDEA 中打开').nextElementSibling).toBe(
+      button(panel.root, '在 WebStorm 中打开工作树'),
+    );
+    click(panel.root, '在 WebStorm 中打开工作树');
+    await flush();
+    expect(api.openBackendWorktreeInWebStorm).toHaveBeenCalledExactlyOnceWith('paused', 'repo');
+  } finally {
+    panel.close();
+  }
+});
+
+it.each([false, true])(
+  '逐块混合选择两侧，全部选齐才应用（剩余手工冲突：%s）',
+  async (manualRemaining) => {
+    vi.mocked(api.backendGitOperations).mockResolvedValue([
+      {
+        planId: 'paused',
+        taskId: 'task',
+        status: 'paused',
+        repositories: [
+          {
+            repoId: 'repo',
+            status: 'error',
+            message: '',
+            worktreePath: '/example/worktree',
+            pomBlocksResolution: { push: manualRemaining, manualRemaining },
+            pomConflictFiles: [
+              {
+                path: 'pom.xml',
+                blocks: [
+                  { line: 12, testContent: 'test one', developmentContent: 'dev one' },
+                  { line: 32, testContent: 'test two', developmentContent: 'dev two' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    const panel = await mount();
+    try {
+      const submit = button(
+        panel.root,
+        manualRemaining ? '应用所选 POM 内容' : '应用所选内容并提交',
+      );
+      expect(submit.disabled).toBe(true);
+      const choose = (line: number, side: string) => {
+        const radio = panel.root.querySelector<HTMLInputElement>(
+          `[data-pom-block="${line}"] input[value="${side}"]`,
+        )!;
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      choose(12, 'test');
+      await flush();
+      expect(submit.disabled).toBe(true);
+      choose(32, 'development');
+      await flush();
+      expect(submit.disabled).toBe(false);
+      expect(api.resolveBackendPomBlocks).not.toHaveBeenCalled();
+      submit.click();
+      await flush();
+      expect(api.resolveBackendPomBlocks).toHaveBeenCalledExactlyOnceWith('paused', 'repo', [
+        { path: 'pom.xml', line: 12, side: 'test' },
+        { path: 'pom.xml', line: 32, side: 'development' },
+      ]);
+    } finally {
+      panel.close();
+    }
+  },
+);
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -1254,6 +1404,80 @@ it('暂停批次显示中文结果、仓库统计和未执行原因，记录名�
     expect(options).toContain('Service、Next service · 已暂停，需处理');
     expect(options).not.toContain('opaque-plan-id');
     expect(api.executeBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
+it('中止冲突仓库后可继续预检剩余仓库，并确认执行新计划', async () => {
+  const initial = fixture();
+  const next = { ...initial.subProjects[0], id: 'next', name: 'Next service' };
+  initial.subProjects.push(next);
+  const paused = {
+    planId: 'paused',
+    taskId: 'old-task',
+    status: 'paused',
+    repositories: [
+      { repoId: 'repo', status: 'error', message: '', worktreePath: '/example/worktree' },
+      { repoId: 'next', status: 'pending', message: '', worktreePath: '' },
+    ],
+  } as const;
+  vi.mocked(api.backendGitOperations).mockResolvedValue([
+    { ...paused, repositories: [...paused.repositories] },
+  ]);
+  vi.mocked(api.backendGitState).mockResolvedValueOnce({
+    ...paused,
+    repositories: [
+      { ...paused.repositories[0], status: 'aborted', worktreePath: '' },
+      paused.repositories[1],
+    ],
+  });
+  vi.mocked(api.prepareRemainingBackendGit).mockResolvedValue({
+    planId: 'remaining',
+    projectId: initial.id,
+    operation: 'merge',
+    push: true,
+    keepTestPom: true,
+    repositories: [
+      {
+        repository: next,
+        root: next.path,
+        commonDir: `${next.path}/.git`,
+        currentBranch: 'develop',
+        targetBranch: 'test',
+        createTracking: false,
+        sourceSha: 'source',
+        targetSha: 'target',
+        remoteSha: 'target',
+      },
+    ],
+  });
+  const panel = await mount(initial);
+  try {
+    expect(button(panel.root, '继续')).toBeUndefined();
+    expect(button(panel.root, '采用测试分支版本')).toBeUndefined();
+    click(panel.root, '中止该次合并');
+    await flush();
+    click(panel.root, '继续');
+    await flush();
+    expect(api.prepareRemainingBackendGit).toHaveBeenCalledExactlyOnceWith('paused');
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+    const plan = panel.root.querySelector('.plan')!;
+    expect([...plan.querySelectorAll('li strong')].map((item) => item.textContent)).toEqual([
+      'Next service',
+    ]);
+    expect(plan.textContent).toContain('将推送测试分支');
+    expect(plan.textContent).toContain('可逐处选择 pom.xml 冲突内容');
+    click(panel.root, '取消计划');
+    await flush();
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+    click(panel.root, '继续');
+    await flush();
+    click(panel.root, '确认执行计划');
+    await flush();
+    expect(api.executeBackendGit).toHaveBeenCalledExactlyOnceWith('remaining');
+    expect(panel.root.querySelector('option[value="paused"]')).toBeNull();
   } finally {
     panel.close();
   }

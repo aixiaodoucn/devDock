@@ -20,6 +20,7 @@ import type {
   BackendRepositoryStatus,
   BackendGitPlan,
   BackendGitOperation,
+  PomBlockChoice,
   ScmStatus,
   ScmProject,
   ScmModule,
@@ -78,6 +79,9 @@ export const api = {
       keepTestPom,
     });
   },
+  prepareRemainingBackendGit(planId: string) {
+    return native<BackendGitPlan>('prepare_remaining_backend_git', { planId });
+  },
   executeBackendGit(planId: string) {
     return native<string>('execute_backend_git', { planId });
   },
@@ -86,6 +90,18 @@ export const api = {
   },
   backendGitOperations(projectId: string) {
     return native<BackendGitOperation[]>('backend_git_operations', { projectId });
+  },
+  resolveBackendPomConflict(planId: string, repoId: string, side: 'test' | 'development') {
+    return native<void>('resolve_backend_pom_conflict', { planId, repoId, side });
+  },
+  resolveBackendPomBlocks(planId: string, repoId: string, choices: PomBlockChoice[]) {
+    return native<void>('resolve_backend_pom_blocks', { planId, repoId, choices });
+  },
+  openBackendWorktreeInIdea(planId: string, repoId: string) {
+    return native<void>('open_backend_worktree_in_idea', { planId, repoId });
+  },
+  openBackendWorktreeInWebStorm(planId: string, repoId: string) {
+    return native<void>('open_backend_worktree_in_webstorm', { planId, repoId });
   },
   completeBackendGit(planId: string, repoId: string) {
     return native<void>('complete_backend_git', { planId, repoId });

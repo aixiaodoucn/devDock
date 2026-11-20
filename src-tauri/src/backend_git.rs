@@ -1,8 +1,9 @@
 use crate::{config::Result, tasks};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
+    hash::{Hash, Hasher},
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -91,11 +92,79 @@ pub struct Plan {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PomConflict {
+    path: String,
+    test_content: String,
+    development_content: String,
+    test_branch: String,
+    development_branch: String,
+    #[serde(default)]
+    push: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PomConflictBlock {
+    line: usize,
+    test_content: String,
+    development_content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PomConflictFile {
+    path: String,
+    blocks: Vec<PomConflictBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    branch_diff: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    diff_contexts: BTreeMap<String, String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct PomConflictSnapshot {
+    path: String,
+    worktree_blob: String,
+    index_identity: u64,
+    remote_identity: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct PomBlocksSnapshot {
+    index_identity: u64,
+    worktree_files: BTreeMap<String, u64>,
+    remote_identity: u64,
+    manual_remaining: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PomBlocksResolution {
+    push: bool,
+    manual_remaining: bool,
+}
+#[derive(Clone, Deserialize)]
+pub struct PomBlockChoice {
+    path: String,
+    line: usize,
+    side: PomSide,
+}
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PomSide {
+    Test,
+    Development,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RepositoryResult {
     pub repo_id: String,
     pub status: String,
     pub message: String,
     pub worktree_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pom_conflict: Option<PomConflict>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pom_conflict_files: Vec<PomConflictFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pom_blocks_resolution: Option<PomBlocksResolution>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,9 +175,20 @@ pub struct OperationState {
     pub repositories: Vec<RepositoryResult>,
 }
 #[derive(Clone, Serialize, Deserialize)]
+struct Continuation {
+    source_plan_id: String,
+    started: bool,
+}
+#[derive(Clone, Serialize, Deserialize)]
 struct Entry {
     plan: Plan,
     state: OperationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continuation: Option<Continuation>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pom_conflicts: HashMap<String, PomConflictSnapshot>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pom_blocks_snapshots: HashMap<String, PomBlocksSnapshot>,
 }
 #[derive(Default)]
 pub struct Runtime {
@@ -158,6 +238,23 @@ fn run(path: &Path, args: &[&str], task: Option<&tasks::Task>) -> Result<String>
     run_checked(path, args, || task.map_or(Ok(()), tasks::Task::check))
 }
 fn run_checked(path: &Path, args: &[&str], check: impl Fn() -> Result<()>) -> Result<String> {
+    run_output(path, args, check, false)
+}
+fn run_output(
+    path: &Path,
+    args: &[&str],
+    check: impl Fn() -> Result<()>,
+    preserve_newlines: bool,
+) -> Result<String> {
+    let bytes = run_bytes(path, args, check)?;
+    let output = String::from_utf8(bytes).map_err(|_| "Git 输出不是有效 UTF-8".to_owned())?;
+    Ok(if preserve_newlines {
+        output
+    } else {
+        output.trim_end_matches(['\r', '\n']).to_owned()
+    })
+}
+fn run_bytes(path: &Path, args: &[&str], check: impl Fn() -> Result<()>) -> Result<Vec<u8>> {
     check()?;
     let mut command = git_command(path);
     command
@@ -219,9 +316,7 @@ fn run_checked(path: &Path, args: &[&str], check: impl Fn() -> Result<()>) -> Re
     let bytes = reader.join().unwrap_or_default();
     let _ = errors.join();
     outcome?;
-    String::from_utf8(bytes)
-        .map(|s| s.trim_end_matches(['\r', '\n']).to_string())
-        .map_err(|_| "Git 输出不是有效 UTF-8".into())
+    Ok(bytes)
 }
 fn redact(value: &str) -> String {
     let value = value.split(['?', '#']).next().unwrap_or_default();
@@ -760,6 +855,104 @@ pub fn prepare(
     push: bool,
     keep_test_pom: bool,
 ) -> Result<Plan> {
+    prepare_plan(
+        app,
+        project_id,
+        repositories,
+        operation,
+        push,
+        keep_test_pom,
+        None,
+    )
+}
+
+fn pending_repositories(entry: &Entry) -> Result<impl Iterator<Item = &RepositoryResult>> {
+    if entry.state.status != "paused" {
+        return Err("仅暂停的 Git 批次可继续".into());
+    }
+    if entry
+        .state
+        .repositories
+        .iter()
+        .any(|r| !r.worktree_path.is_empty())
+    {
+        return Err("请先处理保留的 Git 工作区".into());
+    }
+    // 旧版会把重启前尚未确认的预检草稿恢复为 paused，不能把它当成已执行批次。
+    if entry.state.task_id.is_empty()
+        && entry
+            .state
+            .repositories
+            .iter()
+            .all(|r| r.status == "pending")
+    {
+        return Err("原 Git 批次尚未开始执行".into());
+    }
+    let mut pending = entry
+        .state
+        .repositories
+        .iter()
+        .filter(|r| r.status == "pending")
+        .peekable();
+    if pending.peek().is_none() {
+        return Err("没有未执行的仓库".into());
+    }
+    Ok(pending)
+}
+
+fn remaining_repositories(entry: &Entry, configured: &[Repository]) -> Result<Vec<Repository>> {
+    // 以原批次的待执行顺序匹配当前已保存的仓库配置。
+    pending_repositories(entry)?
+        .map(|result| {
+            configured
+                .iter()
+                .find(|repo| repo.id == result.repo_id)
+                .cloned()
+                .ok_or_else(|| format!("未执行的仓库 {} 已不在项目配置中", result.repo_id))
+        })
+        .collect()
+}
+
+pub fn prepare_remaining(app: &AppHandle, plan_id: String) -> Result<Plan> {
+    let source = {
+        let runtime = app.state::<Runtime>();
+        let mut entries = runtime.entries.lock().unwrap();
+        if !entries.contains_key(&plan_id) {
+            // 可直接通过历史 ID 继续，同时加载它的后续批次以检查是否已交接。
+            uuid::Uuid::parse_str(&plan_id).map_err(|_| "计划不存在")?;
+            let base = tasks::data_dir(app)?.join("backend-worktrees");
+            let saved = restore_entry(&base.join(&plan_id).join("operation.json"))?;
+            load_operations(&base, &mut entries, &saved.plan.project_id)?;
+        }
+        continuation_source(&entries, &plan_id)?.clone()
+    };
+    let config = tasks::load(app)?;
+    let project = config
+        .projects
+        .iter()
+        .find(|p| p.id == source.plan.project_id && p.project_type == "backend")
+        .ok_or("后端项目已不在当前配置中")?;
+    let repositories = remaining_repositories(&source, &project.sub_projects)?;
+    prepare_plan(
+        app,
+        source.plan.project_id,
+        repositories,
+        source.plan.operation,
+        source.plan.push,
+        source.plan.keep_test_pom,
+        Some(plan_id),
+    )
+}
+
+fn prepare_plan(
+    app: &AppHandle,
+    project_id: String,
+    repositories: Vec<Repository>,
+    operation: String,
+    push: bool,
+    keep_test_pom: bool,
+    source_plan_id: Option<String>,
+) -> Result<Plan> {
     validate_options(&operation, push, keep_test_pom)?;
     if repositories.is_empty() {
         return Err("无效操作或未选择仓库".into());
@@ -813,19 +1006,29 @@ pub fn prepare(
                 status: "pending".into(),
                 message: String::new(),
                 worktree_path: String::new(),
+                pom_conflict: None,
+                pom_conflict_files: Vec::new(),
+                pom_blocks_resolution: None,
             })
             .collect(),
     };
     let entry = Entry {
         plan: plan.clone(),
         state,
+        continuation: source_plan_id.map(|source_plan_id| Continuation {
+            source_plan_id,
+            started: false,
+        }),
+        pom_conflicts: HashMap::new(),
+        pom_blocks_snapshots: HashMap::new(),
     };
+    let runtime = app.state::<Runtime>();
+    let mut entries = runtime.entries.lock().unwrap();
+    if let Some(continuation) = &entry.continuation {
+        continuation_source(&entries, &continuation.source_plan_id)?;
+    }
     persist_entry(app, &entry)?;
-    app.state::<Runtime>()
-        .entries
-        .lock()
-        .unwrap()
-        .insert(plan.plan_id.clone(), entry);
+    entries.insert(plan.plan_id.clone(), entry);
     Ok(plan)
 }
 
@@ -834,8 +1037,34 @@ fn persist_entry(app: &AppHandle, entry: &Entry) -> Result<()> {
         .join("backend-worktrees")
         .join(&entry.plan.plan_id)
         .join("operation.json");
-    let text = serde_json::to_string(entry).map_err(|_| "无法序列化 Git 记录".to_string())?;
+    let text = journal_json(entry)?;
     crate::config::atomic_write(&path, &text).map_err(|_| "无法保存 Git 操作记录".into())
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationJournal {
+    #[serde(flatten)]
+    entry: Entry,
+    #[serde(default)]
+    remote_identities: Vec<u64>,
+}
+fn journal_json(entry: &Entry) -> Result<String> {
+    // 日记只保存快照身份，POM 正文从匹配的工作区和 Git 对象重新读取。
+    let mut journal = OperationJournal {
+        entry: entry.clone(),
+        remote_identities: entry
+            .plan
+            .repositories
+            .iter()
+            .map(|saved| saved.remote_identity)
+            .collect(),
+    };
+    for result in &mut journal.entry.state.repositories {
+        result.pom_conflict = None;
+        result.pom_conflict_files.clear();
+        result.pom_blocks_resolution = None;
+    }
+    serde_json::to_string(&journal).map_err(|_| "无法序列化 Git 记录".into())
 }
 fn persist_current(app: &AppHandle, id: &str) -> Result<()> {
     let runtime = app.state::<Runtime>();
@@ -844,8 +1073,18 @@ fn persist_current(app: &AppHandle, id: &str) -> Result<()> {
 }
 fn restore_entry(path: &Path) -> Result<Entry> {
     let bytes = fs::read(path).map_err(|_| "无法读取 Git 操作记录".to_string())?;
-    let mut entry: Entry =
-        serde_json::from_slice(&bytes).map_err(|_| "Git 操作记录损坏，已保留".to_string())?;
+    let OperationJournal {
+        mut entry,
+        remote_identities,
+    } = serde_json::from_slice(&bytes).map_err(|_| "Git 操作记录损坏，已保留".to_string())?;
+    if !remote_identities.is_empty() {
+        if remote_identities.len() != entry.plan.repositories.len() {
+            return Err("Git 操作远端身份记录无效".into());
+        }
+        for (saved, identity) in entry.plan.repositories.iter_mut().zip(remote_identities) {
+            saved.remote_identity = identity;
+        }
+    }
     let id = &entry.plan.plan_id;
     if uuid::Uuid::parse_str(id).is_err()
         || path
@@ -870,16 +1109,77 @@ fn restore_entry(path: &Path) -> Result<Entry> {
             result.message = "应用曾退出，请检查保留的工作区".into();
         }
     }
+    if let Some(continuation) = &entry.continuation {
+        if continuation.source_plan_id == *id
+            || uuid::Uuid::parse_str(&continuation.source_plan_id).is_err()
+            || (continuation.started && entry.state.task_id.is_empty())
+        {
+            return Err("Git 续跑来源记录无效".into());
+        }
+    }
+    for (index, result) in entry.state.repositories.iter_mut().enumerate() {
+        result.pom_conflict = None;
+        result.pom_conflict_files.clear();
+        result.pom_blocks_resolution = None;
+        let worktree = Path::new(&result.worktree_path);
+        let operation = path.parent().unwrap();
+        if entry.plan.operation != "merge"
+            || !operation_worktree_is_safe(operation.parent().unwrap(), operation, index, worktree)
+        {
+            continue;
+        }
+        let saved = &entry.plan.repositories[index];
+        // 旧记录和手工处理的冲突可能没有可选边快照，仍从当前工作树恢复预览。
+        result.pom_conflict_files =
+            read_pom_conflict_files(saved, worktree, None).unwrap_or_default();
+        if let Some(expected) = entry.pom_conflicts.get(&result.repo_id) {
+            if let Ok((mut preview, found)) = inspect_pom_conflict(saved, worktree, None) {
+                if found == *expected {
+                    preview.push = entry.plan.push;
+                    result.pom_conflict = Some(preview);
+                }
+            }
+        }
+        if let Some(expected) = entry.pom_blocks_snapshots.get(&result.repo_id) {
+            if let Some(files) = recover_pom_blocks(saved, worktree, expected, None) {
+                publish_pom_blocks(result, files, expected, entry.plan.push);
+            }
+        }
+    }
     // 仅恢复查看/处理入口，不允许重跑过期的 plan 或自动 push。
     if entry.state.status != "success" {
         entry.state.status = "paused".into();
     }
     Ok(entry)
 }
-pub fn list_operations(app: &AppHandle, project_id: String) -> Result<Vec<OperationState>> {
-    let base = tasks::data_dir(app)?.join("backend-worktrees");
-    let runtime = app.state::<Runtime>();
-    let mut entries = runtime.entries.lock().unwrap();
+
+fn continuation_claimed(entries: &HashMap<String, Entry>, plan_id: &str) -> bool {
+    entries.values().any(|entry| {
+        entry.continuation.as_ref().is_some_and(|continuation| {
+            continuation.source_plan_id == plan_id
+                && (continuation.started || entry.state.status == "running")
+        })
+    })
+}
+
+fn continuation_source<'a>(
+    entries: &'a HashMap<String, Entry>,
+    plan_id: &str,
+) -> Result<&'a Entry> {
+    let source = entries.get(plan_id).ok_or("计划不存在")?;
+    if continuation_claimed(entries, plan_id) {
+        return Err("原批次的未执行仓库已交给新计划".into());
+    }
+    let _pending = pending_repositories(source)?;
+    Ok(source)
+}
+
+fn load_operations(
+    base: &Path,
+    entries: &mut HashMap<String, Entry>,
+    project_id: &str,
+) -> Result<()> {
+    let mut restored = Vec::new();
     if base.is_dir() {
         for item in fs::read_dir(base).map_err(|_| "无法读取 Git 操作目录".to_string())? {
             let item = item.map_err(|_| "无法读取 Git 操作目录".to_string())?;
@@ -894,32 +1194,80 @@ pub fn list_operations(app: &AppHandle, project_id: String) -> Result<Vec<Operat
             if !path.is_file() {
                 continue;
             }
+            if item
+                .file_name()
+                .to_str()
+                .is_some_and(|id| entries.contains_key(id))
+            {
+                continue;
+            }
             let entry = restore_entry(&path)?;
-            if entry.plan.project_id == project_id && entry.state.status != "success" {
-                entries.entry(entry.plan.plan_id.clone()).or_insert(entry);
+            // 未确认的续跑草稿不能在重启后成为新的待处理批次，已完成的续跑仍记录交接。
+            if entry.plan.project_id == project_id
+                && entry
+                    .continuation
+                    .as_ref()
+                    .map_or(entry.state.status != "success", |c| c.started)
+            {
+                restored.push(entry);
             }
         }
     }
+    // 整组记录通过校验后再加载，避免只读到来源而漏掉已交接的新计划。
+    for entry in restored {
+        entries.entry(entry.plan.plan_id.clone()).or_insert(entry);
+    }
+    Ok(())
+}
+
+pub fn list_operations(app: &AppHandle, project_id: String) -> Result<Vec<OperationState>> {
+    let base = tasks::data_dir(app)?.join("backend-worktrees");
+    let runtime = app.state::<Runtime>();
+    let mut entries = runtime.entries.lock().unwrap();
+    load_operations(&base, &mut entries, &project_id)?;
+    let handed_off: HashSet<_> = entries
+        .values()
+        .filter_map(|entry| {
+            entry
+                .continuation
+                .as_ref()
+                .filter(|c| c.started)
+                .map(|c| c.source_plan_id.as_str())
+        })
+        .collect();
     let mut result: Vec<_> = entries
         .values()
-        .filter(|e| e.plan.project_id == project_id && e.state.status != "success")
+        .filter(|e| {
+            e.plan.project_id == project_id
+                && e.state.status != "success"
+                && e.continuation.as_ref().is_none_or(|c| c.started)
+                && !handed_off.contains(e.plan.plan_id.as_str())
+        })
         .map(|e| e.state.clone())
         .collect();
     result.sort_by(|a, b| a.plan_id.cmp(&b.plan_id));
     Ok(result)
 }
 pub fn state(app: &AppHandle, plan_id: String) -> Result<OperationState> {
-    app.state::<Runtime>()
-        .entries
-        .lock()
-        .unwrap()
-        .get(&plan_id)
-        .map(|e| e.state.clone())
-        .ok_or("计划不存在".into())
+    let runtime = app.state::<Runtime>();
+    let entries = runtime.entries.lock().unwrap();
+    let mut state = entries.get(&plan_id).ok_or("计划不存在")?.state.clone();
+    if entries.values().any(|entry| {
+        entry
+            .continuation
+            .as_ref()
+            .is_some_and(|c| c.started && c.source_plan_id == plan_id)
+    }) {
+        state.repositories.retain(|r| r.status != "pending");
+    }
+    Ok(state)
 }
 fn update(app: &AppHandle, id: &str, change: impl FnOnce(&mut OperationState)) {
+    update_entry(app, id, |entry| change(&mut entry.state));
+}
+fn update_entry(app: &AppHandle, id: &str, change: impl FnOnce(&mut Entry)) {
     if let Some(entry) = app.state::<Runtime>().entries.lock().unwrap().get_mut(id) {
-        change(&mut entry.state);
+        change(entry);
         if persist_entry(app, entry).is_err() {
             let _ = app.emit(
                 "backend-git-notice",
@@ -929,71 +1277,1021 @@ fn update(app: &AppHandle, id: &str, change: impl FnOnce(&mut OperationState)) {
     }
     let _ = app.emit("backend-git-updated", serde_json::json!({ "planId": id }));
 }
-// -z 保留空格、制表符及 Unicode；只解析索引元信息，不读取或记录文件内容。
-fn unmerged_paths(worktree: &Path, task: Option<&tasks::Task>) -> Result<Vec<(String, bool)>> {
-    let entries = run(worktree, &["ls-files", "--unmerged", "-z"], task)?;
-    if !entries.is_empty() && !entries.ends_with('\0') {
-        return Err("冲突路径输出不完整，现场已保留".into());
+const MAX_POM_BYTES: usize = 1024 * 1024;
+const CONFLICT_MARKERS: [&str; 4] = ["<<<<<<<", "|||||||", "=======", ">>>>>>>"];
+
+fn is_one_conflict_block(content: &str) -> bool {
+    // 仅接受完整的 Git 文本冲突标记；支持 merge、diff3 和 zdiff3。
+    let mut stage = 0;
+    for line in content.lines() {
+        stage = if line.starts_with("<<<<<<< ") && stage == 0 {
+            1
+        } else if line.starts_with("||||||| ") && stage == 1 {
+            2
+        } else if line == "=======" && [1, 2].contains(&stage) {
+            3
+        } else if line.starts_with(">>>>>>> ") && stage == 3 {
+            4
+        } else if CONFLICT_MARKERS
+            .iter()
+            .any(|&marker| line.starts_with(marker))
+        {
+            return false;
+        } else {
+            stage
+        };
     }
-    let mut paths = std::collections::BTreeMap::new();
-    for entry in entries.split_terminator('\0') {
-        let (metadata, path) = entry
-            .split_once('\t')
-            .ok_or("冲突索引格式无效，现场已保留")?;
-        let stage = metadata
-            .rsplit_once(' ')
-            .map(|(_, stage)| stage)
-            .ok_or("冲突索引格式无效，现场已保留")?;
-        if !["1", "2", "3"].contains(&stage) || path.is_empty() {
-            return Err("冲突索引格式无效，现场已保留".into());
-        }
-        let has_ours = paths.entry(path.to_owned()).or_insert(false);
-        *has_ours |= stage == "2";
-    }
-    Ok(paths.into_iter().collect())
+    stage == 4
 }
 
-fn resolve_test_pom_conflicts(worktree: &Path, task: Option<&tasks::Task>) -> Result<()> {
-    let conflicts = unmerged_paths(worktree, task)?;
-    if conflicts.is_empty() {
-        // 签名或钩子失败也可能留下 MERGE_HEAD；没有冲突时绝不擅自重试提交。
-        return Err("合并失败且没有可处理的冲突，工作区已保留，请检查签名或钩子".into());
+fn pom_blob(worktree: &Path, oid: &str, task: Option<&tasks::Task>) -> Result<String> {
+    let size = run(worktree, &["cat-file", "-s", oid], task)?
+        .parse::<usize>()
+        .map_err(|_| "无法读取 POM 版本")?;
+    if size > MAX_POM_BYTES {
+        return Err("POM 内容过大，请手工处理".into());
     }
-    let mut count = 0;
-    for (path, has_ours) in conflicts {
-        if Path::new(&path).file_name() != Some(std::ffi::OsStr::new("pom.xml")) {
+    let content = run_output(
+        worktree,
+        &["cat-file", "blob", oid],
+        || task.map_or(Ok(()), tasks::Task::check),
+        true,
+    )?;
+    if content.len() != size || content.contains('\0') {
+        return Err("无法读取完整文本 POM，请手工处理".into());
+    }
+    Ok(content)
+}
+
+fn pom_preview_blob(worktree: &Path, oid: &str, task: Option<&tasks::Task>) -> Option<String> {
+    // 两侧都必须是索引中的完整 blob OID，并符合 POM 文本预览限制。
+    if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    pom_blob(worktree, oid, task).ok()
+}
+
+fn pom_branch_diff(
+    worktree: &Path,
+    test: &str,
+    development: &str,
+    task: Option<&tasks::Task>,
+) -> Option<String> {
+    let mut diff = run_output(
+        worktree,
+        &[
+            "diff",
+            "--text",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--word-diff=none",
+            "--unified=0",
+            "--inter-hunk-context=0",
+            test,
+            development,
+            "--",
+        ],
+        || task.map_or(Ok(()), tasks::Task::check),
+        true,
+    )
+    .ok()?;
+    if diff.len() > MAX_POM_BYTES {
+        return None;
+    }
+    // 只返回 hunks，省略文件头及 blob 名称。
+    let start = diff.find("\n@@ ")? + 1;
+    Some(diff.split_off(start))
+}
+
+type PomXmlContexts = Vec<(std::ops::Range<usize>, usize)>;
+
+struct PomXmlElement<'a> {
+    name: &'a str,
+    inner_start: usize,
+    owner: Option<usize>,
+    label: &'a str,
+    group: Option<&'a str>,
+    artifact: Option<&'a str>,
+}
+
+fn pom_xml_contexts(xml: &str) -> Option<(PomXmlContexts, Vec<String>)> {
+    // 保留原始字节位置。注释、CDATA、处理指令和属性中的尖括号不参与层级定位。
+    static TOKEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?s)\A(?:<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|<(/?)([^\s/<>='"\x00]+)(?:\s+(?:[^\s/<>='"\x00]+\s*=\s*(?:"[^"]*"|'[^']*')\s*)*|\s*)(/?)>)"#,
+        )
+        .expect("POM XML token pattern")
+    });
+    fn local(name: &str) -> &str {
+        name.rsplit(':').next().unwrap_or(name)
+    }
+    let mut stack = Vec::<PomXmlElement>::new();
+    let mut owners = Vec::new();
+    let mut contexts = Vec::new();
+    let mut active = None;
+    let mut active_start = 0;
+    let mut offset = 0;
+    let mut root_seen = false;
+    let mut switch = |previous: Option<usize>, next, position| {
+        if let Some(owner) = previous {
+            if active_start < position {
+                contexts.push((active_start..position, owner));
+            }
+        }
+        active_start = position;
+        next
+    };
+    while let Some(relative) = xml[offset..].find('<') {
+        let start = offset + relative;
+        if stack.is_empty()
+            && !xml[offset..start]
+                .trim_matches('\u{feff}')
+                .trim()
+                .is_empty()
+        {
+            return None;
+        }
+        let token = TOKEN.captures(&xml[start..])?;
+        offset = start + token.get(0)?.end();
+        let Some(name) = token.get(2).map(|capture| capture.as_str()) else {
+            continue;
+        };
+        let tag = local(name);
+        let closing = &token[1] == "/";
+        let empty = &token[3] == "/";
+        if !closing {
+            if stack.is_empty() {
+                if root_seen || tag != "project" {
+                    return None;
+                }
+                root_seen = true;
+            }
+            let parent = stack.last().map(|element| local(element.name));
+            let label = match (tag, parent) {
+                ("dependency", Some("dependencies")) => "依赖",
+                ("plugin", Some("plugins")) => "插件",
+                ("parent", Some("project")) if stack.len() == 1 => "父 POM",
+                ("version", Some("project")) if stack.len() == 1 => "项目版本",
+                (_, Some("properties"))
+                    if stack.iter().rev().nth(1).is_some_and(|element| {
+                        matches!(local(element.name), "project" | "profile")
+                    }) =>
+                {
+                    "属性"
+                }
+                _ => "",
+            };
+            let owner = if label.is_empty() {
+                active
+            } else {
+                let id = owners.len();
+                owners.push(String::new());
+                active = switch(active, Some(id), start);
+                Some(id)
+            };
+            stack.push(PomXmlElement {
+                name,
+                inner_start: offset,
+                owner,
+                label,
+                group: None,
+                artifact: None,
+            });
+        }
+        if closing || empty {
+            let element = stack.pop()?;
+            if element.name != name {
+                return None;
+            }
+            if !element.label.is_empty() {
+                let group = element
+                    .group
+                    .or_else(|| (element.label == "插件").then_some("org.apache.maven.plugins"));
+                owners[element.owner?] = match (element.label, group, element.artifact) {
+                    ("属性", _, _) => format!("属性 {tag}"),
+                    (label, Some(group), Some(artifact)) => format!("{label} {group}:{artifact}"),
+                    (label, _, Some(artifact)) => format!("{label} {artifact}"),
+                    (label, _, _) => label.into(),
+                };
+                active = switch(active, stack.last().and_then(|parent| parent.owner), offset);
+            }
+            if closing && matches!(tag, "groupId" | "artifactId") {
+                let value = xml[element.inner_start..start].trim();
+                if !value.is_empty() && value.len() <= 160 && !value.contains(['<', '\n', '\r']) {
+                    if let Some(parent) = stack.last_mut() {
+                        match tag {
+                            "groupId" => parent.group = Some(value),
+                            _ => parent.artifact = Some(value),
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (root_seen && stack.is_empty() && xml[offset..].trim().is_empty()).then_some((contexts, owners))
+}
+
+fn pom_side_contexts(test: Option<String>, development: Option<String>) -> Option<String> {
+    match (test, development) {
+        (Some(test), Some(development)) if test != development => {
+            Some(format!("测试：{test}；开发：{development}"))
+        }
+        (test, development) => test.or(development),
+    }
+}
+
+struct PomPreviewSide<'a> {
+    lines: Vec<&'a str>,
+    offsets: Vec<usize>,
+    occurrences: HashMap<&'a str, Vec<usize>>,
+    contexts: PomXmlContexts,
+    labels: Vec<String>,
+}
+
+impl<'a> PomPreviewSide<'a> {
+    fn new(blob: &'a str) -> Self {
+        let lines = blob.lines().collect::<Vec<_>>();
+        let mut occurrences = HashMap::<_, Vec<_>>::new();
+        let mut offsets = Vec::with_capacity(lines.len() + 1);
+        for (i, line) in lines.iter().enumerate() {
+            occurrences.entry(*line).or_default().push(i);
+            offsets.push(line.as_ptr() as usize - blob.as_ptr() as usize);
+        }
+        offsets.push(blob.len());
+        let (contexts, labels) = pom_xml_contexts(blob).unwrap_or_default();
+        Self {
+            lines,
+            offsets,
+            occurrences,
+            contexts,
+            labels,
+        }
+    }
+
+    fn context(&self, range: std::ops::Range<usize>) -> Option<String> {
+        if range.is_empty() || range.end > self.lines.len() {
+            return None;
+        }
+        let start = self.offsets[range.start];
+        let end = self.offsets[range.end];
+        let first = self.contexts.partition_point(|(span, _)| span.end <= start);
+        let mut labels = Vec::new();
+        for (span, owner) in &self.contexts[first..] {
+            if span.start >= end {
+                break;
+            }
+            let label = self.labels[*owner].as_str();
+            if !labels.contains(&label) {
+                if labels.len() == 4 {
+                    labels.push("…");
+                    break;
+                }
+                labels.push(label);
+            }
+        }
+        (!labels.is_empty()).then(|| labels.join("、"))
+    }
+
+    fn marker_context(
+        &self,
+        fragment: &str,
+        before: &[&str],
+        after: &[&str],
+        changed: &[std::ops::Range<usize>],
+    ) -> Option<String> {
+        let lines = fragment.lines().collect::<Vec<_>>();
+        // 以冲突片段中出现次数最少的行缩小搜索范围。按两侧连续相邻行消除歧义，
+        // 工作区标记行号不参与 blob 定位，因为自动合并及前面标记都可能改变行号。
+        let (anchor, candidates) = lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| (i, self.occurrences.get(line).map_or(&[][..], Vec::as_slice)))
+            .min_by_key(|(_, candidates)| candidates.len())?;
+        // 避免在恶意重复文本上反复扫描大量相同片段。无法可靠定位时省略语义提示。
+        if candidates
+            .len()
+            .saturating_mul(lines.len() + before.len() + after.len())
+            > MAX_POM_BYTES
+        {
+            return None;
+        }
+        let mut best = None;
+        let mut context = None;
+        for candidate in candidates {
+            let Some(start) = candidate.checked_sub(anchor) else {
+                continue;
+            };
+            let end = start + lines.len();
+            if self.lines.get(start..end) != Some(&lines) {
+                continue;
+            }
+            let first = changed.partition_point(|range| range.end <= start);
+            let matches_diff = changed.get(first).is_some_and(|range| range.start < end);
+            let preceding = self.lines[..start]
+                .iter()
+                .rev()
+                .zip(before)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let following = self.lines[end..]
+                .iter()
+                .zip(after)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let score = (matches_diff, preceding + following);
+            if best.is_none_or(|best| score > best) {
+                best = Some(score);
+                context = self.context(start..end);
+            } else if best == Some(score) && self.context(start..end) != context {
+                context = None;
+            }
+        }
+        context
+    }
+}
+
+fn pom_hunk_range(value: &str, prefix: char) -> Option<(std::ops::Range<usize>, String)> {
+    let value = value.strip_prefix(prefix)?;
+    let (line, count) = value.split_once(',').unwrap_or((value, "1"));
+    let line = line.parse::<usize>().ok()?;
+    let count = count.parse::<usize>().ok()?;
+    if count == 0 {
+        // Git 的零长度范围引用插入/删除点之前的行，0 表示文件开头。
+        let position = if line == 0 {
+            "文件开头".into()
+        } else {
+            format!("第 {line} 行后")
+        };
+        return Some((line..line, position));
+    }
+    let start = line.checked_sub(1)?;
+    let end = start.checked_add(count)?;
+    let location = if count == 1 {
+        format!("第 {line} 行")
+    } else {
+        format!("第 {line}–{end} 行")
+    };
+    Some((start..end, location))
+}
+
+fn pom_diff_contexts(
+    diff: &str,
+    test: &PomPreviewSide<'_>,
+    development: &PomPreviewSide<'_>,
+    changed: &mut [Vec<std::ops::Range<usize>>; 2],
+) -> BTreeMap<String, String> {
+    diff.lines()
+        .filter_map(|header| {
+            let (coordinates, _) = header.strip_prefix("@@ ")?.split_once(" @@")?;
+            let (left, right) = coordinates.split_once(' ')?;
+            let (test_lines, test_location) = pom_hunk_range(left, '-')?;
+            let (development_lines, development_location) = pom_hunk_range(right, '+')?;
+            if !test_lines.is_empty() {
+                changed[0].push(test_lines.clone());
+            }
+            if !development_lines.is_empty() {
+                changed[1].push(development_lines.clone());
+            }
+            let context =
+                pom_side_contexts(test.context(test_lines), development.context(development_lines))
+                    .unwrap_or_else(|| format!("测试：{test_location}；开发：{development_location}"));
+            Some((header.to_owned(), context))
+        })
+        .collect()
+}
+
+fn validate_pom_merge(
+    saved: &PlanRepository,
+    worktree: &Path,
+    task: Option<&tasks::Task>,
+) -> Result<()> {
+    let manual = "无法确认 POM 冲突所属的合并，请在工作区手工处理";
+    validate_worktree(saved, worktree, task)?;
+    let merge_head = run(worktree, &["rev-parse", "--git-path", "MERGE_HEAD"], task)?;
+    let mut merge_heads = String::new();
+    fs::File::open(worktree.join(merge_head))
+        .map_err(|_| manual)?
+        .take(256)
+        .read_to_string(&mut merge_heads)
+        .map_err(|_| manual)?;
+    if sha(worktree, "HEAD")? != merge_target(saved)
+        || merge_heads.lines().ne(std::iter::once(merge_source(saved)))
+    {
+        return Err(manual.into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn parse_pom_conflict_blocks(content: &str, width: usize) -> Option<Vec<PomConflictBlock>> {
+    let (blocks, _) = scan_pom_conflict_blocks(content, width)?;
+    Some(blocks)
+}
+
+fn scan_pom_conflict_blocks(
+    content: &str,
+    width: usize,
+) -> Option<(Vec<PomConflictBlock>, Vec<std::ops::Range<usize>>)> {
+    if width == 0 || width > content.len() {
+        return None;
+    }
+    #[derive(Clone, Copy)]
+    enum Marker {
+        Start,
+        Base,
+        Separator,
+        End,
+    }
+    let markers = [
+        ("<".repeat(width), Marker::Start),
+        ("|".repeat(width), Marker::Base),
+        ("=".repeat(width), Marker::Separator),
+        (">".repeat(width), Marker::End),
+    ];
+    let mut blocks = Vec::new();
+    let mut ranges = Vec::new();
+    let mut current: Option<(PomConflictBlock, Marker)> = None;
+    let mut start = 0;
+    let mut offset = 0;
+    for (index, line) in content.split_inclusive('\n').enumerate() {
+        let line_start = offset;
+        offset += line.len();
+        let marker_line = line.trim_end_matches(['\n', '\r']);
+        let marker = markers.iter().find_map(|(prefix, kind)| {
+            let suffix = marker_line.strip_prefix(prefix)?;
+            (suffix.is_empty() || (!matches!(kind, Marker::Separator) && suffix.starts_with(' ')))
+                .then_some(*kind)
+        });
+        match (marker, current.as_mut()) {
+            (Some(Marker::Start), None) => {
+                start = line_start;
+                current = Some((
+                    PomConflictBlock {
+                        line: index + 1,
+                        test_content: String::new(),
+                        development_content: String::new(),
+                        context: None,
+                    },
+                    Marker::Start,
+                ));
+            }
+            (Some(Marker::Base), Some((_, stage @ Marker::Start))) => *stage = Marker::Base,
+            (Some(Marker::Separator), Some((_, stage @ (Marker::Start | Marker::Base)))) => {
+                *stage = Marker::Separator;
+            }
+            (Some(Marker::End), Some((_, Marker::Separator))) => {
+                blocks.push(current.take()?.0);
+                ranges.push(start..offset);
+            }
+            (Some(_), _) => return None,
+            (None, Some((block, Marker::Start))) => block.test_content.push_str(line),
+            (None, Some((block, Marker::Separator))) => block.development_content.push_str(line),
+            (None, _) => {}
+        }
+    }
+    current.is_none().then_some((blocks, ranges))
+}
+
+fn read_pom_conflict_files(
+    saved: &PlanRepository,
+    worktree: &Path,
+    task: Option<&tasks::Task>,
+) -> Result<Vec<PomConflictFile>> {
+    validate_pom_merge(saved, worktree, task)?;
+    let index = run_bytes(worktree, &["ls-files", "--unmerged", "-z"], || {
+        task.map_or(Ok(()), tasks::Task::check)
+    })?;
+    Ok(scan_pom_conflict_files(worktree, &index, task)?
+        .into_iter()
+        .map(|file| file.preview)
+        .collect())
+}
+
+struct ScannedPomFile {
+    preview: PomConflictFile,
+    content: String,
+    width: usize,
+    ranges: Vec<std::ops::Range<usize>>,
+}
+
+fn scan_pom_conflict_files(
+    worktree: &Path,
+    index: &[u8],
+    task: Option<&tasks::Task>,
+) -> Result<Vec<ScannedPomFile>> {
+    let root = worktree.canonicalize().map_err(|_| "无法确认 POM 工作区")?;
+    let mut paths = BTreeMap::<_, [Option<&str>; 2]>::new();
+    // 逐项解码，其他冲突文件的路径编码或文件类型不会影响 POM 的预览。
+    for record in index.split_inclusive(|&byte| byte == 0) {
+        let Some(entry) = record
+            .strip_suffix(&[0])
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        else {
+            continue;
+        };
+        let Some((metadata, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        let relative = Path::new(path);
+        if relative.file_name() != Some(std::ffi::OsStr::new("pom.xml"))
+            || !relative
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+        {
             continue;
         }
-        // 临时 worktree 附着测试分支，stage 2 / ours 是合并前测试版本。
-        // literal pathspec 防止文件名中的魔法前缀或通配符影响其他路径。
-        if has_ours {
-            run(
+        let mut fields = metadata.split(' ');
+        if !matches!(fields.next(), Some("100644" | "100755")) {
+            continue;
+        }
+        let oid = fields.next();
+        let slot = match fields.next() {
+            Some("2") => 0,
+            Some("3") => 1,
+            _ => continue,
+        };
+        paths.entry(path).or_default()[slot] = oid;
+    }
+    let mut files = Vec::new();
+    for (path, sides) in paths {
+        if let Some(task) = task {
+            task.check()?;
+        }
+        let [Some(test), Some(development)] = sides else {
+            continue;
+        };
+        let file = root.join(path);
+        let Ok(metadata) = fs::symlink_metadata(&file) else {
+            continue;
+        };
+        if !metadata.is_file()
+            || metadata.len() > MAX_POM_BYTES as u64
+            || !file
+                .canonicalize()
+                .is_ok_and(|file| file.starts_with(&root))
+        {
+            continue;
+        }
+        let mut content = String::new();
+        if fs::File::open(&file)
+            .and_then(|file| {
+                file.take(MAX_POM_BYTES as u64 + 1)
+                    .read_to_string(&mut content)
+            })
+            .is_err()
+            || content.len() > MAX_POM_BYTES
+            || content.contains('\0')
+        {
+            continue;
+        }
+        let Ok(attrs) = run(
+            worktree,
+            &["check-attr", "-z", "conflict-marker-size", "--", path],
+            task,
+        ) else {
+            continue;
+        };
+        let width = attrs
+            .split_terminator('\0')
+            .nth(2)
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|&width| width > 0)
+            .unwrap_or(7);
+        if let Some((mut blocks, ranges)) =
+            scan_pom_conflict_blocks(&content, width).filter(|(blocks, _)| !blocks.is_empty())
+        {
+            let mut branch_diff = None;
+            let mut diff_contexts = BTreeMap::new();
+            if let (Some(test_blob), Some(development_blob)) = (
+                pom_preview_blob(worktree, test, task),
+                pom_preview_blob(worktree, development, task),
+            ) {
+                branch_diff = pom_branch_diff(worktree, test, development, task);
+                let test = PomPreviewSide::new(&test_blob);
+                let development = PomPreviewSide::new(&development_blob);
+                let mut changed = [Vec::new(), Vec::new()];
+                if let Some(diff) = &branch_diff {
+                    diff_contexts = pom_diff_contexts(diff, &test, &development, &mut changed);
+                }
+                for (i, (block, range)) in blocks.iter_mut().zip(&ranges).enumerate() {
+                    if let Some(task) = task {
+                        task.check()?;
+                    }
+                    let previous_end = i.checked_sub(1).map_or(0, |i| ranges[i].end);
+                    let next_start = ranges.get(i + 1).map_or(content.len(), |next| next.start);
+                    let before = content[previous_end..range.start]
+                        .lines()
+                        .rev()
+                        .take(12)
+                        .collect::<Vec<_>>();
+                    let after = content[range.end..next_start]
+                        .lines()
+                        .take(12)
+                        .collect::<Vec<_>>();
+                    block.context = pom_side_contexts(
+                        test.marker_context(&block.test_content, &before, &after, &changed[0]),
+                        development.marker_context(
+                            &block.development_content,
+                            &before,
+                            &after,
+                            &changed[1],
+                        ),
+                    );
+                }
+            }
+            if let Some(task) = task {
+                task.check()?;
+            }
+            files.push(ScannedPomFile {
+                preview: PomConflictFile {
+                    path: path.into(),
+                    blocks,
+                    branch_diff,
+                    diff_contexts,
+                },
+                content,
+                width,
+                ranges,
+            });
+        }
+    }
+    Ok(files)
+}
+
+fn identity(value: impl Hash) -> u64 {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hash);
+    hash.finish()
+}
+
+fn staged_index(worktree: &Path, task: Option<&tasks::Task>) -> Result<Vec<u8>> {
+    run_bytes(worktree, &["ls-files", "--stage", "-z"], || {
+        task.map_or(Ok(()), tasks::Task::check)
+    })
+}
+
+fn unmerged_paths(index: &[u8]) -> Result<BTreeMap<&[u8], Vec<&[u8]>>> {
+    let mut paths = BTreeMap::<_, Vec<_>>::new();
+    for record in index
+        .strip_suffix(&[0])
+        .unwrap_or(index)
+        .split(|&byte| byte == 0)
+    {
+        let tab = record
+            .iter()
+            .position(|&byte| byte == b'\t')
+            .ok_or("无法读取 Git 索引")?;
+        let (metadata, path) = (&record[..tab], &record[tab + 1..]);
+        match metadata.last() {
+            Some(b'0') => {}
+            Some(b'1'..=b'3') => paths.entry(path).or_default().push(metadata),
+            _ => return Err("无法读取 Git 索引".into()),
+        }
+    }
+    Ok(paths)
+}
+
+fn inspect_pom_blocks(
+    saved: &PlanRepository,
+    worktree: &Path,
+    task: Option<&tasks::Task>,
+) -> Result<(PomBlocksSnapshot, Vec<ScannedPomFile>)> {
+    let manual = "无法确认 POM 冲突块，请在工作区手工处理";
+    validate_pom_merge(saved, worktree, task)?;
+    let index = staged_index(worktree, task)?;
+    let conflicts = unmerged_paths(&index)?;
+    if run(worktree, &["config", "--get", "merge.default"], task).is_ok() {
+        return Err(manual.into());
+    }
+    // AUTO_MERGE 是 Git 生成的初始冲突树，可区分实际标记和用户后续修改。
+    let auto_merge = run(
+        worktree,
+        &["rev-parse", "--verify", "AUTO_MERGE^{tree}"],
+        task,
+    )?;
+    let root = worktree.canonicalize().map_err(|_| manual)?;
+    let mut files = Vec::new();
+    let mut worktree_files = BTreeMap::new();
+    for file in scan_pom_conflict_files(worktree, &index, task)? {
+        let path = file.preview.path.as_str();
+        if let Some(entries) = conflicts.get(path.as_bytes()) {
+            if confirm_pom_block_file(saved, worktree, &root, &auto_merge, &file, entries, task)
+                .is_ok()
+            {
+                worktree_files.insert(path.to_owned(), identity(file.content.as_bytes()));
+                files.push(file);
+            }
+        }
+    }
+    if files.is_empty() || staged_index(worktree, task)? != index {
+        return Err(manual.into());
+    }
+    let manual_remaining = files.len() != conflicts.len();
+    if !manual_remaining {
+        // 提交整笔合并前，隔离工作区不能含有其他手工修改。
+        let changed = run_bytes(worktree, &["diff-files", "--name-only", "-z"], || {
+            task.map_or(Ok(()), tasks::Task::check)
+        })?;
+        let staged_changes = run_bytes(
+            worktree,
+            &[
+                "diff",
+                "--cached",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                &auto_merge,
+                "--",
+            ],
+            || task.map_or(Ok(()), tasks::Task::check),
+        )?;
+        if [&changed, &staged_changes].into_iter().any(|changes| {
+            changes
+                .split(|&byte| byte == 0)
+                .filter(|path| !path.is_empty())
+                .any(|path| !conflicts.contains_key(path))
+        }) || !run_bytes(
+            worktree,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+            || task.map_or(Ok(()), tasks::Task::check),
+        )?
+        .is_empty()
+        {
+            return Err(manual.into());
+        }
+    }
+    Ok((
+        PomBlocksSnapshot {
+            index_identity: identity(&index),
+            worktree_files,
+            remote_identity: saved.remote_identity,
+            manual_remaining,
+        },
+        files,
+    ))
+}
+
+fn confirm_pom_block_file(
+    saved: &PlanRepository,
+    worktree: &Path,
+    root: &Path,
+    auto_merge: &str,
+    file: &ScannedPomFile,
+    entries: &[&[u8]],
+    task: Option<&tasks::Task>,
+) -> Result<()> {
+    let manual = "无法确认 POM 文本冲突";
+    let path = file.preview.path.as_str();
+    let disk_path = root.join(path);
+    if disk_path.canonicalize().ok().as_ref() != Some(&disk_path) {
+        return Err(manual.into());
+    }
+    let attrs = run(
+        worktree,
+        &["check-attr", "-z", "merge", "filter", "--", path],
+        task,
+    )?;
+    if !matches!(
+        attrs.split_terminator('\0').collect::<Vec<_>>().as_slice(),
+        [
+            _,
+            "merge",
+            "unspecified" | "set" | "text",
+            _,
+            "filter",
+            "unspecified" | "unset"
+        ]
+    ) {
+        return Err(manual.into());
+    }
+    let mut stage_mode = None;
+    for entry in entries {
+        let metadata = std::str::from_utf8(entry).map_err(|_| manual)?;
+        let mut fields = metadata.split(' ');
+        let mode = fields.next().ok_or(manual)?;
+        let oid = fields.next().ok_or(manual)?;
+        if !matches!(mode, "100644" | "100755")
+            || stage_mode.replace(mode).is_some_and(|other| other != mode)
+        {
+            return Err(manual.into());
+        }
+        let revision = match fields.next() {
+            Some("1") => None,
+            Some("2") => Some(merge_target(saved)),
+            Some("3") => Some(merge_source(saved)),
+            _ => return Err(manual.into()),
+        };
+        // 只接受原路径上的文本版本，避免误处理重命名及源文件中已有的标记。
+        if let Some(revision) = revision {
+            if run(
                 worktree,
-                &["--literal-pathspecs", "checkout", "--ours", "--", &path],
+                &["rev-parse", "--verify", &format!("{revision}:{path}")],
                 task,
-            )?;
-            run(worktree, &["--literal-pathspecs", "add", "--", &path], task)?;
-        } else {
-            // 测试侧删除时保留删除；普通 rm 失败即停下，不能强制覆盖用户修改。
-            run(worktree, &["--literal-pathspecs", "rm", "--", &path], task)?;
+            )? != oid
+            {
+                return Err(manual.into());
+            }
         }
-        count += 1;
-    }
-    if let Some(task) = task {
-        if count > 0 {
-            task.emit(
-                "log",
-                &format!("已对{count}个pom.xml冲突保留测试版本"),
-                None,
-                None,
-            );
+        let content = pom_blob(worktree, oid, task)?;
+        if content.lines().any(|line| {
+            [b'<', b'|', b'=', b'>'].into_iter().any(|marker| {
+                line.as_bytes()
+                    .iter()
+                    .take_while(|&&byte| byte == marker)
+                    .count()
+                    >= file.width
+            })
+        }) {
+            return Err(manual.into());
         }
     }
-    if !unmerged_paths(worktree, task)?.is_empty() {
-        return Err(format!("已对{count}个pom.xml冲突保留测试版本；仍有其他文件冲突，请在保留的工作区手工处理并提交"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&disk_path)
+            .map_err(|_| manual)?
+            .permissions()
+            .mode();
+        if (mode & 0o100 != 0) != (stage_mode == Some("100755")) {
+            return Err(manual.into());
+        }
     }
-    // 使用正常提交，完整沿用仓库签名和钩子；失败保留工作区供手工处理。
-    run(worktree, &["commit", "--no-edit"], task).map(|_| ())
+    let baseline = run(
+        worktree,
+        &["rev-parse", "--verify", &format!("{auto_merge}:{path}")],
+        task,
+    )?;
+    if run(worktree, &["hash-object", "--", path], task)? != baseline
+        || fs::read(&disk_path).map_err(|_| manual)? != file.content.as_bytes()
+    {
+        return Err(manual.into());
+    }
+    Ok(())
+}
+
+fn inspect_pom_conflict(
+    saved: &PlanRepository,
+    worktree: &Path,
+    task: Option<&tasks::Task>,
+) -> Result<(PomConflict, PomConflictSnapshot)> {
+    use std::hash::{Hash, Hasher};
+    let manual = "无法确认单处 POM 内容冲突，请在工作区手工处理";
+    validate_pom_merge(saved, worktree, task)?;
+    let index = run(worktree, &["ls-files", "--stage", "-z"], task)?;
+    if !index.ends_with('\0') {
+        return Err(manual.into());
+    }
+    let mut conflict_path = None;
+    let mut stages = [None; 3];
+    let mut stage_mode = None;
+    for entry in index.split_terminator('\0') {
+        let (metadata, path) = entry.split_once('\t').ok_or(manual)?;
+        let mut fields = metadata.split(' ');
+        let mode = fields.next().ok_or(manual)?;
+        let oid = fields.next().ok_or(manual)?;
+        let stage = fields.next().ok_or(manual)?;
+        if stage == "0" {
+            continue;
+        }
+        let slot = match stage {
+            "1" => 0,
+            "2" => 1,
+            "3" => 2,
+            _ => return Err(manual.into()),
+        };
+        if stages[slot].replace(oid).is_some()
+            || conflict_path.is_some_and(|other| other != path)
+            || stage_mode.is_some_and(|other| other != mode)
+            || !["100644", "100755"].contains(&mode)
+        {
+            return Err(manual.into());
+        }
+        conflict_path = Some(path);
+        stage_mode = Some(mode);
+    }
+    let path = conflict_path.ok_or(manual)?;
+    let [Some(_), Some(test), Some(development)] = stages else {
+        return Err(manual.into());
+    };
+    let relative = Path::new(path);
+    if relative.file_name() != Some(std::ffi::OsStr::new("pom.xml"))
+        || !relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(manual.into());
+    }
+    // 两侧都必须保有同一路径的原始 blob，避免把重命名等结构冲突当成文本冲突。
+    for (revision, expected) in [
+        (merge_target(saved), test),
+        (merge_source(saved), development),
+    ] {
+        let spec = format!("{revision}:{path}");
+        if run(worktree, &["rev-parse", "--verify", &spec], task)? != expected {
+            return Err(manual.into());
+        }
+    }
+    // 只接受 Git 的默认文本合并。自定义驱动与非默认标记交给手工处理。
+    let attrs = run(
+        worktree,
+        &[
+            "check-attr",
+            "-z",
+            "merge",
+            "conflict-marker-size",
+            "--",
+            path,
+        ],
+        task,
+    )?;
+    let attrs: Vec<_> = attrs.split_terminator('\0').collect();
+    if !matches!(
+        attrs.as_slice(),
+        [
+            _,
+            "merge",
+            "unspecified" | "set",
+            _,
+            "conflict-marker-size",
+            "unspecified" | "7"
+        ]
+    ) || run(worktree, &["config", "--get", "merge.default"], task).is_ok()
+    {
+        return Err(manual.into());
+    }
+    if run(worktree, &["diff-files", "--name-only", "-z"], task)?
+        .split_terminator('\0')
+        .any(|changed| changed != path)
+        || !run(
+            worktree,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+            task,
+        )?
+        .is_empty()
+    {
+        return Err(manual.into());
+    }
+    let file = worktree.join(relative);
+    if !fs::symlink_metadata(&file).map_err(|_| manual)?.is_file()
+        || !file
+            .canonicalize()
+            .map_err(|_| manual)?
+            .starts_with(worktree.canonicalize().map_err(|_| manual)?)
+    {
+        return Err(manual.into());
+    }
+    let before = run(worktree, &["hash-object", "--no-filters", "--", path], task)?;
+    let mut content = String::new();
+    fs::File::open(&file)
+        .map_err(|_| manual)?
+        .take(MAX_POM_BYTES as u64 + 1)
+        .read_to_string(&mut content)
+        .map_err(|_| manual)?;
+    if content.len() > MAX_POM_BYTES || content.contains('\0') || !is_one_conflict_block(&content) {
+        return Err(manual.into());
+    }
+    let test_content = pom_blob(worktree, test, task)?;
+    let development_content = pom_blob(worktree, development, task)?;
+    // 只检查可选的两侧版本，祖先中的历史标记不会写入合并结果。
+    if [&test_content, &development_content]
+        .into_iter()
+        .any(|text| {
+            text.lines().any(|line| {
+                CONFLICT_MARKERS
+                    .iter()
+                    .any(|&marker| line.starts_with(marker))
+            })
+        })
+    {
+        return Err(manual.into());
+    }
+    // 将工作树 POM 与完整索引纳入快照，确认时拒绝覆盖其间的手工修改。
+    if run(worktree, &["ls-files", "--stage", "-z"], task)? != index {
+        return Err(manual.into());
+    }
+    let mut index_hash = std::collections::hash_map::DefaultHasher::new();
+    index.hash(&mut index_hash);
+    let worktree_blob = run(worktree, &["hash-object", "--no-filters", "--", path], task)?;
+    if before != worktree_blob {
+        return Err(manual.into());
+    }
+    Ok((
+        PomConflict {
+            path: path.into(),
+            test_content,
+            development_content,
+            test_branch: saved.target_branch.clone(),
+            development_branch: saved.repository.development_branch.clone(),
+            push: false,
+        },
+        PomConflictSnapshot {
+            path: path.into(),
+            worktree_blob,
+            index_identity: index_hash.finish(),
+            remote_identity: remote_identity(&saved.repository),
+        },
+    ))
 }
 
 // 切换后以已确认的本地目标 SHA 为基线；fetch 只能改变远端引用，不能改变本地现场。
@@ -1105,7 +2403,35 @@ fn merge_source(saved: &PlanRepository) -> &str {
     }
 }
 
+fn merge_target(saved: &PlanRepository) -> &str {
+    if saved.sync_test_branch {
+        &saved.remote_sha
+    } else {
+        &saved.target_sha
+    }
+}
+
 fn validate_merge_state(
+    saved: &PlanRepository,
+    worktree: &Path,
+    source: &str,
+    target: &str,
+    task: Option<&tasks::Task>,
+) -> Result<()> {
+    validate_merge_refs(saved, worktree, source, target, task)?;
+    if !run(worktree, &["status", "--porcelain=v1"], task)?.is_empty() {
+        return Err("测试工作区存在改动，已保留现场".into());
+    }
+    for name in ["MERGE_HEAD", "rebase-merge", "rebase-apply"] {
+        let marker = run(worktree, &["rev-parse", "--git-path", name], task)?;
+        if worktree.join(marker).exists() {
+            return Err("测试工作区正在 merge/rebase，已保留现场".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_merge_refs(
     saved: &PlanRepository,
     worktree: &Path,
     source: &str,
@@ -1131,15 +2457,8 @@ fn validate_merge_state(
             != saved.development_remote_sha
         || sha(path, &format!("refs/heads/{}", repo.development_branch))? != source
         || sha(worktree, "HEAD")? != target
-        || !run(worktree, &["status", "--porcelain=v1"], task)?.is_empty()
     {
         return Err("仓库或远端在同步时已变化，请重新准备操作；工作区已保留".into());
-    }
-    for name in ["MERGE_HEAD", "rebase-merge", "rebase-apply"] {
-        let marker = run(worktree, &["rev-parse", "--git-path", name], task)?;
-        if worktree.join(marker).exists() {
-            return Err("测试工作区正在 merge/rebase，已保留现场".into());
-        }
     }
     Ok(())
 }
@@ -1291,12 +2610,13 @@ fn perform_with_options(
             return Err("测试分支在快进时已变化，已保留现场".into());
         }
     }
-    let target = if saved.sync_test_branch {
-        &saved.remote_sha
-    } else {
-        &saved.target_sha
-    };
-    validate_merge_state(saved, worktree, merge_source(saved), target, task)?;
+    validate_merge_state(
+        saved,
+        worktree,
+        merge_source(saved),
+        merge_target(saved),
+        task,
+    )?;
     if let Err(error) = run(
         worktree,
         &[
@@ -1308,22 +2628,29 @@ fn perform_with_options(
         ],
         task,
     ) {
-        let marker = run(worktree, &["rev-parse", "--git-path", "MERGE_HEAD"], task)?;
-        if !worktree.join(marker).exists() {
-            return Err(error);
-        }
-        if !keep_test_pom {
-            return if unmerged_paths(worktree, task)?.is_empty() {
-                Err(error)
-            } else {
-                Err("合并存在冲突，请在保留工作区手工合并代码".into())
-            };
-        }
-        resolve_test_pom_conflicts(worktree, task)?;
+        return if run(worktree, &["ls-files", "--unmerged", "-z"], task)
+            .is_ok_and(|conflicts| !conflicts.is_empty())
+        {
+            Err("合并存在冲突，请在保留工作区手工合并代码".into())
+        } else {
+            Err(error)
+        };
     }
+    finish_merged_worktree(saved, worktree, push, task)
+}
+
+fn finish_merged_worktree(
+    saved: &PlanRepository,
+    worktree: &Path,
+    push: bool,
+    task: Option<&tasks::Task>,
+) -> Result<()> {
+    let repo = &saved.repository;
+    let path = Path::new(&saved.root);
+    let worktree_text = worktree.to_str().ok_or("worktree 路径编码无效")?;
     let merged_head = sha(worktree, "HEAD")?;
     validate_merge_state(saved, worktree, merge_source(saved), &merged_head, task)?;
-    for baseline in [merge_source(saved), target.as_str()] {
+    for baseline in [merge_source(saved), merge_target(saved)] {
         run(
             worktree,
             &["merge-base", "--is-ancestor", baseline, &merged_head],
@@ -1354,21 +2681,65 @@ fn perform_with_options(
     run(path, &["worktree", "remove", "--", worktree_text], task)?;
     Ok(())
 }
+fn start_continuation(
+    entry: &mut Entry,
+    task_id: &str,
+    persist: impl FnOnce(&Entry) -> Result<()>,
+) -> Result<()> {
+    let mut started = entry.clone();
+    started.continuation.as_mut().ok_or("缺少续跑来源")?.started = true;
+    started.state.task_id = task_id.into();
+    // 交接和任务 ID 一次落盘，重启后可用新批次恢复，包括尚未处理首个仓库的情况。
+    persist(&started)?;
+    *entry = started;
+    Ok(())
+}
+
 pub fn execute(app: AppHandle, plan_id: String) -> Result<String> {
-    let plan = {
+    let (plan, source_plan_id) = {
         let runtime = app.state::<Runtime>();
         let mut entries = runtime.entries.lock().unwrap();
-        let entry = entries.get_mut(&plan_id).ok_or("计划不存在")?;
+        let entry = entries.get(&plan_id).ok_or("计划不存在")?;
         if entry.state.status != "prepared" {
             return Err("计划已执行，请重新准备".into());
         }
-        entry.state.status = "running".into();
-        entry.plan.clone()
+        let source_plan_id = entry
+            .continuation
+            .as_ref()
+            .map(|c| c.source_plan_id.clone());
+        if let Some(source) = &source_plan_id {
+            continuation_source(&entries, source)?;
+        }
+        let plan = entry.plan.clone();
+        entries.get_mut(&plan_id).unwrap().state.status = "running".into();
+        (plan, source_plan_id)
     };
     let operation_id = plan.plan_id.clone();
     let app_for_error = app.clone();
+    let is_continuation = source_plan_id.is_some();
+    let (sender, receiver) = std::sync::mpsc::channel();
     let result = tasks::run_backend(app, plan.project_id.clone(), move |task| {
-        update(&task.app, &plan.plan_id, |s| s.task_id = task.id.clone());
+        if let Some(source) = source_plan_id {
+            let started = {
+                let runtime = task.app.state::<Runtime>();
+                let mut entries = runtime.entries.lock().unwrap();
+                let entry = entries.get_mut(&plan.plan_id).ok_or("计划不存在")?;
+                start_continuation(entry, &task.id, |e| persist_entry(&task.app, e))
+            };
+            if let Err(error) = started {
+                update(&task.app, &plan.plan_id, |s| s.status = "prepared".into());
+                let _ = sender.send(Err(error.clone()));
+                return Err(error);
+            }
+            let _ = sender.send(Ok(()));
+            for id in [&source, &plan.plan_id] {
+                let _ = task
+                    .app
+                    .emit("backend-git-updated", serde_json::json!({ "planId": id }));
+            }
+        } else {
+            update(&task.app, &plan.plan_id, |s| s.task_id = task.id.clone());
+        }
         let base = tasks::data_dir(&task.app)
             .map(|dir| dir.join("backend-worktrees").join(&plan.plan_id))
             .and_then(|base| {
@@ -1382,58 +2753,36 @@ pub fn execute(app: AppHandle, plan_id: String) -> Result<String> {
             Err(error) => {
                 update(&task.app, &plan.plan_id, |s| {
                     s.status = "paused".into();
-                    s.repositories[0].status = "error".into();
-                    s.repositories[0].message = error.clone();
+                    if !is_continuation {
+                        s.repositories[0].status = "error".into();
+                        s.repositories[0].message = error.clone();
+                    }
                 });
                 return Err(error);
             }
         };
-        for (index, saved) in plan.repositories.iter().enumerate() {
-            let worktree = base.join(index.to_string());
-            update(&task.app, &plan.plan_id, |s| {
-                s.repositories[index].status = "running".into()
-            });
-            task.emit("log", "正在执行后端 Git 仓库操作", None, None);
-            let result = perform_with_options(
-                saved,
-                &plan.operation,
-                plan.push,
-                plan.keep_test_pom,
-                &worktree,
-                Some(task),
-                || {
-                    update(&task.app, &plan.plan_id, |s| {
-                        s.repositories[index].worktree_path = worktree.to_string_lossy().into()
-                    });
-                    persist_current(&task.app, &plan.plan_id)
-                },
-            );
-            match result {
-                Ok(()) => update(&task.app, &plan.plan_id, |s| {
-                    s.repositories[index].status = "success".into();
-                    s.repositories[index].message = "操作完成".into();
-                    s.repositories[index].worktree_path.clear();
-                }),
-                Err(error) => {
-                    let cancelled = task.check().is_err();
-                    update(&task.app, &plan.plan_id, |s| {
-                        s.status = if cancelled { "cancelled" } else { "paused" }.into();
-                        s.repositories[index].status =
-                            if cancelled { "cancelled" } else { "error" }.into();
-                        s.repositories[index].message = error.clone();
-                    });
-                    return Err(error);
-                }
-            }
-        }
-        update(&task.app, &plan.plan_id, |s| s.status = "success".into());
-        Ok("success")
+        run_plan_repositories(
+            task,
+            &plan,
+            &base,
+            0..plan.repositories.len(),
+            is_continuation,
+        )
     });
     match result {
         Ok(task_id) => {
-            update(&app_for_error, &operation_id, |s| {
-                s.task_id = task_id.clone()
-            });
+            if is_continuation {
+                receiver
+                    .recv()
+                    .map_err(|_| "Git 续跑启动异常".to_string())??;
+            } else {
+                update(&app_for_error, &operation_id, |s| {
+                    // 任务可能已暂停并由冲突处理任务接手，不覆盖较新的任务 ID。
+                    if s.task_id.is_empty() {
+                        s.task_id = task_id.clone();
+                    }
+                });
+            }
             Ok(task_id)
         }
         Err(error) => {
@@ -1444,19 +2793,337 @@ pub fn execute(app: AppHandle, plan_id: String) -> Result<String> {
         }
     }
 }
+fn run_plan_repositories(
+    task: &tasks::Task,
+    plan: &Plan,
+    base: &Path,
+    indices: impl IntoIterator<Item = usize>,
+    pause_on_cancel: bool,
+) -> Result<&'static str> {
+    for index in indices {
+        if pause_on_cancel {
+            if let Err(error) = task.check() {
+                update(&task.app, &plan.plan_id, |s| s.status = "paused".into());
+                return Err(error);
+            }
+        }
+        let saved = &plan.repositories[index];
+        let worktree = base.join(index.to_string());
+        update(&task.app, &plan.plan_id, |s| {
+            s.repositories[index].status = "running".into()
+        });
+        task.emit("log", "正在执行后端 Git 仓库操作", None, None);
+        let result = perform_with_options(
+            saved,
+            &plan.operation,
+            plan.push,
+            plan.keep_test_pom,
+            &worktree,
+            Some(task),
+            || {
+                update(&task.app, &plan.plan_id, |s| {
+                    s.repositories[index].worktree_path = worktree.to_string_lossy().into()
+                });
+                persist_current(&task.app, &plan.plan_id)
+            },
+        );
+        match result {
+            Ok(()) => update(&task.app, &plan.plan_id, |s| {
+                s.repositories[index].status = "success".into();
+                s.repositories[index].message = "操作完成".into();
+                s.repositories[index].worktree_path.clear();
+            }),
+            Err(error) => {
+                let cancelled = task.check().is_err();
+                let mut files = Vec::new();
+                let mut resolution = None;
+                if !cancelled
+                    && plan.operation == "merge"
+                    && base.parent().is_some_and(|operations| {
+                        operation_worktree_is_safe(operations, base, index, &worktree)
+                    })
+                {
+                    resolution = validate_merge_refs(
+                        saved,
+                        &worktree,
+                        merge_source(saved),
+                        merge_target(saved),
+                        Some(task),
+                    )
+                    .and_then(|_| inspect_pom_blocks(saved, &worktree, Some(task)))
+                    .ok();
+                    if resolution.is_none() {
+                        files = read_pom_conflict_files(saved, &worktree, Some(task))
+                            .unwrap_or_default();
+                    }
+                }
+                update_entry(&task.app, &plan.plan_id, |entry| {
+                    let s = &mut entry.state;
+                    s.repositories[index].pom_conflict_files = files;
+                    if let Some((snapshot, files)) = resolution {
+                        let result = &mut s.repositories[index];
+                        publish_pom_blocks(result, files, &snapshot, plan.push);
+                        entry
+                            .pom_blocks_snapshots
+                            .insert(result.repo_id.clone(), snapshot);
+                    }
+                    s.status = if cancelled && !pause_on_cancel {
+                        "cancelled"
+                    } else {
+                        "paused"
+                    }
+                    .into();
+                    s.repositories[index].status =
+                        if cancelled { "cancelled" } else { "error" }.into();
+                    s.repositories[index].message = error.clone();
+                });
+                return Err(error);
+            }
+        }
+    }
+    update(&task.app, &plan.plan_id, |s| {
+        s.status = if s
+            .repositories
+            .iter()
+            .all(|r| ["success", "aborted"].contains(&r.status.as_str()))
+        {
+            "success"
+        } else {
+            "paused"
+        }
+        .into();
+    });
+    Ok("success")
+}
 pub fn abort(app: &AppHandle, plan_id: String, repo_id: String) -> Result<()> {
-    finish_worktree(app, plan_id, repo_id, false)
+    finish_worktree(app, plan_id, repo_id, WorktreeAction::Abort)
 }
 pub fn complete(app: &AppHandle, plan_id: String, repo_id: String) -> Result<()> {
-    finish_worktree(app, plan_id, repo_id, true)
+    finish_worktree(app, plan_id, repo_id, WorktreeAction::Complete)
+}
+pub fn resolve_pom(app: &AppHandle, plan_id: String, repo_id: String, side: PomSide) -> Result<()> {
+    finish_worktree(app, plan_id, repo_id, WorktreeAction::ResolvePom(side))
+}
+pub fn resolve_pom_blocks(
+    app: &AppHandle,
+    plan_id: String,
+    repo_id: String,
+    choices: Vec<PomBlockChoice>,
+) -> Result<()> {
+    finish_worktree(
+        app,
+        plan_id,
+        repo_id,
+        WorktreeAction::ResolvePomBlocks(choices),
+    )
+}
+enum WorktreeAction {
+    Abort,
+    Complete,
+    ResolvePom(PomSide),
+    ResolvePomBlocks(Vec<PomBlockChoice>),
+}
+fn operation_worktree_is_safe(
+    base: &Path,
+    operation: &Path,
+    index: usize,
+    worktree: &Path,
+) -> bool {
+    let index = index.to_string();
+    (|| -> Option<bool> {
+        let canonical_base = base.canonicalize().ok()?;
+        let canonical_operation = operation.canonicalize().ok()?;
+        let canonical_worktree = worktree.canonicalize().ok()?;
+        Some(
+            worktree == operation.join(&index)
+                && canonical_operation == canonical_base.join(operation.file_name()?)
+                && canonical_worktree == canonical_operation.join(&index),
+        )
+    })()
+    .unwrap_or(false)
+}
+enum WorktreeIde {
+    Idea,
+    WebStorm,
+}
+
+impl WorktreeIde {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Idea => "IntelliJ IDEA",
+            Self::WebStorm => "WebStorm",
+        }
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn bundle_ids(&self) -> &'static [&'static str] {
+        match self {
+            Self::Idea => &["com.jetbrains.intellij", "com.jetbrains.intellij.ce"],
+            Self::WebStorm => &["com.jetbrains.WebStorm"],
+        }
+    }
+}
+
+pub fn open_worktree_in_idea(app: &AppHandle, plan_id: String, repo_id: String) -> Result<()> {
+    open_worktree_in_ide(app, plan_id, repo_id, WorktreeIde::Idea)
+}
+
+pub fn open_worktree_in_webstorm(app: &AppHandle, plan_id: String, repo_id: String) -> Result<()> {
+    open_worktree_in_ide(app, plan_id, repo_id, WorktreeIde::WebStorm)
+}
+
+fn open_worktree_in_ide(
+    app: &AppHandle,
+    plan_id: String,
+    repo_id: String,
+    ide: WorktreeIde,
+) -> Result<()> {
+    let operations = tasks::data_dir(app)?.join("backend-worktrees");
+    let runtime = app.state::<Runtime>();
+    let entries = runtime.entries.lock().unwrap();
+    let entry = entries.get(&plan_id).ok_or("计划不存在")?;
+    let worktree = retained_worktree_for_ide(&operations, &entry.state, &repo_id)?;
+    // 持有记录锁直到系统接收打开请求，避免完成或中止操作同时清理工作树。
+    launch_worktree_ide(worktree, ide)
+}
+
+fn retained_worktree_for_ide<'a>(
+    operations: &Path,
+    state: &'a OperationState,
+    repo_id: &str,
+) -> Result<&'a Path> {
+    if matches!(state.status.as_str(), "running" | "aborting") {
+        return Err("请先等待任务结束".into());
+    }
+    let (index, result) = state
+        .repositories
+        .iter()
+        .enumerate()
+        .find(|(_, result)| result.repo_id == repo_id)
+        .ok_or("仓库不在计划中")?;
+    if result.worktree_path.is_empty() {
+        return Err("该仓库没有本次操作工作区".into());
+    }
+    let worktree = Path::new(&result.worktree_path);
+    let operation = operations.join(&state.plan_id);
+    if !worktree.is_dir() || !operation_worktree_is_safe(operations, &operation, index, worktree) {
+        return Err("无法确认本次工作区，拒绝打开".into());
+    }
+    Ok(worktree)
+}
+
+#[cfg(target_os = "macos")]
+fn launch_worktree_ide(worktree: &Path, ide: WorktreeIde) -> Result<()> {
+    for &bundle_id in ide.bundle_ids() {
+        let output = Command::new("/usr/bin/open")
+            .args(["-b", bundle_id, "--"])
+            .arg(worktree)
+            .output()
+            .map_err(|error| format!("无法启动 macOS 打开命令：{error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+    }
+    let name = ide.name();
+    Err(format!("无法在 {name} 中打开工作区，请确认已安装 {name}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn launch_worktree_ide(_worktree: &Path, ide: WorktreeIde) -> Result<()> {
+    Err(format!("在 {} 中打开工作区目前仅支持 macOS", ide.name()))
+}
+
+fn auto_resume_indices(entry: &Entry) -> Result<Vec<usize>> {
+    if entry
+        .state
+        .repositories
+        .iter()
+        .any(|r| !r.worktree_path.is_empty())
+    {
+        return Ok(Vec::new());
+    }
+    let indices: Vec<_> = entry
+        .state
+        .repositories
+        .iter()
+        .enumerate()
+        .filter_map(|(index, result)| (result.status == "pending").then_some(index))
+        .collect();
+    // 没有远端身份的旧记录无法验证，保留 pending 供用户重新预检。
+    if indices
+        .iter()
+        .any(|&index| entry.plan.repositories[index].remote_identity == 0)
+    {
+        return Err("原计划缺少远端身份，请选择「继续」重新预检".into());
+    }
+    Ok(indices)
+}
+fn record_worktree_outcome(
+    entry: &mut Entry,
+    index: usize,
+    action: &WorktreeAction,
+    outcome: &Result<bool>,
+) -> Vec<usize> {
+    entry.state.status = "paused".into();
+    let result = &mut entry.state.repositories[index];
+    match outcome {
+        Ok(true) => {
+            result.status = "error".into();
+            result.message = "所选 POM 冲突块已暂存，请在工作区手工解决其余冲突".into();
+            return Vec::new();
+        }
+        Err(error) => {
+            result.status = "error".into();
+            result.message = error.clone();
+            return Vec::new();
+        }
+        Ok(false) => {}
+    }
+    let (status, message) = match action {
+        WorktreeAction::Abort => ("aborted", "本次 merge 已中止，工作区已清理"),
+        WorktreeAction::Complete => ("success", "手工提交已确认，工作区已清理；未自动推送"),
+        WorktreeAction::ResolvePom(_) => ("success", "已按所选 POM 版本完成合并"),
+        WorktreeAction::ResolvePomBlocks(_) => ("success", "已按所选 POM 冲突块完成合并"),
+    };
+    result.status = status.into();
+    result.message = message.into();
+    result.worktree_path.clear();
+    if entry
+        .state
+        .repositories
+        .iter()
+        .all(|r| ["success", "aborted"].contains(&r.status.as_str()))
+    {
+        entry.state.status = "success".into();
+        return Vec::new();
+    }
+    if matches!(action, WorktreeAction::Abort) {
+        return Vec::new();
+    }
+    match auto_resume_indices(entry) {
+        Ok(indices) => {
+            if !indices.is_empty() {
+                // 在同一次状态更新中接续，避免其他命令抢走暂停批次。
+                entry.state.status = "running".into();
+            }
+            indices
+        }
+        Err(error) => {
+            let message = &mut entry.state.repositories[index].message;
+            message.push_str("。已暂停后续仓库：");
+            message.push_str(&error);
+            Vec::new()
+        }
+    }
 }
 fn finish_worktree(
     app: &AppHandle,
     plan_id: String,
     repo_id: String,
-    complete: bool,
+    action: WorktreeAction,
 ) -> Result<()> {
-    let (saved, worktree, index, project_id) = {
+    let operations = tasks::data_dir(app)?.join("backend-worktrees");
+    let (saved, worktree, index, project_id, pom_snapshot, blocks_snapshot, push) = {
         let runtime = app.state::<Runtime>();
         let mut entries = runtime.entries.lock().unwrap();
         let entry = entries.get_mut(&plan_id).ok_or("计划不存在")?;
@@ -1473,74 +3140,339 @@ fn finish_worktree(
         if result.worktree_path.is_empty() {
             return Err("该仓库没有本次操作工作区".into());
         }
+        let pom_snapshot = if matches!(action, WorktreeAction::ResolvePom(_)) {
+            if entry.state.status != "paused"
+                || entry.plan.operation != "merge"
+                || result.pom_conflict.is_none()
+            {
+                return Err("当前没有可选择版本的 POM 冲突".into());
+            }
+            Some(
+                entry
+                    .pom_conflicts
+                    .get(&repo_id)
+                    .cloned()
+                    .ok_or("缺少 POM 冲突快照，请手工处理")?,
+            )
+        } else {
+            None
+        };
+        let blocks_snapshot = if matches!(action, WorktreeAction::ResolvePomBlocks(_)) {
+            if entry.state.status != "paused"
+                || entry.plan.operation != "merge"
+                || result.pom_blocks_resolution.is_none()
+            {
+                return Err("当前没有可选择版本的 POM 冲突块".into());
+            }
+            Some(
+                entry
+                    .pom_blocks_snapshots
+                    .get(&repo_id)
+                    .cloned()
+                    .ok_or("缺少 POM 冲突块快照，请手工处理")?,
+            )
+        } else {
+            None
+        };
         let value = (
             entry.plan.repositories[index].clone(),
             PathBuf::from(&result.worktree_path),
             index,
             entry.plan.project_id.clone(),
+            pom_snapshot,
+            blocks_snapshot,
+            entry.plan.push,
         );
         entry.state.status = "aborting".into();
         value
     };
-    let operations = tasks::data_dir(app)?.join("backend-worktrees");
     let operation = operations.join(&plan_id);
-    let expected = operation.join(index.to_string());
-    let safe = (|| -> Result<bool> {
-        let canonical_operations = operations.canonicalize().map_err(|_| "无法确认操作目录")?;
-        let canonical_operation = operation.canonicalize().map_err(|_| "无法确认操作目录")?;
-        let canonical_worktree = worktree.canonicalize().map_err(|_| "无法确认工作区")?;
-        Ok(worktree == expected
-            && canonical_operation == canonical_operations.join(&plan_id)
-            && canonical_worktree == canonical_operation.join(index.to_string()))
-    })();
-    if !safe.unwrap_or(false) {
+    if !operation_worktree_is_safe(&operations, &operation, index, &worktree) {
         update(app, &plan_id, |s| s.status = "paused".into());
-        return Err("无法确认本次工作区，拒绝 abort".into());
+        return Err("无法确认本次工作区，拒绝处理".into());
     }
     let id = plan_id.clone();
     let result = tasks::run_backend(app.clone(), project_id, move |task| {
         update(&task.app, &id, |s| s.task_id = task.id.clone());
-        let outcome = if complete {
-            complete_worktree(&saved, &worktree, Some(task))
+        let outcome = if !operation_worktree_is_safe(&operations, &operation, index, &worktree) {
+            Err("无法确认本次工作区，拒绝处理".into())
         } else {
-            abort_worktree(&saved, &worktree, Some(task))
-        };
-        update(&task.app, &id, |s| {
-            s.status = "paused".into();
-            s.repositories[index].status = if outcome.is_ok() {
-                if complete {
-                    "success"
-                } else {
-                    "aborted"
+            match &action {
+                WorktreeAction::Abort => {
+                    abort_worktree(&saved, &worktree, Some(task)).map(|()| false)
                 }
-            } else {
-                "error"
+                WorktreeAction::Complete => {
+                    complete_worktree(&saved, &worktree, Some(task)).map(|()| false)
+                }
+                WorktreeAction::ResolvePom(side) => resolve_pom_worktree(
+                    &saved,
+                    &worktree,
+                    pom_snapshot.as_ref().unwrap(),
+                    *side,
+                    push,
+                    Some(task),
+                )
+                .map(|()| false),
+                WorktreeAction::ResolvePomBlocks(choices) => resolve_pom_blocks_worktree(
+                    &saved,
+                    &worktree,
+                    blocks_snapshot.as_ref().unwrap(),
+                    choices,
+                    push,
+                    Some(task),
+                ),
             }
-            .into();
-            if outcome.is_ok() {
-                s.repositories[index].worktree_path.clear();
-                s.repositories[index].message = if complete {
-                    "手工提交已确认，工作区已清理；未自动推送"
+        };
+        let manual_remaining = matches!(outcome, Ok(true));
+        let mut recovered = None;
+        let files = if (outcome.is_err() || manual_remaining)
+            && operation_worktree_is_safe(&operations, &operation, index, &worktree)
+        {
+            if outcome.is_err() {
+                if let Some(expected) = &blocks_snapshot {
+                    recovered = recover_pom_blocks(&saved, &worktree, expected, Some(task));
+                }
+            }
+            if recovered.is_none() {
+                read_pom_conflict_files(&saved, &worktree, Some(task)).unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        let mut resume = None;
+        update_entry(&task.app, &id, |entry| {
+            let s = &mut entry.state;
+            s.repositories[index].pom_conflict_files = files;
+            if outcome.is_ok() || matches!(action, WorktreeAction::ResolvePom(_)) {
+                entry.pom_conflicts.remove(&repo_id);
+                s.repositories[index].pom_conflict = None;
+            }
+            if matches!(action, WorktreeAction::ResolvePomBlocks(_)) || outcome.is_ok() {
+                if let (Some(files), Some(expected)) = (recovered, &blocks_snapshot) {
+                    publish_pom_blocks(&mut s.repositories[index], files, expected, push);
                 } else {
-                    "本次 merge 已中止，工作区已清理"
+                    entry.pom_blocks_snapshots.remove(&repo_id);
+                    s.repositories[index].pom_blocks_resolution = None;
                 }
-                .into();
-                if s.repositories
-                    .iter()
-                    .all(|r| ["success", "aborted"].contains(&r.status.as_str()))
-                {
-                    s.status = "success".into();
-                }
-            } else if let Err(error) = &outcome {
-                s.repositories[index].message = error.clone();
+            }
+            let indices = record_worktree_outcome(entry, index, &action, &outcome);
+            if !indices.is_empty() {
+                resume = Some((entry.plan.clone(), indices));
             }
         });
+        if let Some((plan, indices)) = resume {
+            // 先确认已清理的工作区和后续计划状态已落盘，再操作下一仓库。
+            if let Err(error) = persist_current(&task.app, &id) {
+                update(&task.app, &id, |s| s.status = "paused".into());
+                return Err(error);
+            }
+            return run_plan_repositories(task, &plan, &operation, indices, true);
+        }
         outcome.map(|_| "success")
     });
     if result.is_err() {
         update(app, &plan_id, |s| s.status = "paused".into());
     }
     result.map(|_| ())
+}
+
+fn publish_pom_blocks(
+    result: &mut RepositoryResult,
+    files: Vec<ScannedPomFile>,
+    snapshot: &PomBlocksSnapshot,
+    push: bool,
+) {
+    result.pom_conflict_files = files.into_iter().map(|file| file.preview).collect();
+    result.pom_blocks_resolution = Some(PomBlocksResolution {
+        push: push && !snapshot.manual_remaining,
+        manual_remaining: snapshot.manual_remaining,
+    });
+}
+
+fn recover_pom_blocks(
+    saved: &PlanRepository,
+    worktree: &Path,
+    expected: &PomBlocksSnapshot,
+    task: Option<&tasks::Task>,
+) -> Option<Vec<ScannedPomFile>> {
+    let mut saved = saved.clone();
+    saved.remote_identity = expected.remote_identity;
+    validate_merge_refs(
+        &saved,
+        worktree,
+        merge_source(&saved),
+        merge_target(&saved),
+        task,
+    )
+    .ok()?;
+    let (found, files) = inspect_pom_blocks(&saved, worktree, task).ok()?;
+    (&found == expected).then_some(files)
+}
+
+// 返回 true 表示 POM 已暂存，其余冲突仍须手工处理。
+fn resolve_pom_blocks_worktree(
+    saved: &PlanRepository,
+    worktree: &Path,
+    expected: &PomBlocksSnapshot,
+    choices: &[PomBlockChoice],
+    push: bool,
+    task: Option<&tasks::Task>,
+) -> Result<bool> {
+    let mut saved = saved.clone();
+    saved.remote_identity = expected.remote_identity;
+    let files = recover_pom_blocks(&saved, worktree, expected, task)
+        .ok_or("POM 冲突或工作区已变化，请手工处理")?;
+    let mut sides = HashMap::new();
+    for choice in choices {
+        if sides
+            .insert((choice.path.as_str(), choice.line), choice.side)
+            .is_some()
+        {
+            return Err("每个 POM 冲突块只能选择一次".into());
+        }
+    }
+    let missing = "必须为每个实际 POM 冲突块选择一个版本";
+    let mut resolved = Vec::new();
+    for file in &files {
+        let path = file.preview.path.as_str();
+        let mut output = String::with_capacity(file.content.len());
+        let mut offset = 0;
+        for (block, range) in file.preview.blocks.iter().zip(&file.ranges) {
+            let side = sides.remove(&(path, block.line)).ok_or(missing)?;
+            output.push_str(&file.content[offset..range.start]);
+            output.push_str(match side {
+                PomSide::Test => &block.test_content,
+                PomSide::Development => &block.development_content,
+            });
+            offset = range.end;
+        }
+        output.push_str(&file.content[offset..]);
+        resolved.push((path, output));
+    }
+    if !sides.is_empty() {
+        return Err(missing.into());
+    }
+    let index = staged_index(worktree, task)?;
+    let mut remaining = unmerged_paths(&index)?;
+    let root = worktree.canonicalize().map_err(|_| "无法确认 POM 工作区")?;
+    let changed = "POM 冲突或工作区已变化，请手工处理";
+    if identity(&index) != expected.index_identity {
+        return Err(changed.into());
+    }
+    // 先验完所有选择和文件再写入，避免错误请求留下部分应用的结果。
+    for file in &files {
+        let path = file.preview.path.as_str();
+        let disk_path = root.join(path);
+        if disk_path.canonicalize().ok().as_ref() != Some(&disk_path)
+            || fs::read(&disk_path).map_err(|_| changed)? != file.content.as_bytes()
+        {
+            return Err(changed.into());
+        }
+        remaining.remove(path.as_bytes());
+    }
+    if let Some(task) = task {
+        task.check()?;
+    }
+    let mut args = vec!["--literal-pathspecs", "add", "--"];
+    for (path, content) in &resolved {
+        crate::config::atomic_write(&root.join(path), content)
+            .map_err(|_| "无法写入 POM，工作区已保留")?;
+        args.push(path);
+    }
+    run(worktree, &args, task)?;
+    if unmerged_paths(&staged_index(worktree, task)?)? != remaining {
+        return Err("暂存后的冲突列表已变化，工作区已保留".into());
+    }
+    if expected.manual_remaining {
+        return Ok(true);
+    }
+    let tree = run(worktree, &["write-tree"], task)?;
+    // 使用正常合并提交，核对钩子执行后的提交树及合并父提交再继续推送。
+    run(worktree, &["commit", "--no-edit"], task)?;
+    if run(worktree, &["rev-parse", "--verify", "HEAD^{tree}"], task)? != tree
+        || sha(worktree, "HEAD^1")? != merge_target(&saved)
+        || sha(worktree, "HEAD^2")? != merge_source(&saved)
+    {
+        return Err("提交后的合并内容已变化，工作区已保留".into());
+    }
+    finish_merged_worktree(&saved, worktree, push, task)?;
+    Ok(false)
+}
+
+fn resolve_pom_worktree(
+    saved: &PlanRepository,
+    worktree: &Path,
+    expected: &PomConflictSnapshot,
+    side: PomSide,
+    push: bool,
+    task: Option<&tasks::Task>,
+) -> Result<()> {
+    let mut saved = saved.clone();
+    saved.remote_identity = expected.remote_identity;
+    validate_merge_refs(
+        &saved,
+        worktree,
+        merge_source(&saved),
+        merge_target(&saved),
+        task,
+    )?;
+    let (preview, found) = inspect_pom_conflict(&saved, worktree, task)?;
+    if &found != expected {
+        return Err("POM 冲突或工作区已变化，请手工处理".into());
+    }
+    let (checkout_side, index_stage) = match side {
+        PomSide::Test => ("--ours", 2),
+        PomSide::Development => ("--theirs", 3),
+    };
+    let confirmed_blob = run(
+        worktree,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!(":{index_stage}:{}", preview.path),
+        ],
+        task,
+    )?;
+    run(
+        worktree,
+        &[
+            "--literal-pathspecs",
+            "checkout",
+            checkout_side,
+            "--",
+            &preview.path,
+        ],
+        task,
+    )?;
+    run(
+        worktree,
+        &["--literal-pathspecs", "add", "--", &preview.path],
+        task,
+    )?;
+    if run(
+        worktree,
+        &["rev-parse", "--verify", &format!(":{}", preview.path)],
+        task,
+    )? != confirmed_blob
+        || !run(worktree, &["ls-files", "--unmerged", "-z"], task)?.is_empty()
+    {
+        return Err("暂存内容与所选 POM 版本不符，请手工处理".into());
+    }
+    // 使用正常合并提交，保留仓库的提交钩子和签名规则。
+    run(worktree, &["commit", "--no-edit"], task)?;
+    if run(
+        worktree,
+        &["rev-parse", "--verify", &format!("HEAD:{}", preview.path)],
+        task,
+    )? != confirmed_blob
+        || sha(worktree, "HEAD^1")? != merge_target(&saved)
+        || sha(worktree, "HEAD^2")? != merge_source(&saved)
+    {
+        return Err("提交后的 POM 与所选版本不符，工作区已保留".into());
+    }
+    finish_merged_worktree(&saved, worktree, push, task)
 }
 fn validate_worktree(
     saved: &PlanRepository,
@@ -2357,80 +4289,527 @@ mod tests {
     }
 
     #[test]
-    fn pom_option_keeps_test_version_and_merges_development_code() {
-        let (dir, repo) = pom_fixture(
-            &[
-                "pom.xml",
-                "module space/子模块/pom.xml",
-                ":(glob)**/pom.xml",
-            ],
-            false,
-            false,
-        );
-        // A clean pom change must survive even when other poms conflict.
-        fs::create_dir(dir.path().join("clean module")).unwrap();
-        fs::write(dir.path().join("clean module/pom.xml"), "incoming\n").unwrap();
-        git(dir.path(), &["add", "clean module/pom.xml"]);
-        git(dir.path(), &["commit", "-m", "clean incoming"]);
+    fn pom_conflict_allows_clean_sides_when_base_has_historical_markers() {
+        let (dir, repo) = fixture();
+        let pom = dir.path().join("pom.xml");
+        let commit_pom = |content: &str| {
+            fs::write(&pom, content).unwrap();
+            git(dir.path(), &["add", "pom.xml"]);
+            git(dir.path(), &["commit", "-m", "update pom"]);
+        };
+        commit_pom("<<<<<<< HEAD\nold test\n=======\nold dev\n>>>>>>> dev\n");
+        git(dir.path(), &["branch", "-f", "test"]);
+        git(dir.path(), &["switch", "test"]);
+        commit_pom("<version>1-test</version>\n");
+        git(dir.path(), &["switch", "dev"]);
+        commit_pom("<version>2-dev</version>\n");
+
         let saved = snapshot(&repo, "merge").unwrap();
         let tmp = tempdir().unwrap();
         let worktree = tmp.path().join("merge");
-        perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(())).unwrap();
-        for path in [
-            "pom.xml",
-            "module space/子模块/pom.xml",
-            ":(glob)**/pom.xml",
-        ] {
-            assert_eq!(
-                git(dir.path(), &["show", &format!("test:{path}")]),
-                "test pom"
-            );
-        }
+        assert!(perform(&saved, "merge", false, &worktree, None, || Ok(())).is_err());
+        let files = read_pom_conflict_files(&saved, &worktree, None).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].blocks.len(), 1);
+        let (preview, snapshot) = inspect_pom_conflict(&saved, &worktree, None).unwrap();
+        assert_eq!(preview.test_content, "<version>1-test</version>\n");
+        assert_eq!(preview.development_content, "<version>2-dev</version>\n");
+        resolve_pom_worktree(&saved, &worktree, &snapshot, PomSide::Test, false, None).unwrap();
         assert_eq!(
-            git(dir.path(), &["show", "test:clean module/pom.xml"]),
-            "incoming"
+            git(dir.path(), &["show", "test:pom.xml"]),
+            "<version>1-test</version>"
         );
-        assert_eq!(git(dir.path(), &["show", "test:file"]), "development code");
-        assert_eq!(git(dir.path(), &["rev-parse", "test^1"]), saved.target_sha);
-        assert_eq!(git(dir.path(), &["rev-parse", "test^2"]), saved.source_sha);
-        assert_eq!(branch(dir.path()), "dev");
+    }
+
+    #[test]
+    fn pom_conflict_requires_confirmation_and_exposes_full_sides() {
+        let (_dir, repo) = pom_fixture(&["module space/子模块/pom.xml"], false, false);
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        assert!(
+            perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(())).is_err()
+        );
+        let (preview, snapshot) = inspect_pom_conflict(&saved, &worktree, None).unwrap();
+        assert_eq!(preview.path, "module space/子模块/pom.xml");
+        assert_eq!(preview.test_content, "test pom\n");
+        assert_eq!(preview.development_content, "development pom\n");
+        assert_eq!(preview.test_branch, "test");
+        assert_eq!(preview.development_branch, "dev");
+        assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.target_sha);
+
+        let file = worktree.join(&preview.path);
+        let before = fs::read(&file).unwrap();
+        let mut edited = before.clone();
+        edited.extend_from_slice(b"user edit\n");
+        fs::write(&file, &edited).unwrap();
+        assert!(resolve_pom_worktree(
+            &saved,
+            &worktree,
+            &snapshot,
+            PomSide::Development,
+            false,
+            None
+        )
+        .is_err());
+        assert_eq!(fs::read(&file).unwrap(), edited);
+        fs::write(&file, before).unwrap();
+        resolve_pom_worktree(
+            &saved,
+            &worktree,
+            &snapshot,
+            PomSide::Development,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            git(
+                Path::new(&saved.root),
+                &["show", "test:module space/子模块/pom.xml"]
+            ),
+            "development pom"
+        );
+        assert_eq!(
+            git(Path::new(&saved.root), &["show", "test:file"]),
+            "development code"
+        );
         assert!(!worktree.exists());
     }
 
     #[test]
-    fn pom_option_leaves_other_conflicts_uncommitted() {
-        let (_dir, repo) = pom_fixture(&["pom.xml", "not-pom.xml"], true, false);
-        let saved = snapshot(&repo, "merge").unwrap();
-        let tmp = tempdir().unwrap();
-        let worktree = tmp.path().join("merge");
-        let error = perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(()))
-            .unwrap_err();
-        assert!(error.contains("其他文件冲突"));
-        assert_eq!(
-            fs::read_to_string(worktree.join("pom.xml")).unwrap(),
-            "test pom\n"
-        );
-        assert_eq!(
-            git(&worktree, &["diff", "--name-only", "--diff-filter=U"]),
-            "file\nnot-pom.xml"
-        );
-        assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.target_sha);
-        assert!(worktree
-            .join(run(&worktree, &["rev-parse", "--git-path", "MERGE_HEAD"], None).unwrap())
-            .exists());
+    fn pom_conflict_leaves_multiple_files_and_modification_deletion_unresolved() {
+        for (paths, code_conflict, delete_test) in [
+            (&["pom.xml", "module/pom.xml"][..], false, false),
+            (&["pom.xml"][..], true, false),
+            (&["pom.xml"][..], false, true),
+        ] {
+            let (_dir, repo) = pom_fixture(paths, code_conflict, delete_test);
+            let saved = snapshot(&repo, "merge").unwrap();
+            let tmp = tempdir().unwrap();
+            let worktree = tmp.path().join("merge");
+            assert!(
+                perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(()))
+                    .is_err()
+            );
+            assert!(inspect_pom_conflict(&saved, &worktree, None).is_err());
+            let expected_paths: &[&str] = if delete_test {
+                &[]
+            } else if code_conflict {
+                &["pom.xml"]
+            } else {
+                &["module/pom.xml", "pom.xml"]
+            };
+            let index_before = git(&worktree, &["ls-files", "--stage"]);
+            let files = read_pom_conflict_files(&saved, &worktree, None).unwrap();
+            assert_eq!(
+                files
+                    .iter()
+                    .map(|file| file.path.as_str())
+                    .collect::<Vec<_>>(),
+                expected_paths
+            );
+            for file in files {
+                assert_eq!(
+                    file.blocks,
+                    vec![PomConflictBlock {
+                        line: 1,
+                        test_content: "test pom\n".into(),
+                        development_content: "development pom\n".into(),
+                        context: None,
+                    }]
+                );
+            }
+            assert_eq!(git(&worktree, &["ls-files", "--stage"]), index_before);
+            let still_unmerged = git(&worktree, &["diff", "--name-only", "--diff-filter=U"]);
+            assert!(still_unmerged.lines().any(|path| path == "pom.xml"));
+            assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.target_sha);
+        }
     }
 
     #[test]
-    fn pom_option_preserves_test_side_deletion() {
-        let (dir, repo) = pom_fixture(&["pom.xml", "module space/pom.xml"], false, true);
+    fn pom_conflict_rejects_multiple_blocks() {
+        let (dir, repo) = fixture();
+        let middle = (1..=20)
+            .map(|i| format!("unchanged {i}\n"))
+            .collect::<String>();
+        let pom = dir.path().join("pom.xml");
+        let write_pom = |version| {
+            fs::write(&pom, format!("first {version}\n{middle}last {version}\n")).unwrap();
+            git(dir.path(), &["add", "pom.xml"]);
+            git(dir.path(), &["commit", "-m", version]);
+        };
+        write_pom("base");
+        git(dir.path(), &["branch", "-f", "test"]);
+        write_pom("dev");
+        git(dir.path(), &["switch", "test"]);
+        write_pom("test");
+        git(dir.path(), &["switch", "dev"]);
         let saved = snapshot(&repo, "merge").unwrap();
         let tmp = tempdir().unwrap();
         let worktree = tmp.path().join("merge");
-        perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(())).unwrap();
-        assert!(git(dir.path(), &["ls-tree", "-r", "--name-only", "test"])
+        assert!(perform(&saved, "merge", false, &worktree, None, || Ok(())).is_err());
+        let conflict = fs::read_to_string(worktree.join("pom.xml")).unwrap();
+        assert_eq!(conflict.matches("<<<<<<< ").count(), 2);
+        assert!(inspect_pom_conflict(&saved, &worktree, None).is_err());
+        let files = read_pom_conflict_files(&saved, &worktree, None).unwrap();
+        assert_eq!(
+            files[0].blocks,
+            vec![
+                PomConflictBlock {
+                    line: 1,
+                    test_content: "first test\n".into(),
+                    development_content: "first dev\n".into(),
+                    context: None,
+                },
+                PomConflictBlock {
+                    line: 26,
+                    test_content: "last test\n".into(),
+                    development_content: "last dev\n".into(),
+                    context: None,
+                },
+            ]
+        );
+        assert_eq!(
+            fs::read_to_string(worktree.join("pom.xml")).unwrap(),
+            conflict
+        );
+        assert!(is_one_conflict_block(
+            "<<<<<<< HEAD\nours\n||||||| base\nbase\n=======\ntheirs\n>>>>>>> dev\n"
+        ));
+    }
+
+    #[test]
+    fn pom_blocks_resolution_keeps_automatic_merges_and_checks_all_choices_before_writing() {
+        let (dir, repo) = fixture();
+        let render = |changes: &[(usize, &str)]| {
+            (1..=64)
+                .map(|i| {
+                    let text = changes
+                        .iter()
+                        .find(|(line, _)| *line == i)
+                        .map_or("base", |(_, text)| *text);
+                    format!("line {i}: {text}\n")
+                })
+                .collect::<String>()
+        };
+        let path = dir.path().join("pom.xml");
+        let commit_pom = |message, changes: &[(usize, &str)]| {
+            fs::write(&path, render(changes)).unwrap();
+            git(dir.path(), &["add", "pom.xml"]);
+            git(dir.path(), &["commit", "-m", message]);
+        };
+        commit_pom("base", &[]);
+        git(dir.path(), &["branch", "-f", "test"]);
+        commit_pom("dev", &[(1, "dev"), (28, "dev"), (64, "dev")]);
+        git(dir.path(), &["switch", "test"]);
+        commit_pom("test", &[(1, "test"), (12, "test"), (64, "test")]);
+        git(dir.path(), &["switch", "dev"]);
+        let remote = tempdir().unwrap();
+        git(remote.path(), &["init", "--bare"]);
+        git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        git(dir.path(), &["push", "origin", "dev", "test"]);
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let mut entry = paused_batch();
+        entry.plan.repositories = vec![saved.clone()];
+        entry.state.repositories.truncate(1);
+        let operation = tmp.path().join(&entry.plan.plan_id);
+        fs::create_dir(&operation).unwrap();
+        let worktree = operation.join("0");
+        assert!(perform(&saved, "merge", true, &worktree, None, || Ok(())).is_err());
+        let (expected, files) = inspect_pom_blocks(&saved, &worktree, None).unwrap();
+        assert!(!expected.manual_remaining);
+        assert_eq!(files[0].preview.blocks.len(), 2);
+        let mut choices = block_choices(&files);
+        choices[1].side = PomSide::Development;
+        let result = &mut entry.state.repositories[0];
+        result.repo_id = repo.id.clone();
+        result.worktree_path = worktree.to_string_lossy().into();
+        entry.pom_blocks_snapshots.insert(repo.id.clone(), expected);
+        let journal = operation.join("operation.json");
+        let contents = journal_json(&entry).unwrap();
+        assert!(!contents.contains("line 1: test"));
+        fs::write(&journal, contents).unwrap();
+        let restored = restore_entry(&journal).unwrap();
+        let result = &restored.state.repositories[0];
+        assert_eq!(
+            serde_json::to_value(result).unwrap()["pomBlocksResolution"],
+            serde_json::json!({"push": true, "manualRemaining": false})
+        );
+        assert_eq!(result.pom_conflict_files[0].blocks.len(), 2);
+        let expected = &restored.pom_blocks_snapshots[&repo.id];
+        let saved = &restored.plan.repositories[0];
+        let path = worktree.join("pom.xml");
+        let original = fs::read(&path).unwrap();
+        let index = git(&worktree, &["ls-files", "--stage"]);
+        for invalid in [&choices[..1], &[choices[0].clone(), choices[0].clone()]] {
+            assert!(
+                resolve_pom_blocks_worktree(saved, &worktree, expected, invalid, false, None)
+                    .is_err()
+            );
+            assert_eq!(fs::read(&path).unwrap(), original);
+            assert_eq!(git(&worktree, &["ls-files", "--stage"]), index);
+        }
+        fs::write(&path, [original.as_slice(), b"manual edit\n"].concat()).unwrap();
+        assert!(
+            resolve_pom_blocks_worktree(saved, &worktree, expected, &choices, false, None).is_err()
+        );
+        assert!(fs::read(&path).unwrap().ends_with(b"manual edit\n"));
+        fs::write(&path, &original).unwrap();
+        fs::write(worktree.join("other"), "added to index\n").unwrap();
+        git(&worktree, &["add", "other"]);
+        assert!(
+            resolve_pom_blocks_worktree(saved, &worktree, expected, &choices, false, None).is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        git(&worktree, &["rm", "-f", "other"]);
+        assert!(
+            !resolve_pom_blocks_worktree(saved, &worktree, expected, &choices, true, None).unwrap()
+        );
+        assert_eq!(
+            git(remote.path(), &["show", "test:pom.xml"]),
+            render(&[(1, "test"), (12, "test"), (28, "dev"), (64, "dev")]).trim_end()
+        );
+    }
+
+    fn block_choices(files: &[ScannedPomFile]) -> Vec<PomBlockChoice> {
+        files
+            .iter()
+            .flat_map(|file| {
+                file.preview.blocks.iter().map(|block| PomBlockChoice {
+                    path: file.preview.path.clone(),
+                    line: block.line,
+                    side: PomSide::Test,
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pom_blocks_resolution_stages_only_supported_poms_when_other_conflicts_remain() {
+        let (dir, repo) = pom_fixture(&["pom.xml", "module/pom.xml"], true, false);
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        assert!(perform(&saved, "merge", false, &worktree, None, || Ok(())).is_err());
+        // POM 手工改动后仍有可预览的标记，但不能加入本次应用。
+        let module = worktree.join("module/pom.xml");
+        let edited = format!(
+            "{}manually edited POM\n",
+            fs::read_to_string(&module).unwrap()
+        );
+        fs::write(&module, &edited).unwrap();
+        assert_eq!(
+            read_pom_conflict_files(&saved, &worktree, None)
+                .unwrap()
+                .len(),
+            2
+        );
+        let (expected, files) = inspect_pom_blocks(&saved, &worktree, None).unwrap();
+        assert!(expected.manual_remaining);
+        assert_eq!(files.len(), 1);
+        let choices = block_choices(&files);
+        assert!(
+            resolve_pom_blocks_worktree(&saved, &worktree, &expected, &choices, true, None)
+                .unwrap()
+        );
+        assert_eq!(git(&worktree, &["show", ":pom.xml"]), "test pom");
+        assert_eq!(
+            git(&worktree, &["diff", "--name-only", "--diff-filter=U"]),
+            "file\nmodule/pom.xml"
+        );
+        assert_eq!(
+            fs::read_to_string(worktree.join("module/pom.xml")).unwrap(),
+            edited
+        );
+        assert_eq!(sha(dir.path(), "test").unwrap(), saved.target_sha);
+    }
+
+    #[test]
+    fn pom_conflict_preview_includes_all_branch_differences_with_one_conflict_block() {
+        let (dir, repo) = fixture();
+        let pom = dir.path().join("pom.xml");
+        let commit_pom = |side, changes: &[usize]| {
+            let mut content = String::from("<project>\n");
+            for i in 1..=56 {
+                let version = if changes.contains(&i) { side } else { "base" };
+                content.push_str(&format!("  <entry id=\"{i}\">{version}</entry>\n"));
+            }
+            content.push_str("</project>\n");
+            fs::write(&pom, content).unwrap();
+            git(dir.path(), &["add", "pom.xml"]);
+            git(dir.path(), &["commit", "-m", side]);
+        };
+        commit_pom("base", &[]);
+        git(dir.path(), &["branch", "-f", "test"]);
+        git(dir.path(), &["switch", "test"]);
+        commit_pom("test", &[4, 12, 28, 44]);
+        git(dir.path(), &["switch", "dev"]);
+        commit_pom("dev", &[4, 20, 36, 52]);
+        git(dir.path(), &["config", "diff.interHunkContext", "100"]);
+        git(dir.path(), &["config", "color.diff", "always"]);
+
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        assert!(perform(&saved, "merge", false, &worktree, None, || Ok(())).is_err());
+        let merged_pom = worktree.join("pom.xml");
+        let before = fs::read_to_string(&merged_pom).unwrap();
+        let index_before = git(&worktree, &["ls-files", "--stage"]);
+        assert_eq!(before.matches("<<<<<<< ").count(), 1);
+        assert!(before.contains("<entry id=\"12\">test</entry>"));
+        assert!(before.contains("<entry id=\"20\">dev</entry>"));
+
+        let files = read_pom_conflict_files(&saved, &worktree, None).unwrap();
+        assert_eq!(files.len(), 1);
+        let file = &files[0];
+        assert_eq!(file.blocks.len(), 1);
+        let response = serde_json::to_value(file).unwrap();
+        let diff = response["branchDiff"].as_str().unwrap();
+        assert!(diff.starts_with("@@ "));
+        assert_eq!(
+            diff.lines().filter(|line| line.starts_with("@@ ")).count(),
+            7
+        );
+        let changed_lines = [
+            (4, "test", "dev"),
+            (12, "test", "base"),
+            (20, "base", "dev"),
+            (28, "test", "base"),
+            (36, "base", "dev"),
+            (44, "test", "base"),
+            (52, "base", "dev"),
+        ]
+        .into_iter()
+        .flat_map(|(i, from, to)| {
+            [
+                format!("-  <entry id=\"{i}\">{from}</entry>"),
+                format!("+  <entry id=\"{i}\">{to}</entry>"),
+            ]
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(
+            diff.lines()
+                .filter(|line| !line.starts_with("@@ "))
+                .collect::<Vec<_>>(),
+            changed_lines
+        );
+        assert_eq!(fs::read_to_string(merged_pom).unwrap(), before);
+        assert_eq!(git(&worktree, &["ls-files", "--stage"]), index_before);
+        assert!(inspect_pom_conflict(&saved, &worktree, None).is_ok());
+    }
+
+    #[test]
+    fn pom_conflict_context_distinguishes_repeated_versions_and_branch_line_offsets() {
+        let (dir, repo) = fixture();
+        let pom = dir.path().join("pom.xml");
+        let commit_pom = |side, version, artifact, property, added: bool| {
+            let padding = "  <!-- keep hunks separate -->\n".repeat(12);
+            let extra = if added {
+                "  <!-- development only -->\n"
+            } else {
+                ""
+            };
+            let xml = format!(
+                "<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n\
+                 {extra}{padding}  <parent>\n    <groupId>org.example</groupId>\n    <artifactId>{artifact}</artifactId>\n    <version>{version}</version>\n  </parent>\n\
+                 {padding}  <properties>\n    <java.version>{property}</java.version>\n  </properties>\n\
+                 {padding}  <dependencies>\n    <dependency>\n      <groupId>org.example</groupId>\n      <artifactId>library</artifactId>\n      <version>{version}</version>\n    </dependency>\n  </dependencies>\n\
+                 {padding}  <build><plugins><plugin>\n    <artifactId>maven-compiler-plugin</artifactId>\n    <version>{version}</version>\n  </plugin></plugins></build>\n</project>\n"
+            );
+            fs::write(&pom, xml).unwrap();
+            git(dir.path(), &["add", "pom.xml"]);
+            git(dir.path(), &["commit", "-m", side]);
+        };
+        commit_pom("base", "1", "base-parent", "17", false);
+        git(dir.path(), &["branch", "-f", "test"]);
+        commit_pom("dev", "3", "dev-parent", "17", true);
+        git(dir.path(), &["switch", "test"]);
+        commit_pom("test", "2", "test-parent", "21", false);
+        git(dir.path(), &["switch", "dev"]);
+        git(dir.path(), &["config", "merge.conflictStyle", "diff3"]);
+
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        assert!(perform(&saved, "merge", false, &worktree, None, || Ok(())).is_err());
+        let files = read_pom_conflict_files(&saved, &worktree, None).unwrap();
+        let response = serde_json::to_value(&files[0]).unwrap();
+        let blocks = response["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3);
+        let parent = blocks[0]["context"].as_str().unwrap();
+        assert!(parent.contains("父 POM"));
+        assert!(parent.contains("org.example:test-parent"));
+        assert!(parent.contains("org.example:dev-parent"));
+        assert_eq!(blocks[1]["context"], "依赖 org.example:library");
+        assert_eq!(
+            blocks[2]["context"],
+            "插件 org.apache.maven.plugins:maven-compiler-plugin"
+        );
+
+        let diff = response["branchDiff"].as_str().unwrap();
+        let contexts = response["diffContexts"].as_object().unwrap();
+        let headers = diff
             .lines()
-            .all(|p| Path::new(p).file_name() != Some(std::ffi::OsStr::new("pom.xml"))));
-        assert_eq!(git(dir.path(), &["show", "test:file"]), "development code");
+            .filter(|line| line.starts_with("@@ "))
+            .collect::<Vec<_>>();
+        assert_eq!(contexts.len(), headers.len());
+        assert!(headers.iter().all(|header| contexts.contains_key(*header)));
+        assert_eq!(contexts[headers[0]], "测试：第 1 行后；开发：第 2 行");
+        assert!(contexts.values().any(|value| value == "属性 java.version"));
+        assert!(contexts
+            .values()
+            .any(|value| value == "插件 org.apache.maven.plugins:maven-compiler-plugin"));
+    }
+
+    #[test]
+    fn pom_conflict_preview_preserves_crlf_empty_side_and_omits_diff3_base() {
+        let content = "context\r\n<<<<<<<<< HEAD\r\n||||||||| base\r\nremoved\r\n=========\r\n  incoming  \r\n\r\n>>>>>>>>> dev";
+        assert_eq!(
+            parse_pom_conflict_blocks(content, 9),
+            Some(vec![PomConflictBlock {
+                line: 2,
+                test_content: String::new(),
+                development_content: "  incoming  \r\n\r\n".into(),
+                context: None,
+            }])
+        );
+        assert!(parse_pom_conflict_blocks("<<<<<<< HEAD\nours\n=======\ntheirs\n", 7).is_none());
+    }
+
+    #[test]
+    fn pom_conflict_push_is_explicit_and_uses_selected_test_content() {
+        let (dir, repo) = pom_fixture(&["pom.xml"], false, false);
+        let remote = tempdir().unwrap();
+        git(remote.path(), &["init", "--bare"]);
+        git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        git(dir.path(), &["push", "origin", "dev", "test"]);
+        let saved = snapshot(&repo, "merge").unwrap();
+        let tmp = tempdir().unwrap();
+        let worktree = tmp.path().join("merge");
+        assert!(perform(&saved, "merge", true, &worktree, None, || Ok(())).is_err());
+        assert_eq!(
+            sha(remote.path(), "refs/heads/test").unwrap(),
+            saved.target_sha
+        );
+        let (_, conflict) = inspect_pom_conflict(&saved, &worktree, None).unwrap();
+        resolve_pom_worktree(&saved, &worktree, &conflict, PomSide::Test, true, None).unwrap();
+        assert_ne!(
+            sha(remote.path(), "refs/heads/test").unwrap(),
+            saved.target_sha
+        );
+        assert_eq!(git(remote.path(), &["show", "test:pom.xml"]), "test pom");
+        assert_eq!(
+            git(remote.path(), &["show", "test:file"]),
+            "development code"
+        );
         assert!(!worktree.exists());
     }
 
@@ -2489,7 +4868,13 @@ mod tests {
         assert!(
             perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(())).is_err()
         );
-        assert!(unmerged_paths(&worktree, None).unwrap().is_empty());
+        let (_, snapshot) = inspect_pom_conflict(&saved, &worktree, None).unwrap();
+        assert!(
+            resolve_pom_worktree(&saved, &worktree, &snapshot, PomSide::Test, false, None).is_err()
+        );
+        assert!(run(&worktree, &["ls-files", "--unmerged", "-z"], None)
+            .unwrap()
+            .is_empty());
         assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.target_sha);
         assert!(worktree.is_dir());
     }
@@ -2512,7 +4897,13 @@ mod tests {
         assert!(
             perform_with_options(&saved, "merge", false, true, &worktree, None, || Ok(())).is_err()
         );
-        assert!(unmerged_paths(&worktree, None).unwrap().is_empty());
+        let (_, snapshot) = inspect_pom_conflict(&saved, &worktree, None).unwrap();
+        assert!(
+            resolve_pom_worktree(&saved, &worktree, &snapshot, PomSide::Test, false, None).is_err()
+        );
+        assert!(run(&worktree, &["ls-files", "--unmerged", "-z"], None)
+            .unwrap()
+            .is_empty());
         assert_eq!(sha(&worktree, "HEAD").unwrap(), saved.target_sha);
         assert!(worktree.is_dir());
     }
@@ -3766,6 +6157,75 @@ mod tests {
     }
 
     #[test]
+    fn pom_conflict_journal_rebuilds_previews_without_persisting_bodies() {
+        for (paths, also_conflicts_in_code) in [
+            (&["pom.xml"][..], false),
+            (&["module/pom.xml", "pom.xml"][..], true),
+        ] {
+            let (_dir, repo) = pom_fixture(paths, also_conflicts_in_code, false);
+            let saved = snapshot(&repo, "merge").unwrap();
+            let tmp = tempdir().unwrap();
+            let mut entry = paused_batch();
+            entry.plan.repositories = vec![saved.clone()];
+            entry.state.repositories.truncate(1);
+            let result = &mut entry.state.repositories[0];
+            result.repo_id = repo.id.clone();
+            result.status = "error".into();
+            let operation = tmp.path().join(&entry.plan.plan_id);
+            fs::create_dir(&operation).unwrap();
+            let worktree = operation.join("0");
+            assert!(perform(&saved, "merge", false, &worktree, None, || Ok(())).is_err());
+            result.worktree_path = worktree.to_string_lossy().into();
+            result.pom_conflict_files = read_pom_conflict_files(&saved, &worktree, None).unwrap();
+            let expected = result.pom_conflict_files.clone();
+            if !also_conflicts_in_code {
+                let (choice, snapshot) = inspect_pom_conflict(&saved, &worktree, None).unwrap();
+                result.pom_conflict = Some(choice);
+                entry.pom_conflicts.insert(repo.id, snapshot);
+            }
+            let response = serde_json::to_value(result).unwrap();
+            assert_eq!(
+                response["pomConflictFiles"][0]["blocks"][0],
+                serde_json::json!({
+                    "line": 1, "testContent": "test pom\n", "developmentContent": "development pom\n"
+                })
+            );
+            assert_eq!(
+                response["pomConflictFiles"][0]["branchDiff"],
+                "@@ -1 +1 @@\n-test pom\n+development pom\n"
+            );
+            let contents = journal_json(&entry).unwrap();
+            assert!(!contents.contains("test pom"));
+            assert!(!contents.contains("development pom"));
+            assert!(!contents.contains("pomConflictFiles"));
+            assert!(!contents.contains("branchDiff"));
+            let journal = operation.join("operation.json");
+            fs::write(&journal, contents).unwrap();
+            let restored = restore_entry(&journal).unwrap();
+            let result = &restored.state.repositories[0];
+            assert_eq!(result.pom_conflict_files, expected);
+            assert_eq!(
+                result.pom_conflict.as_ref().map(|choice| choice.push),
+                (!also_conflicts_in_code).then_some(true)
+            );
+
+            // 已手工暂存解决的 POM 不应在下次启动后继续显示。
+            fs::write(worktree.join("pom.xml"), "resolved\n").unwrap();
+            git(&worktree, &["add", "--", "pom.xml"]);
+            let restored = restore_entry(&journal).unwrap();
+            let result = &restored.state.repositories[0];
+            assert_eq!(
+                result.pom_conflict_files,
+                expected
+                    .into_iter()
+                    .filter(|file| file.path != "pom.xml")
+                    .collect::<Vec<_>>()
+            );
+            assert!(result.pom_conflict.is_none());
+        }
+    }
+
+    #[test]
     fn journal_restores_as_paused_and_rejects_path_escape() {
         let (_dir, repo) = fixture();
         let saved = snapshot(&repo, "merge").unwrap();
@@ -3791,8 +6251,14 @@ mod tests {
                     status: "running".into(),
                     message: String::new(),
                     worktree_path: operation.join("0").to_string_lossy().into(),
+                    pom_conflict: None,
+                    pom_conflict_files: Vec::new(),
+                    pom_blocks_resolution: None,
                 }],
             },
+            continuation: None,
+            pom_conflicts: HashMap::new(),
+            pom_blocks_snapshots: HashMap::new(),
         };
         let journal = operation.join("operation.json");
         let mut legacy = serde_json::to_value(&entry).unwrap();
@@ -3810,6 +6276,326 @@ mod tests {
         fs::write(&journal, serde_json::to_vec(&entry).unwrap()).unwrap();
         assert!(restore_entry(&journal).is_err());
     }
+    fn paused_batch() -> Entry {
+        let (_dir, repo) = fixture();
+        let saved = snapshot(&repo, "merge").unwrap();
+        let ids = ["first", "failed", "last", "middle"];
+        let id = uuid::Uuid::new_v4().to_string();
+        let entry = serde_json::json!({
+            "plan": {
+                "planId": id, "projectId": "p", "operation": "merge", "push": true,
+                "keepTestPom": true,
+                "repositories": ids.map(|id| {
+                    let mut saved = saved.clone();
+                    saved.repository.id = id.into();
+                    saved
+                })
+            },
+            "state": {
+                "planId": id, "taskId": "old-task", "status": "paused",
+                "repositories": ids.into_iter().zip(["success", "error", "pending", "pending"])
+                    .map(|(id, status)| serde_json::json!({
+                        "repoId": id, "status": status, "message": "", "worktreePath": ""
+                    })).collect::<Vec<_>>()
+            }
+        });
+        serde_json::from_value(entry).unwrap()
+    }
+
+    #[test]
+    fn worktree_ide_uses_the_installed_application_bundle_ids() {
+        assert_eq!(
+            WorktreeIde::WebStorm.bundle_ids(),
+            ["com.jetbrains.WebStorm"]
+        );
+        assert_eq!(
+            WorktreeIde::Idea.bundle_ids(),
+            ["com.jetbrains.intellij", "com.jetbrains.intellij.ce"]
+        );
+    }
+
+    #[test]
+    fn ide_worktree_uses_the_retained_directory_at_the_recorded_repository_index() {
+        let tmp = tempdir().unwrap();
+        let mut batch = paused_batch();
+        let operation = tmp.path().join(&batch.state.plan_id);
+        let worktree = operation.join("1");
+        fs::create_dir_all(&worktree).unwrap();
+        batch.state.repositories[1].worktree_path = worktree.to_string_lossy().into();
+
+        assert_eq!(
+            retained_worktree_for_ide(tmp.path(), &batch.state, "failed").unwrap(),
+            worktree
+        );
+        assert_eq!(
+            retained_worktree_for_ide(tmp.path(), &batch.state, "last").unwrap_err(),
+            "该仓库没有本次操作工作区"
+        );
+        assert_eq!(
+            retained_worktree_for_ide(tmp.path(), &batch.state, "unknown").unwrap_err(),
+            "仓库不在计划中"
+        );
+        for status in ["running", "aborting"] {
+            batch.state.status = status.into();
+            assert_eq!(
+                retained_worktree_for_ide(tmp.path(), &batch.state, "failed").unwrap_err(),
+                "请先等待任务结束"
+            );
+        }
+    }
+
+    #[test]
+    fn ide_worktree_rejects_unavailable_or_mismatched_directories() {
+        let tmp = tempdir().unwrap();
+        let mut batch = paused_batch();
+        let operation = tmp.path().join(&batch.state.plan_id);
+        let worktree = operation.join("1");
+        let other = operation.join("0");
+        fs::create_dir_all(&other).unwrap();
+        batch.state.repositories[1].worktree_path = other.to_string_lossy().into();
+        assert!(retained_worktree_for_ide(tmp.path(), &batch.state, "failed").is_err());
+
+        batch.state.repositories[1].worktree_path = worktree.to_string_lossy().into();
+        assert!(retained_worktree_for_ide(tmp.path(), &batch.state, "failed").is_err());
+        fs::write(&worktree, "not a directory").unwrap();
+        assert!(retained_worktree_for_ide(tmp.path(), &batch.state, "failed").is_err());
+
+        #[cfg(unix)]
+        {
+            fs::remove_file(&worktree).unwrap();
+            std::os::unix::fs::symlink(&other, &worktree).unwrap();
+            assert!(retained_worktree_for_ide(tmp.path(), &batch.state, "failed").is_err());
+        }
+    }
+
+    #[test]
+    fn auto_resume_selects_only_pending_in_original_order_after_successful_cleanup() {
+        let mut batch = paused_batch();
+        batch.state.task_id = "resolve-task".into();
+        batch.state.status = "aborting".into();
+        batch.state.repositories[1].worktree_path = "/old/worktree".into();
+        for saved in &mut batch.plan.repositories {
+            saved.remote_identity = 1;
+        }
+        for action in [
+            WorktreeAction::Complete,
+            WorktreeAction::ResolvePom(PomSide::Test),
+            WorktreeAction::ResolvePomBlocks(Vec::new()),
+        ] {
+            let mut entry = batch.clone();
+            let original_plan = serde_json::to_value(&entry.plan).unwrap();
+            assert_eq!(
+                record_worktree_outcome(&mut entry, 1, &action, &Ok(false)),
+                vec![2, 3]
+            );
+            assert_eq!(entry.state.status, "running");
+            assert_eq!(entry.state.task_id, "resolve-task");
+            assert_eq!(entry.state.repositories[1].status, "success");
+            assert!(entry.state.repositories[1].worktree_path.is_empty());
+            assert_eq!(serde_json::to_value(&entry.plan).unwrap(), original_plan);
+            assert_eq!(entry.state.repositories[0].status, "success");
+        }
+    }
+
+    #[test]
+    fn auto_resume_keeps_pending_after_abort_failure_or_other_conflicts() {
+        let mut batch = paused_batch();
+        batch.state.repositories[1].worktree_path = "/old/worktree".into();
+        for saved in &mut batch.plan.repositories {
+            saved.remote_identity = 1;
+        }
+        for (action, outcome, expect_worktree) in [
+            (WorktreeAction::Abort, Ok(false), false),
+            (WorktreeAction::Complete, Err("失败".into()), true),
+            (WorktreeAction::ResolvePomBlocks(Vec::new()), Ok(true), true),
+        ] {
+            let mut entry = batch.clone();
+            assert!(record_worktree_outcome(&mut entry, 1, &action, &outcome).is_empty());
+            assert_eq!(entry.state.status, "paused");
+            assert_eq!(
+                !entry.state.repositories[1].worktree_path.is_empty(),
+                expect_worktree
+            );
+            assert_eq!(entry.state.repositories[2].status, "pending");
+            assert_eq!(entry.state.repositories[3].status, "pending");
+        }
+        batch.state.repositories[0].worktree_path = "/other/worktree".into();
+        assert!(
+            record_worktree_outcome(&mut batch, 1, &WorktreeAction::Complete, &Ok(false))
+                .is_empty()
+        );
+        assert_eq!(batch.state.status, "paused");
+        assert_eq!(batch.state.repositories[0].worktree_path, "/other/worktree");
+    }
+
+    #[test]
+    fn auto_resume_requires_verified_original_remote_identity_for_all_pending() {
+        let mut entry = paused_batch();
+        entry.state.repositories[1].status = "success".into();
+        let (local, repo) = fixture();
+        let remote = tempdir().unwrap();
+        git(
+            local.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        let mut saved = snapshot(&repo, "merge").unwrap();
+        saved.repository.id = entry.plan.repositories[2].repository.id.clone();
+        entry.plan.repositories[2] = saved;
+        entry.plan.repositories[3].remote_identity = 1;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(&entry.plan.plan_id).join("operation.json");
+        let json = journal_json(&entry).unwrap();
+        assert!(!json.contains(remote.path().to_str().unwrap()));
+        assert!(!serde_json::to_string(&entry.plan)
+            .unwrap()
+            .contains("remoteIdentity"));
+        crate::config::atomic_write(&path, &json).unwrap();
+        let restored = restore_entry(&path).unwrap();
+        assert_eq!(restored.state.status, "paused");
+        assert_eq!(auto_resume_indices(&restored).unwrap(), vec![2, 3]);
+        let restored_pending = &restored.plan.repositories[2];
+        revalidate(restored_pending, "merge").unwrap();
+        let changed_remote = tempdir().unwrap();
+        git(
+            local.path(),
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                changed_remote.path().to_str().unwrap(),
+            ],
+        );
+        assert!(revalidate(restored_pending, "merge").is_err());
+
+        fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
+        let mut legacy = restore_entry(&path).unwrap();
+        assert!(
+            record_worktree_outcome(&mut legacy, 1, &WorktreeAction::Complete, &Ok(false))
+                .is_empty()
+        );
+        assert!(legacy.state.repositories[1].message.contains("「继续」"));
+        assert_eq!(pending_repositories(&legacy).unwrap().count(), 2);
+
+        entry.plan.repositories[3].remote_identity = 0;
+        assert!(auto_resume_indices(&entry).is_err());
+    }
+
+    #[test]
+    fn remaining_preflight_uses_legacy_options_and_pending_order_with_current_configuration() {
+        let entry = paused_batch();
+        let mut middle = entry.plan.repositories[3].repository.clone();
+        middle.test_branch = "new-test".into();
+        let last = entry.plan.repositories[2].repository.clone();
+        let configured = [middle.clone(), last.clone()];
+
+        let repositories = remaining_repositories(&entry, &configured).unwrap();
+        assert!(entry.plan.push && entry.plan.keep_test_pom);
+        assert_eq!(entry.plan.operation, "merge");
+        assert_eq!(repositories[0].id, last.id);
+        assert_eq!(repositories[1].id, middle.id);
+        assert_eq!(repositories[1].test_branch, "new-test");
+        assert!(remaining_repositories(&entry, &[last]).is_err());
+    }
+
+    #[test]
+    fn remaining_preflight_requires_paused_pending_and_no_open_worktree() {
+        let mut entry = paused_batch();
+        let configured: Vec<_> = entry
+            .plan
+            .repositories
+            .iter()
+            .map(|r| r.repository.clone())
+            .collect();
+        for status in ["prepared", "running", "aborting", "cancelled", "success"] {
+            entry.state.status = status.into();
+            assert!(
+                remaining_repositories(&entry, &configured).is_err(),
+                "{status}"
+            );
+        }
+        entry.state.status = "paused".into();
+        entry.state.repositories[1].worktree_path = "/old/worktree".into();
+        assert!(remaining_repositories(&entry, &configured).is_err());
+        entry.state.repositories[1].worktree_path.clear();
+        for result in &mut entry.state.repositories {
+            if result.status == "pending" {
+                result.status = "aborted".into();
+            }
+        }
+        assert!(remaining_repositories(&entry, &configured).is_err());
+    }
+
+    #[test]
+    fn remaining_preflight_rejects_unconfirmed_legacy_plan_after_restore() {
+        let mut source = paused_batch();
+        source.state.task_id.clear();
+        source.state.status = "prepared".into();
+        for result in &mut source.state.repositories {
+            result.status = "pending".into();
+        }
+        let temp = tempdir().unwrap();
+        let journal = temp
+            .path()
+            .join(&source.plan.plan_id)
+            .join("operation.json");
+        crate::config::atomic_write(&journal, &serde_json::to_string(&source).unwrap()).unwrap();
+        let restored = restore_entry(&journal).unwrap();
+        assert_eq!(restored.state.status, "paused");
+        assert!(pending_repositories(&restored).is_err());
+    }
+
+    #[test]
+    fn remaining_preflight_recovers_handoff_with_all_repositories_pending() {
+        let source = paused_batch();
+        let source_id = source.plan.plan_id.clone();
+        let mut child = source.clone();
+        let child_id = uuid::Uuid::new_v4().to_string();
+        child.plan.plan_id = child_id.clone();
+        child.plan.repositories.drain(..2);
+        child.state.plan_id = child_id.clone();
+        child.state.repositories.drain(..2);
+        child.state.task_id.clear();
+        child.state.status = "prepared".into();
+        child.continuation = Some(Continuation {
+            source_plan_id: source_id.clone(),
+            started: false,
+        });
+        let temp = tempdir().unwrap();
+        let persist = |entry: &Entry| {
+            crate::config::atomic_write(
+                &temp.path().join(&entry.plan.plan_id).join("operation.json"),
+                &serde_json::to_string(entry).unwrap(),
+            )
+        };
+        persist(&source).unwrap();
+        persist(&child).unwrap();
+        let mut restored = HashMap::new();
+        load_operations(temp.path(), &mut restored, "p").unwrap();
+        assert!(continuation_source(&restored, &source_id).is_ok());
+        assert!(!restored.contains_key(&child_id));
+
+        child.state.status = "running".into();
+        assert!(start_continuation(&mut child, "new-task", |_| Err("落盘失败".into())).is_err());
+        assert!(!child.continuation.as_ref().unwrap().started);
+        assert!(child.state.task_id.is_empty());
+        restored.insert(child_id.clone(), child.clone());
+        assert!(continuation_source(&restored, &source_id).is_err());
+
+        start_continuation(&mut child, "new-task", persist).unwrap();
+        restored.clear();
+        load_operations(temp.path(), &mut restored, "p").unwrap();
+        assert!(continuation_source(&restored, &source_id).is_err());
+        let recovered = continuation_source(&restored, &child_id).unwrap();
+        assert_eq!(recovered.state.task_id, "new-task");
+        assert_eq!(pending_repositories(recovered).unwrap().count(), 2);
+
+        child.state.status = "success".into();
+        persist(&child).unwrap();
+        restored.clear();
+        load_operations(temp.path(), &mut restored, "p").unwrap();
+        assert!(continuation_source(&restored, &source_id).is_err());
+    }
+
     #[test]
     fn changing_remote_identity_invalidates_the_plan() {
         let (dir, repo) = fixture();

@@ -65,6 +65,11 @@ export interface BackendGitPlan {
   keepTestPom?: boolean;
   repositories: BackendGitPlanRepository[];
 }
+export interface PomBlockChoice {
+  path: string;
+  line: number;
+  side: 'test' | 'development';
+}
 export interface BackendGitOperation {
   planId: string;
   taskId: string;
@@ -74,6 +79,21 @@ export interface BackendGitOperation {
     status: 'pending' | 'running' | 'success' | 'error' | 'cancelled' | 'aborted';
     message: string;
     worktreePath: string;
+    pomBlocksResolution?: { push: boolean; manualRemaining: boolean } | null;
+    pomConflictFiles?: {
+      path: string;
+      blocks: { line: number; testContent: string; developmentContent: string; context?: string }[];
+      branchDiff?: string;
+      diffContexts?: Record<string, string>;
+    }[];
+    pomConflict?: {
+      path: string;
+      testContent: string;
+      developmentContent: string;
+      testBranch: string;
+      developmentBranch: string;
+      push?: boolean;
+    } | null;
   }[];
 }
 export interface ScmStatus {
