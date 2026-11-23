@@ -30,6 +30,10 @@ function repositoryUrl(value: string): string {
   }
 }
 
+export function hasMatchableModuleUrl(modules: ScmModule[]): boolean {
+  return modules.some((module) => !!repositoryUrl(module.gitRemoteUrl ?? ''));
+}
+
 export function syncBackendModules(
   repositories: BackendRepository[],
   remoteUrls: Record<string, string>,

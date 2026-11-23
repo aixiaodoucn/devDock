@@ -393,15 +393,23 @@ fn fetch_remote_checked(
     )
     .map(|_| ())
 }
-fn validate_remote(repo: &Repository) -> Result<()> {
-    let path = Path::new(&repo.path);
-    if repo.remote.is_empty()
-        || repo.remote.starts_with('-')
-        || repo.remote.contains(['/', '\\', ':'])
+fn validate_remote_name(remote: &str) -> Result<()> {
+    // 远端名必须能作为 refs/remotes/<远端>/<分支> 中的单个路径分量。
+    if remote.is_empty()
+        || remote.starts_with(['-', '.'])
+        || remote.ends_with(".lock")
+        || remote.contains("..")
+        || remote.contains("@{")
+        || remote.contains(['/', '\\', ':', ' ', '~', '^', '?', '*', '['])
+        || remote.bytes().any(|byte| byte.is_ascii_control())
     {
         return Err("远端名称无效".into());
     }
-    valid_branch(path, &format!("{}/probe", repo.remote))?;
+    Ok(())
+}
+fn validate_remote(repo: &Repository) -> Result<()> {
+    let path = Path::new(&repo.path);
+    validate_remote_name(&repo.remote)?;
     let remotes = run(path, &["remote"], None)?;
     if !remotes.lines().any(|r| r == repo.remote) {
         return Err("所选远端不存在".into());
@@ -509,6 +517,55 @@ pub fn statuses(repositories: Vec<Repository>) -> Vec<RepositoryStatus> {
         })
         .collect()
 }
+pub fn repository_remote_urls(repositories: Vec<Repository>) -> HashMap<String, String> {
+    repositories
+        .into_iter()
+        .filter(|repo| repo.scm_git_id.trim().is_empty())
+        .filter_map(|repo| {
+            let url = repository_remote_url(&repo)?;
+            Some((repo.id, url))
+        })
+        .collect()
+}
+
+fn repository_remote_url(repo: &Repository) -> Option<String> {
+    validate_remote_name(&repo.remote).ok()?;
+    let path = Path::new(&repo.path);
+    if !path.join(".git").exists() {
+        return None;
+    }
+    // 显式定位 Git 元数据，支持 worktree，也防止普通子目录继承父仓库远端。
+    let url = run(
+        path,
+        &["--git-dir=.git", "remote", "get-url", "--", &repo.remote],
+        None,
+    )
+    .ok()?;
+    if url.contains(['\r', '\n', '\0']) {
+        return None;
+    }
+    // 缺少拉取 URL 时 Git 可能回显远端名。仅在此时检查是否配置了同名地址。
+    if url == repo.remote
+        && run(
+            path,
+            &[
+                "--git-dir=.git",
+                "config",
+                "--get-all",
+                &format!("remote.{}.url", repo.remote),
+            ],
+            None,
+        )
+        .ok()?
+        .trim()
+        .is_empty()
+    {
+        return None;
+    }
+    let url = redact(&url);
+    (!url.trim().is_empty()).then_some(url)
+}
+
 fn occupied(path: &Path, target: &str, allow_current: bool) -> Result<()> {
     let list = run(path, &["worktree", "list", "--porcelain"], None)?;
     let expected = format!("branch refs/heads/{target}");
@@ -1071,7 +1128,7 @@ fn persist_current(app: &AppHandle, id: &str) -> Result<()> {
     let entries = runtime.entries.lock().unwrap();
     persist_entry(app, entries.get(id).ok_or("计划不存在")?)
 }
-fn restore_entry(path: &Path) -> Result<Entry> {
+fn read_operation_record(path: &Path) -> Result<Entry> {
     let bytes = fs::read(path).map_err(|_| "无法读取 Git 操作记录".to_string())?;
     let OperationJournal {
         mut entry,
@@ -1097,16 +1154,12 @@ fn restore_entry(path: &Path) -> Result<Entry> {
     {
         return Err("Git 操作记录身份无效".into());
     }
-    for (index, result) in entry.state.repositories.iter_mut().enumerate() {
+    for (index, result) in entry.state.repositories.iter().enumerate() {
         let expected = path.parent().unwrap().join(index.to_string());
         if result.repo_id != entry.plan.repositories[index].repository.id
             || (!result.worktree_path.is_empty() && Path::new(&result.worktree_path) != expected)
         {
             return Err("Git 操作工作区记录无效".into());
-        }
-        if result.status == "running" {
-            result.status = "error".into();
-            result.message = "应用曾退出，请检查保留的工作区".into();
         }
     }
     if let Some(continuation) = &entry.continuation {
@@ -1117,7 +1170,16 @@ fn restore_entry(path: &Path) -> Result<Entry> {
             return Err("Git 续跑来源记录无效".into());
         }
     }
+    Ok(entry)
+}
+
+fn restore_entry(path: &Path) -> Result<Entry> {
+    let mut entry = read_operation_record(path)?;
     for (index, result) in entry.state.repositories.iter_mut().enumerate() {
+        if result.status == "running" {
+            result.status = "error".into();
+            result.message = "应用曾退出，请检查保留的工作区".into();
+        }
         result.pom_conflict = None;
         result.pom_conflict_files.clear();
         result.pom_blocks_resolution = None;
@@ -1248,6 +1310,125 @@ pub fn list_operations(app: &AppHandle, project_id: String) -> Result<Vec<Operat
     result.sort_by(|a, b| a.plan_id.cmp(&b.plan_id));
     Ok(result)
 }
+fn clear_operation_records(
+    base: &Path,
+    entries: &mut HashMap<String, Entry>,
+    project_id: &str,
+    selected_plan_id: Option<&str>,
+) -> Result<Vec<String>> {
+    let items = match fs::read_dir(base) {
+        Ok(items) => items,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("无法读取 Git 操作目录".into()),
+    };
+    let mut records = HashMap::new();
+    for item in items {
+        let item = item.map_err(|_| "无法读取 Git 操作目录")?;
+        if !item
+            .file_type()
+            .map_err(|_| "无法读取 Git 操作目录")?
+            .is_dir()
+        {
+            continue;
+        }
+        let path = item.path().join("operation.json");
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => (),
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err("无法读取 Git 操作记录".into()),
+        }
+        let entry = read_operation_record(&path)?;
+        records.insert(entry.plan.plan_id.clone(), entry);
+    }
+    let handed_off: HashSet<_> = records
+        .values()
+        .filter(|entry| entry.plan.project_id == project_id)
+        .filter_map(|entry| entry.continuation.as_ref().filter(|c| c.started))
+        .map(|c| c.source_plan_id.as_str())
+        .collect();
+    let mut candidates: Vec<_> = records
+        .values()
+        .filter(|entry| {
+            let state = &entry.state;
+            entry.plan.project_id == project_id
+                && !state.task_id.is_empty()
+                && (matches!(state.status.as_str(), "success" | "cancelled")
+                    || (state.status == "paused"
+                        // 仅显式选中的暂停记录可放弃尚未执行的仓库。
+                        && (selected_plan_id == Some(state.plan_id.as_str())
+                            || handed_off.contains(state.plan_id.as_str())
+                            || state
+                                .repositories
+                                .iter()
+                                .all(|repo| repo.status != "pending"))))
+                && state
+                    .repositories
+                    .iter()
+                    .all(|repo| repo.worktree_path.is_empty())
+                && entries.get(&state.plan_id).is_none_or(|live| {
+                    !matches!(
+                        live.state.status.as_str(),
+                        "prepared" | "running" | "aborting"
+                    ) && live
+                        .state
+                        .repositories
+                        .iter()
+                        .all(|repo| repo.worktree_path.is_empty())
+                })
+        })
+        .collect();
+    let mut removed = Vec::new();
+    // 先清除续跑来源，再清除交接记录，避免重启后把原批次误当成可续跑。
+    loop {
+        let Some(index) = candidates.iter().position(|entry| {
+            entry.continuation.as_ref().is_none_or(|c| {
+                removed.contains(&c.source_plan_id)
+                    || (!records.contains_key(&c.source_plan_id)
+                        && !entries.contains_key(&c.source_plan_id))
+            })
+        }) else {
+            break;
+        };
+        let entry = candidates.swap_remove(index);
+        let id = &entry.plan.plan_id;
+        let directory = base.join(id);
+        // 工作区即使在日志中漏记，也不能失去恢复所需的记录。
+        let mut has_other_files = false;
+        for item in fs::read_dir(&directory).map_err(|_| "无法读取 Git 操作目录")? {
+            if item.map_err(|_| "无法读取 Git 操作目录")?.file_name() != "operation.json" {
+                has_other_files = true;
+                break;
+            }
+        }
+        if has_other_files {
+            continue;
+        }
+        fs::remove_file(directory.join("operation.json")).map_err(|_| "无法清除 Git 操作记录")?;
+        entries.remove(id);
+        removed.push(id.clone());
+        // 只移除空目录，不触碰任何工作区或仓库文件。
+        let _ = fs::remove_dir(directory);
+    }
+    Ok(removed)
+}
+
+pub fn clear_operations(
+    app: &AppHandle,
+    project_id: String,
+    selected_plan_id: Option<String>,
+) -> Result<Vec<String>> {
+    let base = tasks::data_dir(app)?.join("backend-worktrees");
+    let runtime = app.state::<Runtime>();
+    let mut entries = runtime.entries.lock().unwrap();
+    clear_operation_records(
+        &base,
+        &mut entries,
+        &project_id,
+        selected_plan_id.as_deref(),
+    )
+}
+
 pub fn state(app: &AppHandle, plan_id: String) -> Result<OperationState> {
     let runtime = app.state::<Runtime>();
     let entries = runtime.entries.lock().unwrap();
@@ -6597,6 +6778,148 @@ mod tests {
     }
 
     #[test]
+    fn clear_history_preserves_recovery_active_operations_and_other_projects() {
+        let temp = tempdir().unwrap();
+        let template = paused_batch();
+        let record = |status: &str, project: &str, pending: bool, worktree: bool| {
+            let mut entry = template.clone();
+            let id = uuid::Uuid::new_v4().to_string();
+            entry.plan.plan_id = id.clone();
+            entry.plan.project_id = project.into();
+            entry.state.plan_id = id.clone();
+            entry.state.status = status.into();
+            let dir = temp.path().join(&id);
+            fs::create_dir(&dir).unwrap();
+            if !pending {
+                for repo in &mut entry.state.repositories {
+                    repo.status = "success".into();
+                }
+            }
+            if worktree {
+                let path = dir.join("0");
+                fs::create_dir(&path).unwrap();
+                entry.state.repositories[0].worktree_path = path.to_string_lossy().into();
+            }
+            fs::write(dir.join("operation.json"), journal_json(&entry).unwrap()).unwrap();
+            entry
+        };
+        let success = record("success", "p", false, false);
+        let cancelled = record("cancelled", "p", true, false);
+        let ended = record("paused", "p", false, false);
+        let running = record("running", "p", true, false);
+        let resumable = record("paused", "p", true, false);
+        let retained = record("cancelled", "p", true, true);
+        let other = record("success", "other", false, false);
+        let mut entries = HashMap::from([(success.plan.plan_id.clone(), success.clone())]);
+
+        let removed = clear_operation_records(temp.path(), &mut entries, "p", None).unwrap();
+        assert_eq!(removed.len(), 3);
+        for entry in [success, cancelled, ended] {
+            assert!(removed.contains(&entry.plan.plan_id));
+            assert!(!entries.contains_key(&entry.plan.plan_id));
+            assert!(!temp
+                .path()
+                .join(entry.plan.plan_id)
+                .join("operation.json")
+                .exists());
+        }
+        for entry in [running, resumable, retained, other] {
+            assert!(temp
+                .path()
+                .join(entry.plan.plan_id)
+                .join("operation.json")
+                .is_file());
+        }
+        assert!(
+            clear_operation_records(temp.path(), &mut entries, "p", None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn clear_history_discards_only_the_selected_resumable_batch_without_a_worktree() {
+        let temp = tempdir().unwrap();
+        let selected = paused_batch();
+        let unselected = paused_batch();
+        let mut retained = paused_batch();
+        let mut other_project = paused_batch();
+        other_project.plan.project_id = "other".into();
+        let worktree = temp.path().join(&retained.plan.plan_id).join("1");
+        fs::create_dir_all(&worktree).unwrap();
+        retained.state.repositories[1].worktree_path = worktree.to_string_lossy().into();
+        for entry in [&selected, &unselected, &retained, &other_project] {
+            let directory = temp.path().join(&entry.plan.plan_id);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(
+                directory.join("operation.json"),
+                journal_json(entry).unwrap(),
+            )
+            .unwrap();
+        }
+        let mut entries = HashMap::new();
+        load_operations(temp.path(), &mut entries, "p").unwrap();
+        let clear = |entries: &mut HashMap<String, Entry>, id: &str| {
+            clear_operation_records(temp.path(), entries, "p", Some(id)).unwrap()
+        };
+        assert!(clear(&mut entries, &retained.plan.plan_id).is_empty());
+        assert!(clear(&mut entries, &other_project.plan.plan_id).is_empty());
+        let selected_id = &selected.plan.plan_id;
+        assert_eq!(clear(&mut entries, selected_id), [selected_id.clone()]);
+        assert!(!entries.contains_key(selected_id));
+        assert!(entries.contains_key(&unselected.plan.plan_id));
+        assert!(worktree.is_dir());
+        entries.clear();
+        load_operations(temp.path(), &mut entries, "p").unwrap();
+        assert!(!entries.contains_key(selected_id));
+        assert!(entries.contains_key(&unselected.plan.plan_id));
+    }
+
+    #[test]
+    fn clear_history_removes_handoffs_only_after_their_source() {
+        let temp = tempdir().unwrap();
+        let source = paused_batch();
+        let source_id = source.plan.plan_id.clone();
+        let mut child = source.clone();
+        let child_id = uuid::Uuid::new_v4().to_string();
+        child.plan.plan_id = child_id.clone();
+        child.state.plan_id = child_id.clone();
+        child.state.status = "success".into();
+        for repo in &mut child.state.repositories {
+            repo.status = "success".into();
+        }
+        child.continuation = Some(Continuation {
+            source_plan_id: source_id.clone(),
+            started: true,
+        });
+        for entry in [&source, &child] {
+            let directory = temp.path().join(&entry.plan.plan_id);
+            fs::create_dir(&directory).unwrap();
+            fs::write(
+                directory.join("operation.json"),
+                journal_json(entry).unwrap(),
+            )
+            .unwrap();
+        }
+        let unrecorded_worktree = temp.path().join(&source_id).join("0");
+        fs::create_dir(&unrecorded_worktree).unwrap();
+        let mut entries = HashMap::new();
+        assert!(
+            clear_operation_records(temp.path(), &mut entries, "p", None)
+                .unwrap()
+                .is_empty()
+        );
+        load_operations(temp.path(), &mut entries, "p").unwrap();
+        assert!(continuation_source(&entries, &source_id).is_err());
+        fs::remove_dir(unrecorded_worktree).unwrap();
+        assert_eq!(
+            clear_operation_records(temp.path(), &mut entries, "p", None).unwrap(),
+            [source_id, child_id]
+        );
+        assert!(entries.is_empty());
+    }
+
+    #[test]
     fn changing_remote_identity_invalidates_the_plan() {
         let (dir, repo) = fixture();
         let one = tempdir().unwrap();
@@ -6628,6 +6951,123 @@ mod tests {
         assert!(rows[0].error.is_empty());
         assert_eq!(fs::read(dir.path().join(".git/index")).unwrap(), index);
     }
+    #[test]
+    fn repository_remote_urls_read_local_worktrees_and_redact_credentials() {
+        let (dir, repo) = fixture();
+        git(
+            dir.path(),
+            &["remote", "add", "upstream", "scm:service.git"],
+        );
+        git(
+            dir.path(),
+            &[
+                "config",
+                "url.https://user:secret@example.invalid/.insteadOf",
+                "scm:",
+            ],
+        );
+        let worktrees = tempdir().unwrap();
+        let worktree = worktrees.path().join("linked tree");
+        git(
+            dir.path(),
+            &["worktree", "add", worktree.to_str().unwrap(), "test"],
+        );
+        let linked = Repository {
+            id: "linked".into(),
+            path: worktree.to_string_lossy().into(),
+            remote: "upstream".into(),
+            scm_git_id: "  ".into(),
+            ..repo.clone()
+        };
+        let nested = dir.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        git(&nested, &["init", "--template="]);
+        git(
+            &nested,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/nested.git?token=secret#fragment",
+            ],
+        );
+        let nested = Repository {
+            id: "nested".into(),
+            path: nested.to_string_lossy().into(),
+            ..repo
+        };
+        assert_eq!(
+            repository_remote_urls(vec![linked, nested]),
+            HashMap::from([
+                (
+                    "linked".into(),
+                    "https://example.invalid/service.git".into()
+                ),
+                ("nested".into(), "https://example.invalid/nested.git".into()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn repository_remote_urls_skip_mapped_repositories_and_invalid_results() {
+        let (dir, repo) = fixture();
+        for (key, value) in [
+            ("remote.origin.url", "git@example.invalid:service.git"),
+            ("remote.same-name.url", "same-name"),
+            ("remote.empty.url", ""),
+            ("remote.blank.url", "   "),
+            ("remote.redacted.url", "?token=secret"),
+            (
+                "remote.bad..name.url",
+                "https://example.invalid/invalid.git",
+            ),
+        ] {
+            git(dir.path(), &["config", key, value]);
+        }
+        let nested = dir.path().join("ordinary-directory");
+        fs::create_dir(&nested).unwrap();
+        let mut repositories = vec![
+            repo.clone(),
+            Repository {
+                id: "mapped".into(),
+                scm_git_id: " 123 ".into(),
+                ..repo.clone()
+            },
+            Repository {
+                id: "ordinary-directory".into(),
+                path: nested.to_string_lossy().into(),
+                ..repo.clone()
+            },
+            Repository {
+                id: "missing-directory".into(),
+                path: nested.join("missing").to_string_lossy().into(),
+                ..repo.clone()
+            },
+        ];
+        for remote in [
+            "same-name",
+            "empty",
+            "blank",
+            "redacted",
+            "missing",
+            "--all",
+            "bad..name",
+        ] {
+            repositories.push(Repository {
+                id: remote.into(),
+                remote: remote.into(),
+                ..repo.clone()
+            });
+        }
+        assert_eq!(
+            repository_remote_urls(repositories),
+            HashMap::from([
+                ("r".into(), "git@example.invalid:service.git".into()),
+                ("same-name".into(), "same-name".into()),
+            ]),
+        );
+    }
+
     #[test]
     fn command_is_literal_and_credentials_are_redacted() {
         let dir = tempdir().unwrap();

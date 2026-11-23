@@ -4,7 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import BackendWorkbench from './BackendWorkbench.vue';
 import { api } from '../api';
 import { listen } from '@tauri-apps/api/event';
-import { newProject, type Project } from '../types';
+import { newProject, type BackendGitOperation, type Project } from '../types';
 const env = vi.hoisted(() => ({
   desktop: true,
   handler: null as null | ((event: { payload: { planId: string } }) => void),
@@ -25,11 +25,13 @@ vi.mock('../api', () => ({
     scmProjects: vi.fn(),
     scmProjectModules: vi.fn(),
     backendRepositoryStatuses: vi.fn(),
+    backendRepositoryRemoteUrls: vi.fn(),
     prepareBackendGit: vi.fn(),
     prepareRemainingBackendGit: vi.fn(),
     executeBackendGit: vi.fn(),
     backendGitState: vi.fn(),
     backendGitOperations: vi.fn(),
+    backendClearGitOperations: vi.fn(),
     openPath: vi.fn(),
     openBackendWorktreeInIdea: vi.fn(),
     openBackendWorktreeInWebStorm: vi.fn(),
@@ -108,11 +110,9 @@ async function ready(initial = fixture()) {
   return panel;
 }
 function click(root: HTMLElement, text: string) {
-  const button = [...root.querySelectorAll('button')].find(
-    (item) => item.textContent?.trim() === text,
-  );
-  expect(button, text).toBeTruthy();
-  button!.click();
+  const target = button(root, text);
+  expect(target, text).toBeTruthy();
+  target.click();
 }
 function input(root: HTMLElement, selector: string, value: string) {
   const field = root.querySelector<HTMLInputElement>(selector)!;
@@ -120,6 +120,158 @@ function input(root: HTMLElement, selector: string, value: string) {
   field.value = value;
   field.dispatchEvent(new Event('input'));
 }
+it('未加载模块时，打开、更新本地配置、刷新和切换项目均不检查 Git', async () => {
+  const panel = await mount();
+  try {
+    expect(button(panel.root, '刷新仓库').disabled).toBe(true);
+    click(panel.root, '刷新仓库');
+    panel.project.value.subProjects[0].path = '/example/new-path';
+    await flush();
+    panel.project.value = { ...fixture(), id: 'other' };
+    await flush();
+    expect(api.backendRepositoryStatuses).not.toHaveBeenCalled();
+    expect(api.backendRepositoryRemoteUrls).not.toHaveBeenCalled();
+    expect(api.backendGitOperations).toHaveBeenLastCalledWith('other');
+  } finally {
+    panel.close();
+  }
+});
+it('等 SCM 返回后只检查匹配的开发仓库，刷新沿用这个范围', async () => {
+  const initial = fixture();
+  const [repository] = initial.subProjects;
+  initial.subProjects.push({ ...repository, id: 'other', scmGitId: '99' });
+  const modules = await api.scmProjectModules('123');
+  vi.mocked(api.scmProjectModules).mockClear();
+  let resolve!: (value: typeof modules) => void;
+  vi.mocked(api.scmProjectModules).mockImplementationOnce(
+    () => new Promise((done) => (resolve = done)),
+  );
+  const panel = await mount(initial);
+  try {
+    click(panel.root, '加载模块');
+    await flush();
+    expect(api.scmProjectModules).toHaveBeenCalledWith('123');
+    expect(api.backendRepositoryStatuses).not.toHaveBeenCalled();
+    resolve(modules);
+    await flush();
+    expect(api.backendRepositoryStatuses).toHaveBeenCalledExactlyOnceWith([repository]);
+    expect(api.backendRepositoryRemoteUrls).not.toHaveBeenCalled();
+    click(panel.root, '刷新仓库');
+    await flush();
+    expect(api.backendRepositoryStatuses).toHaveBeenCalledTimes(2);
+    expect(api.backendRepositoryStatuses).toHaveBeenLastCalledWith([repository]);
+  } finally {
+    panel.close();
+  }
+});
+it('开发模块为空时不执行任何仓库检查', async () => {
+  const initial = fixture();
+  initial.subProjects[0].scmGitId = '';
+  vi.mocked(api.scmProjectModules).mockResolvedValue([]);
+  const panel = await mount(initial);
+  try {
+    click(panel.root, '加载模块');
+    await flush();
+    expect(api.backendRepositoryStatuses).not.toHaveBeenCalled();
+    expect(api.backendRepositoryRemoteUrls).not.toHaveBeenCalled();
+    expect(panel.root.querySelectorAll('.repository')).toHaveLength(0);
+  } finally {
+    panel.close();
+  }
+});
+it('只为无 Git ID 仓库查远端，手动刷新与操作结束复用范围，配置变化重查', async () => {
+  const initial = fixture();
+  const [direct] = initial.subProjects;
+  const fallback = { ...direct, id: 'fallback', scmGitId: '' };
+  const unrelated = { ...fallback, id: 'unrelated' };
+  initial.subProjects.push(fallback, unrelated, { ...direct, id: 'other', scmGitId: '99' });
+  vi.mocked(api.backendRepositoryRemoteUrls).mockResolvedValue({
+    fallback: 'git@example.invalid:team/service.git',
+    unrelated: 'git@example.invalid:team/unrelated.git',
+  });
+  const panel = await ready(initial);
+  try {
+    expect(api.backendRepositoryRemoteUrls).toHaveBeenCalledExactlyOnceWith([fallback, unrelated]);
+    expect(api.backendRepositoryStatuses).toHaveBeenCalledExactlyOnceWith([direct, fallback]);
+    const currentScope = panel.project.value.subProjects.slice(0, 2);
+    expect(currentScope[1].scmGitId).toBe('42');
+    click(panel.root, '刷新仓库');
+    await flush();
+    expect(api.backendRepositoryStatuses).toHaveBeenLastCalledWith(currentScope);
+    vi.mocked(api.backendGitState).mockResolvedValue({
+      planId: 'plan',
+      taskId: 'task',
+      status: 'success',
+      repositories: [],
+    });
+    click(panel.root, '切换开发分支');
+    await flush();
+    click(panel.root, '确认执行计划');
+    await flush();
+    expect(api.backendRepositoryStatuses).toHaveBeenCalledTimes(3);
+    expect(api.backendRepositoryStatuses).toHaveBeenLastCalledWith(currentScope);
+    expect(api.backendRepositoryRemoteUrls).toHaveBeenCalledTimes(1);
+
+    const changed = { ...unrelated, remote: 'upstream' };
+    panel.project.value.subProjects[2] = changed;
+    await flush();
+    expect(api.backendRepositoryRemoteUrls).toHaveBeenCalledTimes(2);
+    expect(api.backendRepositoryRemoteUrls).toHaveBeenLastCalledWith([changed]);
+    expect(api.backendRepositoryStatuses).toHaveBeenLastCalledWith(currentScope);
+  } finally {
+    panel.close();
+  }
+});
+it('没有可匹配的开发模块 URL 时，无 Git ID 仓库不查远端', async () => {
+  const initial = fixture();
+  const [repo] = initial.subProjects;
+  initial.subProjects.push({ ...repo, id: 'unknown', scmGitId: '' });
+  vi.mocked(api.scmProjectModules).mockResolvedValue([
+    { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'develop' },
+  ]);
+  const panel = await ready(initial);
+  try {
+    expect(api.backendRepositoryRemoteUrls).not.toHaveBeenCalled();
+    expect(api.backendRepositoryStatuses).toHaveBeenCalledExactlyOnceWith([repo]);
+  } finally {
+    panel.close();
+  }
+});
+it.each(['SCM', 'remote'] as const)('切换项目后丢弃尚未返回的 %s 加载结果', async (phase) => {
+  const initial = fixture();
+  initial.subProjects[0].scmGitId = '';
+  const modules = await api.scmProjectModules('123');
+  let completeLoad!: () => void;
+  if (phase === 'SCM') {
+    vi.mocked(api.scmProjectModules).mockImplementationOnce(
+      () => new Promise((resolve) => (completeLoad = () => resolve(modules))),
+    );
+  } else {
+    vi.mocked(api.backendRepositoryRemoteUrls).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          completeLoad = () => resolve({ repo: 'git@example.invalid:team/service.git' });
+        }),
+    );
+  }
+  const panel = await mount(initial);
+  try {
+    click(panel.root, '加载模块');
+    await flush();
+    expect(completeLoad).toBeTypeOf('function');
+    panel.project.value = { ...fixture(), id: 'other' };
+    await flush();
+    expect(button(panel.root, '加载模块').disabled).toBe(false);
+    completeLoad();
+    await flush();
+    expect(api.backendRepositoryStatuses).not.toHaveBeenCalled();
+    if (phase === 'SCM') expect(api.backendRepositoryRemoteUrls).not.toHaveBeenCalled();
+    expect(panel.save).not.toHaveBeenCalled();
+    expect(panel.root.querySelectorAll('.repository')).toHaveLength(0);
+  } finally {
+    panel.close();
+  }
+});
 it('开发、测试、当前及未关联模块分支支持点击或键盘复制完整名称', async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal('navigator', { clipboard: { writeText } });
@@ -1095,6 +1247,11 @@ beforeEach(() => {
     remembered: false,
     message: null,
   });
+  vi.mocked(api.backendRepositoryRemoteUrls).mockImplementation(async (repositories) =>
+    Object.fromEntries(
+      repositories.map((repo) => [repo.id, 'git@example.invalid:team/service.git']),
+    ),
+  );
   vi.mocked(api.backendRepositoryStatuses).mockImplementation(async (repositories) =>
     repositories.map((repo) => ({
       id: repo.id,
@@ -1314,9 +1471,209 @@ it('事件乱序响应不会把成功覆盖为旧的运行状态', async () => {
   older({ planId: 'plan', taskId: 'task', status: 'running', repositories: [] });
   await flush();
   expect(panel.root.textContent).toContain('执行结果 · 已完成');
-  expect(panel.root.querySelector('.history-toolbar')).toBeNull();
+  const select = panel.root.querySelector<HTMLSelectElement>('.history-toolbar select')!;
+  expect(select.selectedOptions[0]?.textContent).toBe('暂无待处理操作');
+  expect(select.disabled).toBe(true);
   panel.close();
 });
+
+it('清除前须明确确认，成功后关闭已删除的结果并刷新待处理列表', async () => {
+  vi.mocked(api.backendClearGitOperations).mockResolvedValue(['plan']);
+  const panel = await ready();
+  try {
+    click(panel.root, '切换开发分支');
+    await flush();
+    vi.mocked(api.backendGitState).mockResolvedValueOnce({
+      planId: 'plan',
+      taskId: 'task',
+      status: 'success',
+      repositories: [],
+    });
+    click(panel.root, '确认执行计划');
+    await flush();
+    vi.mocked(api.backendGitOperations)
+      .mockClear()
+      .mockResolvedValue([
+        {
+          planId: 'recoverable',
+          taskId: 'paused-task',
+          status: 'paused',
+          repositories: [
+            { repoId: 'repo', status: 'error', message: '', worktreePath: '/worktree' },
+          ],
+        },
+      ]);
+
+    click(panel.root, '清除记录');
+    await flush();
+    expect(panel.root.textContent).toContain('选中的待处理操作一经清除便无法续跑');
+    expect(panel.root.textContent).toContain('保留工作区的操作将保留');
+    expect(api.backendClearGitOperations).not.toHaveBeenCalled();
+    click(panel.root, '取消清除');
+    await flush();
+    expect(panel.root.textContent).toContain('执行结果 · 已完成');
+    expect(api.backendClearGitOperations).not.toHaveBeenCalled();
+
+    click(panel.root, '清除记录');
+    await flush();
+    click(panel.root, '确认清除');
+    await flush();
+    expect(api.backendClearGitOperations).toHaveBeenCalledExactlyOnceWith('example', undefined);
+    expect(api.backendGitOperations).toHaveBeenCalledExactlyOnceWith('example');
+    expect(panel.notice).toHaveBeenLastCalledWith('已清除 1 条 Git 操作记录');
+    expect(panel.root.querySelector('.operation')).toBeNull();
+    const select = panel.root.querySelector<HTMLSelectElement>('.history-toolbar select')!;
+    expect(select.value).toBe('');
+    expect([...select.options].map((option) => option.value)).toEqual(['', 'recoverable']);
+
+    click(panel.root, '刷新记录');
+    await flush();
+    expect(api.backendGitOperations).toHaveBeenCalledTimes(2);
+    expect(select.value).toBe('recoverable');
+    expect(panel.root.textContent).toContain('执行结果 · 已暂停，需处理');
+  } finally {
+    panel.close();
+  }
+});
+
+it('清除下拉选中的待续跑操作后保留其他待续跑选项，并保持结果为空', async () => {
+  const unselected: BackendGitOperation = {
+    planId: 'unselected',
+    taskId: 'unselected-task',
+    status: 'paused',
+    repositories: [{ repoId: 'repo', status: 'pending', message: '', worktreePath: '' }],
+  };
+  const selected = { ...unselected, planId: 'selected', taskId: 'selected-task' };
+  vi.mocked(api.backendGitOperations)
+    .mockResolvedValueOnce([unselected, selected])
+    .mockResolvedValueOnce([unselected]);
+  vi.mocked(api.backendClearGitOperations).mockResolvedValue(['selected']);
+  vi.mocked(api.prepareRemainingBackendGit).mockResolvedValue({
+    planId: 'continuation',
+    projectId: 'example',
+    operation: 'switch',
+    push: false,
+    keepTestPom: false,
+    repositories: [],
+  });
+  const panel = await mount();
+  try {
+    const select = panel.root.querySelector<HTMLSelectElement>('.history-toolbar select')!;
+    expect(select.value).toBe('unselected');
+    select.value = 'selected';
+    select.dispatchEvent(new Event('change'));
+    await flush();
+    expect(panel.root.textContent).toContain('执行结果 · 已暂停，需处理');
+    click(panel.root, '继续');
+    await flush();
+    expect(api.prepareRemainingBackendGit).toHaveBeenCalledExactlyOnceWith('selected');
+    expect(panel.root.querySelector('.plan')).not.toBeNull();
+
+    click(panel.root, '清除记录');
+    await flush();
+    click(panel.root, '确认清除');
+    await flush();
+
+    expect(api.backendClearGitOperations).toHaveBeenCalledExactlyOnceWith('example', 'selected');
+    expect([...select.options].map((option) => option.value)).toEqual(['', 'unselected']);
+    expect(select.value).toBe('');
+    expect(panel.root.querySelector('.operation')).toBeNull();
+    expect(panel.root.querySelector('.plan')).toBeNull();
+  } finally {
+    panel.close();
+  }
+});
+
+it.each([
+  {
+    worktreePath: '/worktree',
+    retainedNotice: '选中的操作仍有保留工作区，已保留该记录。',
+  },
+  { worktreePath: '', retainedNotice: '选中的操作仍需保留，未清除。' },
+])(
+  '根据实际删除 ID 保留选中项并提示（工作区：$worktreePath）',
+  async ({ worktreePath, retainedNotice }) => {
+    vi.mocked(api.backendGitOperations).mockResolvedValue([
+      {
+        planId: 'retained',
+        taskId: 'retained-task',
+        status: 'paused',
+        repositories: [{ repoId: 'repo', status: 'error', message: '保留的结果', worktreePath }],
+      },
+    ]);
+    vi.mocked(api.backendClearGitOperations).mockResolvedValue(['other-plan']);
+    const panel = await mount();
+    try {
+      click(panel.root, '清除记录');
+      await flush();
+      click(panel.root, '确认清除');
+      await flush();
+      expect(api.backendClearGitOperations).toHaveBeenCalledExactlyOnceWith('example', 'retained');
+      expect(panel.root.querySelector<HTMLSelectElement>('.history-toolbar select')?.value).toBe(
+        'retained',
+      );
+      expect(panel.root.querySelector('.operation')?.textContent).toContain('保留的结果');
+      expect(panel.notice).toHaveBeenLastCalledWith(`已清除 1 条 Git 操作记录。${retainedNotice}`);
+    } finally {
+      panel.close();
+    }
+  },
+);
+
+it('没有待处理操作仍可确认清除，没有可删记录时提示零条结果', async () => {
+  vi.mocked(api.backendClearGitOperations).mockResolvedValue([]);
+  const panel = await mount();
+  try {
+    expect(panel.root.querySelector('.operation')).toBeNull();
+    expect(button(panel.root, '清除记录').disabled).toBe(false);
+    click(panel.root, '清除记录');
+    await flush();
+    click(panel.root, '确认清除');
+    await flush();
+    expect(api.backendClearGitOperations).toHaveBeenCalledExactlyOnceWith('example', undefined);
+    expect(panel.notice).toHaveBeenLastCalledWith('没有可清除的 Git 操作记录');
+  } finally {
+    panel.close();
+  }
+});
+
+it('切换项目后不刷新或清除新项目的结果，也不显示旧项目的清除提示', async () => {
+  let complete!: (ids: string[]) => void;
+  vi.mocked(api.backendClearGitOperations).mockReturnValueOnce(
+    new Promise((resolve) => {
+      complete = resolve;
+    }),
+  );
+  const panel = await mount();
+  try {
+    click(panel.root, '清除记录');
+    await flush();
+    click(panel.root, '确认清除');
+    await flush();
+    expect(button(panel.root, '确认清除').disabled).toBe(true);
+    vi.mocked(api.backendGitOperations).mockResolvedValueOnce([
+      {
+        planId: 'current',
+        taskId: 'current-task',
+        status: 'paused',
+        repositories: [{ repoId: 'repo', status: 'pending', message: '', worktreePath: '' }],
+      },
+    ]);
+    panel.project.value = { ...fixture(), id: 'other' };
+    await flush();
+    complete(['old-plan']);
+    await flush();
+    expect(api.backendClearGitOperations).toHaveBeenCalledExactlyOnceWith('example', undefined);
+    expect(vi.mocked(api.backendGitOperations).mock.calls).toEqual([['example'], ['other']]);
+    expect(panel.root.textContent).toContain('执行结果 · 已暂停，需处理');
+    expect(button(panel.root, '确认清除')).toBeUndefined();
+    expect(button(panel.root, '清除记录').disabled).toBe(false);
+    expect(panel.notice).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
 it('保存中与预检中均禁止重复提交操作，合并默认不推送', async () => {
   const panel = await ready();
   panel.saving.value = true;
@@ -1365,7 +1722,9 @@ it.each(['prepared', 'paused'] as const)(
     ]);
     const panel = await ready();
     try {
-      expect(panel.root.querySelector('.history-toolbar')).toBeNull();
+      const select = panel.root.querySelector<HTMLSelectElement>('.history-toolbar select')!;
+      expect(select.selectedOptions[0]?.textContent).toBe('暂无待处理操作');
+      expect(select.options).toHaveLength(1);
       expect(panel.root.querySelector('.operation')).toBeNull();
       expect(panel.root.textContent).not.toContain('读取历史操作');
       expect(api.executeBackendGit).not.toHaveBeenCalled();
@@ -1865,6 +2224,16 @@ it('加载使用配置 remote 的最新状态，自动保存失败保留分支�
   initial.scmTestProjectId = '';
   initial.subProjects[0].remote = 'upstream';
   initial.subProjects[0].scmGitId = '';
+  vi.mocked(api.backendRepositoryRemoteUrls).mockImplementation(async (repositories) =>
+    Object.fromEntries(
+      repositories.map((repo) => [
+        repo.id,
+        repo.remote === 'upstream'
+          ? 'https://example.invalid/team/new.git'
+          : 'https://example.invalid/team/service.git',
+      ]),
+    ),
+  );
   vi.mocked(api.backendRepositoryStatuses).mockImplementation(async (repositories) =>
     repositories.map((repo) => ({
       id: repo.id,
@@ -1973,7 +2342,6 @@ it('首次按唯一 URL 识别 Git ID 后立即自动保存，不被身份刷新
   initial.subProjects[0].scmGitId = '';
   const readStatus = vi.mocked(api.backendRepositoryStatuses).getMockImplementation()!;
   vi.mocked(api.backendRepositoryStatuses)
-    .mockImplementationOnce(readStatus)
     .mockImplementationOnce(readStatus)
     .mockImplementationOnce(() => new Promise(() => {}));
   vi.mocked(api.scmProjectModules).mockResolvedValue([

@@ -59,6 +59,11 @@ export const api = {
   scanBackendChildren(parentPath: string) {
     return native<BackendCandidate[]>('scan_backend_children', { parentPath });
   },
+  backendRepositoryRemoteUrls(repositories: BackendRepository[]) {
+    return native<Record<string, string>>('backend_repository_remote_urls', {
+      repositories: JSON.parse(JSON.stringify(repositories)),
+    });
+  },
   backendRepositoryStatuses(repositories: BackendRepository[]) {
     return native<BackendRepositoryStatus[]>('backend_repository_statuses', {
       repositories: JSON.parse(JSON.stringify(repositories)),
@@ -90,6 +95,12 @@ export const api = {
   },
   backendGitOperations(projectId: string) {
     return native<BackendGitOperation[]>('backend_git_operations', { projectId });
+  },
+  backendClearGitOperations(projectId: string, selectedPlanId?: string) {
+    return native<string[]>(
+      'clear_backend_git_operations',
+      selectedPlanId === undefined ? { projectId } : { projectId, selectedPlanId },
+    );
   },
   resolveBackendPomConflict(planId: string, repoId: string, side: 'test' | 'development') {
     return native<void>('resolve_backend_pom_conflict', { planId, repoId, side });

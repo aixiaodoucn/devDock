@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { api, desktop } from '../api';
-import { syncBackendModules, scmProjectId } from '../backend-mapping';
+import { hasMatchableModuleUrl, syncBackendModules, scmProjectId } from '../backend-mapping';
 import type {
   Project,
   BackendGitPlan,
@@ -43,6 +43,18 @@ const canContinue = computed(() => {
   );
 });
 const history = ref<BackendGitOperation[]>([]);
+const confirmingClearHistory = ref(false);
+const clearingHistory = ref(false);
+// 执行结果可能已结束，不应当作为待处理选项显示。
+const selectedHistoryId = computed({
+  get: () => history.value.find((item) => item.planId === operation.value?.planId)?.planId ?? '',
+  set: (id: string) => {
+    const selectedOperation = history.value.find((item) => item.planId === id);
+    if (!selectedOperation) return;
+    operation.value = selectedOperation;
+    plan.value = null;
+  },
+});
 const operationLabels: Record<BackendGitOperation['status'], string> = {
   prepared: '等待执行',
   running: '执行中',
@@ -113,7 +125,15 @@ const development = ref<ScmModule[]>([]);
 const testing = ref<ScmModule[]>([]);
 const loadedDevelopmentId = ref('');
 const loadedTestId = ref<string | undefined>();
-const statusIdentities = ref<Record<string, string>>({});
+interface LoadedModules {
+  devId: string;
+  testId?: string;
+  dev: ScmModule[];
+  test: ScmModule[];
+}
+const MODULE_LOAD_LABEL = '加载 SCM 模块';
+const mappingRemoteUrls = ref<Record<string, string>>({});
+const readIdentities = ref<Record<string, string>>({});
 const repositoryIdentity = (repo: Project['subProjects'][number]) =>
   JSON.stringify([repo.path, repo.remote, repo.scmGitId]);
 function sourceId(value: string): string {
@@ -127,6 +147,7 @@ let generation = 0;
 let stateSequence = 0;
 let repositorySequence = 0;
 let historySequence = 0;
+let historyProjectGeneration = 0;
 let disposed = false;
 let unlisten: UnlistenFn | undefined;
 const signature = (value: Project) =>
@@ -176,13 +197,14 @@ const locked = computed(
     props.saving ||
     props.busy ||
     !!activity.value ||
+    clearingHistory.value ||
     repositoryLoading.value ||
     running.value ||
     !!waiting.value,
 );
 const statusFor = (id: string) => {
   const repo = draft.value.subProjects.find((item) => item.id === id);
-  return repo && statusIdentities.value[id] === repositoryIdentity(repo)
+  return repo && readIdentities.value[id] === repositoryIdentity(repo)
     ? statuses.value.find((item) => item.id === id)
     : undefined;
 };
@@ -208,7 +230,12 @@ const mapping = computed(() => {
   const result = syncBackendModules(
     draft.value.subProjects.filter((repo) => !statusFor(repo.id)?.error),
     Object.fromEntries(
-      draft.value.subProjects.map((repo) => [repo.id, statusFor(repo.id)?.remoteUrl ?? '']),
+      draft.value.subProjects.map((repo) => [
+        repo.id,
+        readIdentities.value[repo.id] === repositoryIdentity(repo)
+          ? (mappingRemoteUrls.value[repo.id] ?? '')
+          : '',
+      ]),
     ),
     developmentLoaded.value ? development.value : [],
     loadedTestId.value ? testing.value : undefined,
@@ -347,30 +374,77 @@ async function perform(label: string, action: (token: number) => Promise<void>) 
     if (valid(token)) activity.value = '';
   }
 }
-async function refreshRepositories(token = generation, fillIds: string[] = []): Promise<boolean> {
-  if (!desktop) return false;
+function invalidateRepositoryRefresh() {
+  ++repositorySequence;
+  repositoryLoading.value = false;
+}
+async function refreshRepositories(
+  token = generation,
+  fillMapping = false,
+  modules?: LoadedModules,
+): Promise<boolean> {
+  if (!desktop || !valid(token)) return false;
+  if (!modules && (!developmentLoaded.value || activity.value === MODULE_LOAD_LABEL)) return false;
   const sequence = ++repositorySequence;
+  const current = () => valid(token) && sequence === repositorySequence;
   repositoryLoading.value = true;
   const repositories = copy(draft.value.subProjects);
+  const dev = modules?.dev ?? development.value;
+  const fillIds = fillMapping
+    ? repositories
+        .filter((repo) => readIdentities.value[repo.id] !== repositoryIdentity(repo))
+        .map((repo) => repo.id)
+    : [];
   let synchronized = false;
   try {
-    const result = await api.backendRepositoryStatuses(repositories);
-    if (valid(token) && sequence === repositorySequence) {
-      statuses.value = result;
-      statusIdentities.value = Object.fromEntries(
-        repositories.map((repo) => [repo.id, repositoryIdentity(repo)]),
-      );
-      const unavailable = new Set(result.filter((item) => item.error).map((item) => item.id));
-      selected.value = selected.value.filter((id) => !unavailable.has(id));
-      // 普通刷新只更新状态；新增或身份改变时同步已加载的 SCM 分支并自动保存。
-      if (developmentLoaded.value && fillIds.length) {
-        applyLoadedMapping(fillIds);
-        synchronized = true;
-      }
-      return true;
+    // 仅重新加载或仓库身份改变时读取 URL，普通刷新复用已加载的匹配范围。
+    const candidates = hasMatchableModuleUrl(dev)
+      ? repositories.filter((repo) => !repo.scmGitId.trim())
+      : [];
+    const unread = candidates.filter(
+      (repo) => modules || readIdentities.value[repo.id] !== repositoryIdentity(repo),
+    );
+    const unreadIds = new Set(unread.map((repo) => repo.id));
+    const cachedUrls = Object.fromEntries(
+      candidates
+        .filter((repo) => !unreadIds.has(repo.id))
+        .map((repo) => [repo.id, mappingRemoteUrls.value[repo.id] ?? '']),
+    );
+    const remoteUrls = unread.length
+      ? { ...cachedUrls, ...(await api.backendRepositoryRemoteUrls(unread)) }
+      : cachedUrls;
+    if (!current()) return false;
+    const { visibleRepositoryIds } = syncBackendModules(repositories, remoteUrls, dev);
+    const matchedIds = new Set(visibleRepositoryIds);
+    const matched = repositories.filter((repo) => matchedIds.has(repo.id));
+    const result = matched.length ? await api.backendRepositoryStatuses(matched) : [];
+    if (!current()) return false;
+    // 若两次读取之间远端地址有变化，以完整状态中的最新地址为准。
+    for (const status of result) {
+      if (!status.error && Object.hasOwn(remoteUrls, status.id))
+        remoteUrls[status.id] = status.remoteUrl;
     }
+    statuses.value = result;
+    mappingRemoteUrls.value = remoteUrls;
+    readIdentities.value = Object.fromEntries(
+      repositories.map((repo) => [repo.id, repositoryIdentity(repo)]),
+    );
+    const unavailable = new Set(result.filter((item) => item.error).map((item) => item.id));
+    selected.value = selected.value.filter((id) => !unavailable.has(id));
+    if (modules) {
+      development.value = modules.dev;
+      testing.value = modules.test;
+      loadedDevelopmentId.value = modules.devId;
+      loadedTestId.value = modules.testId;
+      applyLoadedMapping();
+    } else if (fillIds.length) {
+      // 普通刷新只更新状态，外部新增或身份改变后同步分支并保存。
+      applyLoadedMapping(fillIds);
+      synchronized = true;
+    }
+    return true;
   } catch (reason) {
-    if (valid(token) && sequence === repositorySequence) failure(reason);
+    if (current()) failure(reason);
   } finally {
     if (sequence === repositorySequence) {
       repositoryLoading.value = false;
@@ -379,20 +453,59 @@ async function refreshRepositories(token = generation, fillIds: string[] = []): 
   }
   return false;
 }
-async function refreshHistory(token = generation) {
+function currentHistoryProject(token: number) {
+  return !disposed && token === historyProjectGeneration;
+}
+async function refreshHistory(autoSelect = true) {
   if (!desktop) return;
+  const token = historyProjectGeneration;
   const sequence = ++historySequence;
   try {
     const result = await api.backendGitOperations(props.project.id);
-    if (!valid(token) || sequence !== historySequence) return;
+    if (!currentHistoryProject(token) || sequence !== historySequence) return;
     history.value = result.filter(needsRecovery);
-    if (!operation.value)
+    if (autoSelect && !operation.value)
       operation.value =
         history.value.find((item) => ['running', 'aborting'].includes(item.status)) ??
         history.value[0] ??
         null;
   } catch (reason) {
-    if (valid(token) && sequence === historySequence) failure(reason);
+    if (currentHistoryProject(token) && sequence === historySequence) failure(reason);
+  }
+}
+async function clearHistory() {
+  if (!desktop || locked.value || !confirmingClearHistory.value) return;
+  const token = historyProjectGeneration;
+  const selectedPlanId = selectedHistoryId.value || undefined;
+  const selectedHasWorktree =
+    !!selectedPlanId && operation.value?.repositories.some((repo) => !!repo.worktreePath);
+  clearingHistory.value = true;
+  error.value = '';
+  try {
+    const removed = await api.backendClearGitOperations(props.project.id, selectedPlanId);
+    if (!currentHistoryProject(token)) return;
+    // 以实际删除的计划为准，不能把仍在运行或可恢复的结果一并重置。
+    const removedIds = new Set(removed);
+    history.value = history.value.filter((item) => !removedIds.has(item.planId));
+    if (operation.value && removedIds.has(operation.value.planId)) operation.value = null;
+    if (plan.value?.continuedFrom && removedIds.has(plan.value.continuedFrom)) plan.value = null;
+    confirmingClearHistory.value = false;
+    const summary = removed.length
+      ? `已清除 ${removed.length} 条 Git 操作记录`
+      : '没有可清除的 Git 操作记录';
+    const retainedNotice = selectedHasWorktree
+      ? '选中的操作仍有保留工作区，已保留该记录。'
+      : '选中的操作仍需保留，未清除。';
+    emit(
+      'notice',
+      selectedPlanId && !removedIds.has(selectedPlanId) ? `${summary}。${retainedNotice}` : summary,
+    );
+    await refreshHistory(false);
+  } catch (reason) {
+    if (currentHistoryProject(token))
+      error.value = `清除 Git 操作记录失败：${String(reason instanceof Error ? reason.message : reason)}`;
+  } finally {
+    if (currentHistoryProject(token)) clearingHistory.value = false;
   }
 }
 async function refreshState(planId: string) {
@@ -406,7 +519,8 @@ async function refreshState(planId: string) {
     history.value = [...history.value.filter((item) => item.planId !== planId), state].filter(
       needsRecovery,
     );
-    if (!['running', 'aborting'].includes(state.status)) void refreshRepositories(token);
+    if (!['running', 'aborting'].includes(state.status))
+      void refreshRepositories(token, repositoryLoading.value);
   } catch (reason) {
     if (valid(token) && sequence === stateSequence) failure(reason);
   }
@@ -456,6 +570,10 @@ watch(
     if (project.id !== persisted.id) {
       ++generation;
       ++stateSequence;
+      ++historyProjectGeneration;
+      invalidateRepositoryRefresh();
+      confirmingClearHistory.value = false;
+      clearingHistory.value = false;
       draft.value = copy(project);
       selected.value = project.subProjects.map((item) => item.id);
       statuses.value = [];
@@ -466,7 +584,8 @@ watch(
       testing.value = [];
       loadedDevelopmentId.value = '';
       loadedTestId.value = undefined;
-      statusIdentities.value = {};
+      readIdentities.value = {};
+      mappingRemoteUrls.value = {};
       push.value = false;
       cleanConfirmed.value = {};
       pomChoices.value = {};
@@ -474,7 +593,6 @@ watch(
       notice.value = '';
       error.value = '';
       activity.value = '';
-      void refreshRepositories();
       void refreshHistory();
     } else if (waiting.value && signature(project) === waiting.value) {
       draft.value = copy(project);
@@ -509,6 +627,7 @@ watch(
   () => sourceId(draft.value.scmDevelopmentProjectId),
   () => {
     ++generation;
+    invalidateRepositoryRefresh();
     activity.value = '';
     loadedDevelopmentId.value = '';
     loadedTestId.value = undefined;
@@ -521,6 +640,7 @@ watch(
   () => sourceId(draft.value.scmTestProjectId),
   () => {
     ++generation;
+    invalidateRepositoryRefresh();
     activity.value = '';
     loadedTestId.value = undefined;
     testing.value = [];
@@ -532,12 +652,10 @@ watch(
   (current, previous) => {
     const old = new Map(previous);
     const changedIds = current
-      .filter(
-        ([id, identity]) => old.get(id) !== identity && statusIdentities.value[id] !== identity,
-      )
+      .filter(([id, identity]) => old.get(id) !== identity && readIdentities.value[id] !== identity)
       .map(([id]) => id);
-    if (changedIds.length || current.length !== previous.length)
-      void refreshRepositories(generation, changedIds);
+    if (repositoryLoading.value || changedIds.length || current.length !== previous.length)
+      void refreshRepositories(generation, true);
   },
 );
 watch(
@@ -548,6 +666,9 @@ watch(
   { deep: true },
 );
 function connectionChanged(status: ScmStatus) {
+  ++generation;
+  invalidateRepositoryRefresh();
+  activity.value = '';
   connected.value = status.connected;
   sessionExpired.value = false;
   development.value = [];
@@ -570,7 +691,7 @@ function applyLoadedMapping(ids?: string[]) {
     return draft.value.scmTestProjectId.trim() ? updated : { ...updated, testBranch: '' };
   });
   // 映射仅修改 SCM 身份和分支；刚读取的 remote 状态仍属于同一仓库。
-  statusIdentities.value = Object.fromEntries(
+  readIdentities.value = Object.fromEntries(
     draft.value.subProjects.map((repo) => [repo.id, repositoryIdentity(repo)]),
   );
 }
@@ -578,22 +699,14 @@ async function loadModules() {
   if (!connected.value || !desktop || locked.value) return;
   let loaded = false;
   const token = generation;
-  await perform('加载 SCM 模块', async (currentToken) => {
+  await perform(MODULE_LOAD_LABEL, async (currentToken) => {
     const devId = scmProjectId(draft.value.scmDevelopmentProjectId);
     const testId = testProjectId();
-    // 使用草稿 remote 获取最新 URL，读取失败时不使用过期状态猜测映射。
-    if (!(await refreshRepositories(currentToken))) return;
     const [dev, test] = await Promise.all([
       api.scmProjectModules(devId),
       testId ? api.scmProjectModules(testId) : Promise.resolve([]),
     ]);
-    if (!valid(currentToken)) return;
-    development.value = dev;
-    testing.value = test;
-    loadedDevelopmentId.value = devId;
-    loadedTestId.value = testId;
-    applyLoadedMapping();
-    loaded = true;
+    loaded = await refreshRepositories(currentToken, false, { devId, testId, dev, test });
   });
   // 保存必须在 perform 释放 activity 锁后触发，父配置回执才表示保存成功。
   if (loaded && valid(token)) saveLoadedMapping();
@@ -730,7 +843,6 @@ function openWorktreeInIde(repoId: string, ide: 'IDEA' | 'WebStorm') {
 }
 onMounted(() => {
   if (!desktop) return;
-  void refreshRepositories();
   void refreshHistory();
   void listen<{ planId: string }>('backend-git-updated', (event) => {
     if (!disposed && event.payload.planId === operation.value?.planId)
@@ -816,7 +928,12 @@ onBeforeUnmount(() => {
         >
           加载模块
         </button>
-        <button class="button small" :disabled="!desktop || locked" @click="refreshRepositories()">
+        <button
+          class="button small"
+          :disabled="!desktop || !developmentLoaded || locked"
+          :title="!developmentLoaded ? '请先加载开发 SCM 模块。' : undefined"
+          @click="refreshRepositories()"
+        >
           刷新仓库
         </button>
         <button
@@ -1071,28 +1188,55 @@ onBeforeUnmount(() => {
           ><button class="button small" :disabled="locked" @click="plan = null">取消计划</button>
         </div>
       </div>
-      <div v-if="history.length" class="toolbar history-toolbar">
-        <label
-          >待处理操作<select
-            :value="operation?.planId || ''"
-            :disabled="locked"
-            @change="
-              operation =
-                history.find(
-                  (item) => item.planId === ($event.target as HTMLSelectElement).value,
-                ) || null;
-              plan = null;
-            "
-          >
-            <option value="">选择操作</option>
+      <div v-if="desktop" class="toolbar history-toolbar">
+        <label>
+          待处理操作
+          <select v-model="selectedHistoryId" :disabled="locked || !history.length">
+            <option value="" disabled>
+              {{ history.length ? '选择待处理操作' : '暂无待处理操作' }}
+            </option>
             <option v-for="item in history" :key="item.planId" :value="item.planId">
               {{ historyLabel(item) }}
             </option>
-          </select></label
-        >
-        <button class="button small" :disabled="!desktop || locked" @click="refreshHistory()">
-          刷新记录
-        </button>
+          </select>
+        </label>
+        <div class="toolbar">
+          <button class="button small" :disabled="locked" @click="refreshHistory()">
+            刷新记录
+          </button>
+          <button
+            class="button small"
+            :disabled="locked"
+            :aria-expanded="confirmingClearHistory"
+            @click="confirmingClearHistory = true"
+          >
+            清除记录
+          </button>
+        </div>
+      </div>
+      <div
+        v-if="confirmingClearHistory"
+        class="history-confirm"
+        role="group"
+        aria-label="确认清除 Git 操作记录"
+      >
+        <p class="warning">
+          将清除当前项目已结束且无需恢复的 Git
+          操作记录，以及当前选中且已执行、已暂停、没有保留工作区的操作。选中的待处理操作一经清除便无法续跑，此操作无法撤销。运行中、仍需恢复的未选中操作和有保留工作区的操作将保留。
+        </p>
+        <div class="toolbar">
+          <button
+            class="button small"
+            :disabled="clearingHistory"
+            @click="confirmingClearHistory = false"
+          >
+            取消清除
+          </button>
+          <button class="button small danger" :disabled="locked" @click="clearHistory">
+            确认清除
+          </button>
+        </div>
+        <p v-if="clearingHistory" class="hint" role="status">正在清除记录…</p>
       </div>
       <div v-if="operation" class="operation">
         <div class="section-heading">
@@ -1608,17 +1752,31 @@ code {
   min-width: 0;
 }
 .history-toolbar {
+  align-items: flex-end;
   margin-top: 16px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
 }
 .history-toolbar label {
   min-width: 0;
-  flex: 1;
+  flex: 1 1 15rem;
 }
 .history-toolbar select {
-  width: 100%;
-  min-width: 0;
+  height: var(--control-height-small);
+  min-height: var(--control-height-small);
+}
+.history-confirm {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 12px;
+}
+.history-confirm p {
+  margin: 0 0 8px;
+}
+.history-confirm [role='status'] {
+  margin: 8px 0 0;
 }
 .operation {
   margin-top: 16px;

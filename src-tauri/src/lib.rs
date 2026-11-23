@@ -28,7 +28,7 @@ use config::{Action, AppConfig, Project, Result, Settings};
 use serde::Serialize;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
-use std::{fs, path::Path, process::Command, sync::Mutex};
+use std::{collections::HashMap, fs, path::Path, process::Command, sync::Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 #[derive(Default)]
 struct StartupLogs(Mutex<Vec<String>>);
@@ -144,6 +144,14 @@ async fn backend_repository_statuses(
         .map_err(|_| "读取子仓库状态任务异常".to_owned())
 }
 #[tauri::command]
+async fn backend_repository_remote_urls(
+    repositories: Vec<backend_git::Repository>,
+) -> Result<HashMap<String, String>> {
+    tauri::async_runtime::spawn_blocking(move || backend_git::repository_remote_urls(repositories))
+        .await
+        .map_err(|_| "读取子仓库远端地址任务异常".to_owned())
+}
+#[tauri::command]
 async fn prepare_backend_git(
     app: AppHandle,
     window: tauri::WebviewWindow,
@@ -201,6 +209,20 @@ async fn backend_git_operations(
     tauri::async_runtime::spawn_blocking(move || backend_git::list_operations(&app, project_id))
         .await
         .map_err(|_| "读取 Git 操作记录异常".to_owned())?
+}
+#[tauri::command]
+async fn clear_backend_git_operations(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    project_id: String,
+    selected_plan_id: Option<String>,
+) -> Result<Vec<String>> {
+    ensure_backend_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_git::clear_operations(&app, project_id, selected_plan_id)
+    })
+    .await
+    .map_err(|_| "清除 Git 操作记录异常".to_owned())?
 }
 #[tauri::command]
 async fn open_backend_worktree_in_idea(
@@ -948,11 +970,13 @@ pub fn run() {
             updater::install_update,
             scan_backend_children,
             backend_repository_statuses,
+            backend_repository_remote_urls,
             prepare_backend_git,
             prepare_remaining_backend_git,
             execute_backend_git,
             backend_git_state,
             backend_git_operations,
+            clear_backend_git_operations,
             open_backend_worktree_in_idea,
             open_backend_worktree_in_webstorm,
             abort_backend_git,

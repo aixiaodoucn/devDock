@@ -40,6 +40,20 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     repositories[0].testBranch = 'changed';
     expect(payload.repositories[0].testBranch).toBe('testing');
   });
+  it('远端地址查询发送仓库快照并返回按仓库 ID 索引的 URL', async () => {
+    const urls = { repo: 'git@example.invalid:team/service.git' };
+    vi.mocked(invoke).mockResolvedValue(urls);
+    const repositories = reactive([{ ...repository }]);
+    await expect(api.backendRepositoryRemoteUrls(repositories)).resolves.toEqual(urls);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('backend_repository_remote_urls', {
+      repositories: [repository],
+    });
+    const [, args] = vi.mocked(invoke).mock.calls[0];
+    const payload = args as { repositories: BackendRepository[] };
+    expect(isProxy(payload.repositories[0])).toBe(false);
+    repositories[0].remote = 'upstream';
+    expect(payload.repositories[0].remote).toBe('origin');
+  });
   it('预检与执行分离，只有明确请求推送才传 true', async () => {
     vi.mocked(invoke).mockResolvedValue('task');
     await api.prepareBackendGit('group', [repository], 'merge', true);
@@ -140,6 +154,24 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     });
     await api.backendGitOperations('group');
     expect(invoke).toHaveBeenLastCalledWith('backend_git_operations', { projectId: 'group' });
+  });
+  it('清除 Git 记录只发送当前项目标识，返回实际删除的计划标识', async () => {
+    vi.mocked(invoke).mockResolvedValue(['finished-plan']);
+    await expect(api.backendClearGitOperations('group')).resolves.toEqual(['finished-plan']);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('clear_backend_git_operations', {
+      projectId: 'group',
+    });
+  });
+  it('清除 Git 记录传入选中的计划标识，返回实际删除的计划标识', async () => {
+    vi.mocked(invoke).mockResolvedValue(['finished-plan', 'paused-plan']);
+    await expect(api.backendClearGitOperations('group', 'paused-plan')).resolves.toEqual([
+      'finished-plan',
+      'paused-plan',
+    ]);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('clear_backend_git_operations', {
+      projectId: 'group',
+      selectedPlanId: 'paused-plan',
+    });
   });
   it('登录凭据只传入登录专用接口，不保存项目配置', async () => {
     vi.mocked(invoke).mockResolvedValue({ connected: true });
