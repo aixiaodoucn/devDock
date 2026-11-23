@@ -2124,6 +2124,31 @@ it.each([
   }
 });
 
+it('可以全选和取消全选当前 SCM 列表中的仓库', async () => {
+  const initial = fixture();
+  initial.subProjects.push({ ...initial.subProjects[0], id: 'other', name: 'Other' });
+  const panel = await ready(initial);
+  try {
+    const checkboxes = [...panel.root.querySelectorAll<HTMLInputElement>('.repository-title input')];
+    expect(checkboxes).toHaveLength(2);
+    expect(button(panel.root, '全选').disabled).toBe(true);
+
+    click(panel.root, '取消全选');
+    await flush();
+    expect(checkboxes.map((checkbox) => checkbox.checked)).toEqual([false, false]);
+    expect(button(panel.root, '取消全选').disabled).toBe(true);
+    expect(panel.root.textContent).toContain('已选 0 个仓库');
+
+    click(panel.root, '全选');
+    await flush();
+    expect(checkboxes.map((checkbox) => checkbox.checked)).toEqual([true, true]);
+    expect(panel.root.textContent).toContain('已选 2 个仓库');
+    expect(api.prepareBackendGit).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
+
 it('测试切换仅预检选中仓库，即使勾选推送与 pom 策略仍传 false', async () => {
   const initial = fixture();
   initial.subProjects.push({ ...initial.subProjects[0], id: 'other', name: 'Other' });

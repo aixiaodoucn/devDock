@@ -228,6 +228,12 @@ const visibleRepositories = computed(() =>
 const selectedRepositories = computed(() =>
   visibleRepositories.value.filter((repo) => selected.value.includes(repo.id)),
 );
+function setVisibleRepositoriesSelected(checked: boolean) {
+  // 保留当前 SCM 列表之外的勾选状态。
+  const visibleIds = new Set(visibleRepositories.value.map((repo) => repo.id));
+  const otherIds = selected.value.filter((id) => !visibleIds.has(id));
+  selected.value = checked ? [...otherIds, ...visibleIds] : otherIds;
+}
 function localBranch(id: string): string {
   const status = statusFor(id);
   if (!status) return '分支待刷新';
@@ -812,6 +818,22 @@ onBeforeUnmount(() => {
         </button>
         <button class="button small" :disabled="!desktop || locked" @click="refreshRepositories()">
           刷新仓库
+        </button>
+        <button
+          type="button"
+          class="button small"
+          :disabled="locked || selectedRepositories.length === visibleRepositories.length"
+          @click="setVisibleRepositoriesSelected(true)"
+        >
+          全选
+        </button>
+        <button
+          type="button"
+          class="button small"
+          :disabled="locked || !selectedRepositories.length"
+          @click="setVisibleRepositoriesSelected(false)"
+        >
+          取消全选
         </button>
       </div>
       <p
