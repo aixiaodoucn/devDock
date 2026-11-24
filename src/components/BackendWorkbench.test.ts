@@ -21,6 +21,7 @@ vi.mock('../api', () => ({
     return env.desktop;
   },
   api: {
+    logMcpStatus: vi.fn(async () => ({ enabled: false, endpoint: '' })),
     scmStatus: vi.fn(),
     scmProjects: vi.fn(),
     scmProjectModules: vi.fn(),
@@ -120,6 +121,16 @@ function input(root: HTMLElement, selector: string, value: string) {
   field.value = value;
   field.dispatchEvent(new Event('input'));
 }
+it('工作台保留项目 SCM 连接且不加载日志 MCP', async () => {
+  const panel = await mount();
+  try {
+    expect(panel.root.querySelector('[aria-label="SCM 连接"]')).toBeTruthy();
+    expect(panel.root.querySelector('[aria-label="日志 MCP"]')).toBeNull();
+    expect(api.logMcpStatus).not.toHaveBeenCalled();
+  } finally {
+    panel.close();
+  }
+});
 it('未加载模块时，打开、更新本地配置、刷新和切换项目均不检查 Git', async () => {
   const panel = await mount();
   try {
@@ -2497,7 +2508,9 @@ it('可以全选和取消全选当前 SCM 列表中的仓库', async () => {
   initial.subProjects.push({ ...initial.subProjects[0], id: 'other', name: 'Other' });
   const panel = await ready(initial);
   try {
-    const checkboxes = [...panel.root.querySelectorAll<HTMLInputElement>('.repository-title input')];
+    const checkboxes = [
+      ...panel.root.querySelectorAll<HTMLInputElement>('.repository-title input'),
+    ];
     expect(checkboxes).toHaveLength(2);
     expect(button(panel.root, '全选').disabled).toBe(true);
 

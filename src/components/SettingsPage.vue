@@ -13,6 +13,8 @@ import {
 import type { Settings, Tools, ThemeName } from '../types';
 import { NODE_MANAGER_LABELS, THEME_OPTIONS } from '../types';
 import { api, desktop } from '../api';
+import ScmConnection from './ScmConnection.vue';
+import LogMcpConnection from './LogMcpConnection.vue';
 import PathInput from './PathInput.vue';
 import AiToolsEditor from './AiToolsEditor.vue';
 import { isWindows } from '../platform';
@@ -37,6 +39,8 @@ const emit = defineEmits<{
 const cloneSettings = (settings: Settings): Settings => JSON.parse(JSON.stringify(settings));
 const draft = ref(cloneSettings(props.settings));
 const terminalNotice = computed(() => terminalFeedback(draft.value.terminal));
+// 日志登录变化后重建卡片，立即丢弃旧会话令牌和在途请求。
+const logSessionRevision = ref(0);
 const settingsForm = ref<HTMLFormElement>();
 const nodeMode = computed({
   get: () => draft.value.nodeManager || '',
@@ -421,6 +425,10 @@ watch(
         </div>
       </section>
     </div>
+    <div v-if="desktop" class="settings-log-tools">
+      <ScmConnection scope="logs" @change="logSessionRevision++" />
+      <LogMcpConnection :key="logSessionRevision" />
+    </div>
     <section class="appearance-section" aria-labelledby="appearance-title">
       <div class="section-heading">
         <div>
@@ -466,6 +474,13 @@ watch(
 </template>
 
 <style scoped>
+.settings-log-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  margin-block: 24px;
+}
 .settings-config {
   margin-bottom: 36px;
 }

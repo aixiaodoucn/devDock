@@ -7,7 +7,11 @@ mod config;
 mod environment;
 mod git;
 mod hbuilder_owner;
+mod log_access;
+pub mod log_bridge;
+mod log_mcp;
 mod manifest;
+mod mcp_clients;
 mod nvm;
 mod paths;
 mod scm;
@@ -321,12 +325,47 @@ async fn scm_login(
     remember: bool,
 ) -> Result<scm::Status> {
     ensure_backend_window(&window)?;
+    // 后端 SCM 不持有日志身份；日志账号的更换由 log_scm_login 单独撤销授权。
     scm::login(&app, base_url, username, password, remember).await
 }
 #[tauri::command]
 async fn scm_logout(app: AppHandle, window: tauri::WebviewWindow) -> Result<scm::Status> {
     ensure_backend_window(&window)?;
     scm::logout(&app).await
+}
+#[tauri::command]
+async fn log_scm_status(app: AppHandle, window: tauri::WebviewWindow) -> Result<scm::Status> {
+    ensure_backend_window(&window)?;
+    app.state::<scm::LogRuntime>().status().await
+}
+#[tauri::command]
+async fn log_scm_login(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    base_url: String,
+    username: String,
+    password: String,
+    remember: bool,
+) -> Result<scm::Status> {
+    ensure_backend_window(&window)?;
+    // 先停止使用旧日志身份的服务，整个切换期间不允许另一请求重新启用。
+    let runtime = app.state::<log_access::Runtime>();
+    let mut access = runtime.0.lock().await;
+    access.revoke().await?;
+    app.state::<scm::LogRuntime>()
+        .login(base_url, username, password, remember)
+        .await
+}
+#[tauri::command]
+async fn log_scm_logout(app: AppHandle, window: tauri::WebviewWindow) -> Result<scm::Status> {
+    ensure_backend_window(&window)?;
+    let runtime = app.state::<log_access::Runtime>();
+    let mut access = runtime.0.lock().await;
+    let revoked = access.revoke().await;
+    // 即使系统未能清理已失效的桥记录，仍应尽力清理日志 SCM 凭据。
+    let result = app.state::<scm::LogRuntime>().logout().await;
+    revoked?;
+    result
 }
 #[tauri::command]
 async fn scm_projects(
@@ -932,6 +971,8 @@ pub fn run() {
         .manage(build_history::Store::default())
         .manage(backend_git::Runtime::default())
         .manage(scm::Runtime::default())
+        .manage(scm::LogRuntime::default())
+        .manage(log_access::Runtime::default())
         .manage(tasks::Runtime::default())
         .manage(StartupLogs::default())
         .setup(|app| {
@@ -983,6 +1024,21 @@ pub fn run() {
             complete_backend_git,
             resolve_backend_pom_conflict,
             resolve_backend_pom_blocks,
+            mcp_clients::mcp_client_status,
+            mcp_clients::mcp_client_connect,
+            mcp_clients::mcp_client_disconnect,
+            mcp_clients::mcp_client_template,
+            log_access::log_mcp_status,
+            log_access::log_mcp_raw_status,
+            log_access::log_mcp_set_raw,
+            log_access::log_mcp_scan_scope,
+            log_access::log_mcp_set_scan_scope,
+            log_access::log_mcp_enable,
+            log_access::log_mcp_disable,
+            log_access::log_mcp_token,
+            log_scm_status,
+            log_scm_login,
+            log_scm_logout,
             scm_status,
             scm_login,
             scm_logout,

@@ -19,6 +19,14 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+toml = "0.8.2"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+subtle = "2"
+tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
 libc = "0.2"
@@ -41,5 +49,5 @@ version = "3"
 features = ["windows-native"]
 
 [dev-dependencies]
-tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
 tauri = { version = "2", features = ["test"] }

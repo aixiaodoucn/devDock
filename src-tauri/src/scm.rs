@@ -1,5 +1,9 @@
 //! SCM 的只读 HTML 协议适配；Cookie 和系统凭据始终留在 Rust 内。
 
+mod log_runtime;
+pub mod prodlog;
+pub use log_runtime::LogRuntime;
+
 use reqwest::{
     cookie::{CookieStore, Jar},
     redirect::Policy,
@@ -17,7 +21,7 @@ const CREDENTIAL_WARNING: &str = "系统凭据存储不可用；当前仅内存�
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
-    /// 仅在项目列表通过远端验证后为 true。
+    /// 仅在对应的 SCM 页面通过远端验证后为 true。
     pub connected: bool,
     pub base_url: Option<String>,
     pub username: Option<String>,
@@ -56,7 +60,30 @@ trait CredentialStore: Send + Sync {
     fn clear(&self) -> Result<()>;
 }
 
-struct SystemCredentialStore;
+#[derive(Clone, Copy)]
+enum LoginPage {
+    Projects,
+    Prodlog,
+}
+
+impl LoginPage {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Projects => "/kpi/project/list",
+            Self::Prodlog => "/kpi/prodlog/index",
+        }
+    }
+
+    async fn verify(self, session: &Session) -> Result<()> {
+        let html = session.get(self.path(), &[]).await?;
+        match self {
+            Self::Projects => parse_projects(&html).map(|_| ()),
+            Self::Prodlog => log_runtime::parse_log_modules(&html).map(|_| ()),
+        }
+    }
+}
+
+struct SystemCredentialStore(LoginPage);
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn credential_service(debug_assertions: bool) -> &'static str {
@@ -68,10 +95,19 @@ fn credential_service(debug_assertions: bool) -> &'static str {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 impl SystemCredentialStore {
+    fn service(&self, debug: bool) -> String {
+        let service = credential_service(debug);
+        match self.0 {
+            LoginPage::Projects => service.to_owned(),
+            LoginPage::Prodlog => format!("{service}.prodlog"),
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn entry(&self) -> Result<keyring::Entry> {
-        keyring::Entry::new(credential_service(cfg!(debug_assertions)), "default")
+        keyring::Entry::new(&self.service(cfg!(debug_assertions)), "default")
             .map_err(|_| CREDENTIAL_WARNING.into())
     }
 }
@@ -113,7 +149,9 @@ impl CredentialStore for SystemCredentialStore {
     }
 }
 
+#[derive(Clone)]
 struct Session {
+    page: LoginPage,
     base: Url,
     username: String,
     jar: Arc<Jar>,
@@ -135,15 +173,23 @@ struct RuntimeState {
 }
 
 pub struct Runtime {
+    page: LoginPage,
     state: Mutex<RuntimeState>,
     credentials: Arc<dyn CredentialStore>,
 }
 
 impl Default for Runtime {
     fn default() -> Self {
+        Self::for_page(LoginPage::Projects)
+    }
+}
+
+impl Runtime {
+    fn for_page(page: LoginPage) -> Self {
         Self {
+            page,
             state: Mutex::new(RuntimeState::default()),
-            credentials: Arc::new(SystemCredentialStore),
+            credentials: Arc::new(SystemCredentialStore(page)),
         }
     }
 }
@@ -176,7 +222,7 @@ fn allowed_redirect(base: &Url, target: &Url, hops: usize) -> bool {
         && target.password().is_none()
 }
 
-fn new_session(base: Url, username: String) -> Result<Session> {
+fn new_session(page: LoginPage, base: Url, username: String) -> Result<Session> {
     let origin = base.clone();
     let jar = Arc::new(Jar::default());
     let client = Client::builder()
@@ -193,6 +239,7 @@ fn new_session(base: Url, username: String) -> Result<Session> {
         .build()
         .map_err(|_| "Network: 无法创建 SCM HTTPS 客户端".to_string())?;
     Ok(Session {
+        page,
         base,
         username,
         jar,
@@ -221,7 +268,7 @@ impl Session {
     }
 
     fn cookie(&self) -> Option<String> {
-        let url = self.base.join("/kpi/project/list").ok()?;
+        let url = self.base.join(self.page.path()).ok()?;
         let header = self.jar.cookies(&url)?;
         header.to_str().ok()?.split(';').find_map(|pair| {
             let (key, value) = pair.trim().split_once('=')?;
@@ -390,7 +437,11 @@ impl Runtime {
         if !valid_cookie(&remembered.cookie) {
             return Err("Credential: 已记住的 SCM 会话格式无效，请重新登录".into());
         }
-        let mut session = new_session(validate_base(&remembered.base_url)?, remembered.username)?;
+        let mut session = new_session(
+            self.page,
+            validate_base(&remembered.base_url)?,
+            remembered.username,
+        )?;
         session.jar.add_cookie_str(
             &format!("PHPSESSID={}; Path=/; Secure; HttpOnly", remembered.cookie),
             &session.base,
@@ -447,7 +498,7 @@ impl Runtime {
         if username.is_empty() || password.is_empty() {
             return Err("InvalidInput: 请输入 SCM 账号和密码".into());
         }
-        let session = new_session(base, username)?;
+        let session = new_session(self.page, base, username)?;
         let login_url = session
             .base
             .join("/kpi/login")
@@ -455,7 +506,7 @@ impl Runtime {
         let response = session
             .client
             .get(login_url)
-            .query(&[("ref", "/kpi/project/list")])
+            .query(&[("ref", self.page.path())])
             .send()
             .await
             .map_err(network_error)?;
@@ -470,7 +521,7 @@ impl Runtime {
             .form(&[
                 ("username", session.username.as_str()),
                 ("password", password.as_str()),
-                ("ref", "/kpi/project/list"),
+                ("ref", self.page.path()),
                 ("act", "loginSubmit"),
                 ("submit", "Enter"),
             ])
@@ -481,8 +532,7 @@ impl Runtime {
         if is_login_page(&html) {
             return Err("Authentication: SCM 登录未成功，请检查账号和密码".into());
         }
-        let html = session.get("/kpi/project/list", &[]).await?;
-        parse_projects(&html)?;
+        self.page.verify(&session).await?;
         if session.cookie().is_none() {
             return Err("Authentication: SCM 未建立有效会话，请重新登录".into());
         }
@@ -501,10 +551,7 @@ impl Runtime {
                 message: state.message.clone(),
             });
         };
-        let result = session
-            .get("/kpi/project/list", &[])
-            .await
-            .and_then(|html| parse_projects(&html));
+        let result = self.page.verify(session).await;
         if let Err(error) = result {
             self.expire(&mut state, &error).await;
             return Err(error);
@@ -993,7 +1040,7 @@ mod tests {
                 query
             });
             // 测试会话仅连接 loopback；公开登录入口仍要求 HTTPS。
-            let mut session = new_session(base, username.into()).unwrap();
+            let mut session = new_session(LoginPage::Projects, base, username.into()).unwrap();
             session.client = Client::builder()
                 .no_proxy()
                 .timeout(Duration::from_secs(5))
@@ -1001,6 +1048,7 @@ mod tests {
                 .unwrap();
             let store = Arc::new(FakeCredentialStore::default());
             let runtime = Runtime {
+                page: LoginPage::Projects,
                 state: Mutex::new(RuntimeState {
                     loaded: true,
                     session: Some(session),
@@ -1118,7 +1166,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct FakeCredentialStore {
+    pub(super) struct FakeCredentialStore {
         value: std::sync::Mutex<Option<String>>,
         fail: bool,
         loads: std::sync::atomic::AtomicUsize,
@@ -1164,6 +1212,7 @@ mod tests {
 
     fn cookie_session(cookie: &str) -> Session {
         let session = new_session(
+            LoginPage::Projects,
             validate_base("https://example.invalid").unwrap(),
             "example-user".into(),
         )
@@ -1176,6 +1225,64 @@ mod tests {
     }
 
     #[test]
+    fn log_cookie_save_restore_and_logout_are_isolated_from_backend() {
+        let services: HashSet<_> = [LoginPage::Projects, LoginPage::Prodlog]
+            .into_iter()
+            .flat_map(|page| [true, false].map(|debug| SystemCredentialStore(page).service(debug)))
+            .collect();
+        assert_eq!(services.len(), 4);
+        tauri::async_runtime::block_on(async {
+            let log_store = Arc::new(FakeCredentialStore::default());
+            let backend_store = Arc::new(FakeCredentialStore::default());
+            let runtime = |page, credentials| Runtime {
+                page,
+                credentials,
+                state: Mutex::new(RuntimeState::default()),
+            };
+            let backend = runtime(LoginPage::Projects, backend_store.clone());
+            let log = LogRuntime(runtime(LoginPage::Prodlog, log_store.clone()));
+            let backend_session = cookie_session("backend-fixture");
+            let mut backend_state = backend.state.lock().await;
+            backend
+                .finish_login(&mut backend_state, backend_session, true)
+                .await;
+            let log_session = new_session(
+                LoginPage::Prodlog,
+                validate_base("https://example.invalid").unwrap(),
+                "log-fixture".into(),
+            )
+            .unwrap();
+            log_session.jar.add_cookie_str(
+                "PHPSESSID=log-fixture; Path=/kpi/prodlog; Secure",
+                &log_session.base,
+            );
+            let mut log_state = log.0.state.lock().await;
+            assert!(
+                log.0
+                    .finish_login(&mut log_state, log_session, true)
+                    .await
+                    .remembered
+            );
+            drop(log_state);
+            let restored = LogRuntime(runtime(LoginPage::Prodlog, log_store.clone()));
+            let mut state = restored.0.state.lock().await;
+            restored.0.restore(&mut state).await.unwrap();
+            assert_eq!(
+                state.session.as_ref().unwrap().cookie().as_deref(),
+                Some("log-fixture")
+            );
+            drop(state);
+            assert!(!restored.logout().await.unwrap().connected);
+            assert!(log_store.value.lock().unwrap().is_none());
+            assert!(
+                backend_state.session.as_ref().unwrap().cookie().as_deref()
+                    == Some("backend-fixture")
+            );
+            assert_eq!(backend_store.counts(), (0, 1, 0));
+        });
+    }
+
+    #[test]
     fn unchanged_cookie_never_rewrites_and_restored_cookie_is_already_saved() {
         tauri::async_runtime::block_on(async {
             let store = Arc::new(FakeCredentialStore::default());
@@ -1185,6 +1292,7 @@ mod tests {
             persist(&mut session, store.clone()).await;
             assert_eq!(store.counts(), (0, 1, 0));
             let runtime = Runtime {
+                page: LoginPage::Projects,
                 state: Mutex::new(RuntimeState::default()),
                 credentials: store.clone(),
             };
@@ -1232,6 +1340,7 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let store = Arc::new(FakeCredentialStore::default());
             let runtime = Runtime {
+                page: LoginPage::Projects,
                 state: Mutex::new(RuntimeState::default()),
                 credentials: store.clone(),
             };
@@ -1274,6 +1383,7 @@ mod tests {
                 let store = Arc::new(FakeCredentialStore::default());
                 persist(&mut cookie_session("old-session"), store.clone()).await;
                 let runtime = Runtime {
+                    page: LoginPage::Projects,
                     state: Mutex::new(RuntimeState::default()),
                     credentials: store.clone(),
                 };
@@ -1290,6 +1400,7 @@ mod tests {
             }
             let store = Arc::new(FakeCredentialStore::default());
             let runtime = Runtime {
+                page: LoginPage::Projects,
                 state: Mutex::new(RuntimeState::default()),
                 credentials: store.clone(),
             };
@@ -1310,6 +1421,7 @@ mod tests {
             persist(&mut cookie_session("old-session"), store.clone()).await;
             let stored = store.value.lock().unwrap().clone();
             let runtime = Runtime {
+                page: LoginPage::Projects,
                 state: Mutex::new(RuntimeState {
                     session: Some(cookie_session("old-memory-session")),
                     ..Default::default()
@@ -1342,6 +1454,7 @@ mod tests {
                 ..Default::default()
             });
             let runtime = Runtime {
+                page: LoginPage::Projects,
                 state: Mutex::new(RuntimeState::default()),
                 credentials: store.clone(),
             };
@@ -1373,6 +1486,7 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let store = Arc::new(FakeCredentialStore::default());
             let mut session = new_session(
+                LoginPage::Projects,
                 validate_base("https://example.invalid").unwrap(),
                 "example-user".into(),
             )
@@ -1386,6 +1500,7 @@ mod tests {
             let stored = store.value.lock().unwrap().clone().unwrap();
             assert!(!stored.contains("password"));
             let runtime = Runtime {
+                page: LoginPage::Projects,
                 state: Mutex::new(RuntimeState::default()),
                 credentials: store.clone(),
             };
@@ -1414,6 +1529,7 @@ mod tests {
                 ..Default::default()
             });
             let mut session = new_session(
+                LoginPage::Projects,
                 validate_base("https://example.invalid").unwrap(),
                 "example-user".into(),
             )
@@ -1427,6 +1543,7 @@ mod tests {
             assert!(session.message.as_deref().unwrap().contains("仅内存"));
             assert!(session.cookie().is_some());
             let runtime = Runtime {
+                page: LoginPage::Projects,
                 state: Mutex::new(RuntimeState::default()),
                 credentials: store,
             };

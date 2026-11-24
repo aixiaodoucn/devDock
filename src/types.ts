@@ -96,6 +96,17 @@ export interface BackendGitOperation {
     } | null;
   }[];
 }
+export type McpClient = 'claude' | 'codex';
+export interface McpClientStatus {
+  state: 'missing' | 'available' | 'configured' | 'conflict' | 'unsupported';
+  message: string;
+}
+
+export interface LogMcpStatus {
+  enabled: boolean;
+  endpoint: string;
+}
+
 export interface ScmStatus {
   connected: boolean;
   baseUrl: string | null;

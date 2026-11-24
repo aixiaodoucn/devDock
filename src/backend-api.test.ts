@@ -40,6 +40,42 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     repositories[0].testBranch = 'changed';
     expect(payload.repositories[0].testBranch).toBe('testing');
   });
+  it('日志 MCP 状态、启停和令牌使用独立桌面命令', async () => {
+    for (const [request, command] of [
+      [api.logMcpStatus, 'log_mcp_status'],
+      [api.logMcpRawStatus, 'log_mcp_raw_status'],
+      [api.logMcpEnable, 'log_mcp_enable'],
+      [api.logMcpDisable, 'log_mcp_disable'],
+      [api.logMcpToken, 'log_mcp_token'],
+    ] as const) {
+      await request();
+      expect(invoke).toHaveBeenLastCalledWith(command, undefined);
+    }
+  });
+  it('原文授权按布尔参数写入并返回后端确认值', async () => {
+    for (const enabled of [true, false]) {
+      vi.mocked(invoke).mockResolvedValue(false);
+      await expect(api.logMcpSetRaw(enabled)).resolves.toBe(false);
+      expect(invoke).toHaveBeenLastCalledWith('log_mcp_set_raw', { enabled });
+    }
+  });
+  it('客户端命令传入客户端标识，通用模板无参并原样返回', async () => {
+    const result = { state: 'available', message: '可注册' };
+    vi.mocked(invoke).mockResolvedValue(result);
+    for (const client of ['claude', 'codex'] as const) {
+      for (const [call, command] of [
+        [api.mcpClientStatus, 'mcp_client_status'],
+        [api.mcpClientConnect, 'mcp_client_connect'],
+        [api.mcpClientDisconnect, 'mcp_client_disconnect'],
+      ] as const) {
+        await expect(call(client)).resolves.toEqual(result);
+        expect(invoke).toHaveBeenLastCalledWith(command, { client });
+      }
+    }
+    vi.mocked(invoke).mockResolvedValue('{}');
+    await expect(api.mcpClientTemplate()).resolves.toBe('{}');
+    expect(invoke).toHaveBeenLastCalledWith('mcp_client_template', undefined);
+  });
   it('远端地址查询发送仓库快照并返回按仓库 ID 索引的 URL', async () => {
     const urls = { repo: 'git@example.invalid:team/service.git' };
     vi.mocked(invoke).mockResolvedValue(urls);
@@ -172,6 +208,23 @@ describe('后端 Git 与 SCM 桌面接口', () => {
       projectId: 'group',
       selectedPlanId: 'paused-plan',
     });
+  });
+  it('日志 SCM 仅调用专用状态、登录和退出命令', async () => {
+    const status = { connected: true };
+    vi.mocked(invoke).mockResolvedValue(status);
+    await expect(api.logScmStatus()).resolves.toBe(status);
+    expect(invoke).toHaveBeenLastCalledWith('log_scm_status', undefined);
+    await expect(api.logScmLogin('https://example.invalid', 'logs', 'fixture', true)).resolves.toBe(
+      status,
+    );
+    expect(invoke).toHaveBeenLastCalledWith('log_scm_login', {
+      baseUrl: 'https://example.invalid',
+      username: 'logs',
+      password: 'fixture',
+      remember: true,
+    });
+    await expect(api.logScmLogout()).resolves.toBe(status);
+    expect(invoke).toHaveBeenLastCalledWith('log_scm_logout', undefined);
   });
   it('登录凭据只传入登录专用接口，不保存项目配置', async () => {
     vi.mocked(invoke).mockResolvedValue({ connected: true });

@@ -2,10 +2,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api, desktop } from '../api';
 import type { ScmStatus } from '../types';
-const props = withDefaults(defineProps<{ sessionExpired?: boolean; disabled?: boolean }>(), {
-  sessionExpired: false,
-  disabled: false,
-});
+const props = withDefaults(
+  defineProps<{ scope?: 'project' | 'logs'; sessionExpired?: boolean; disabled?: boolean }>(),
+  {
+    scope: 'project',
+    sessionExpired: false,
+    disabled: false,
+  },
+);
+const title = computed(() => (props.scope === 'logs' ? '日志 SCM 登录' : 'SCM 连接'));
 const emit = defineEmits<{ connected: [status: ScmStatus]; change: [status: ScmStatus] }>();
 const baseUrl = ref('');
 const username = ref('');
@@ -45,17 +50,16 @@ async function request(action: 'status' | 'login' | 'logout') {
   pending.value = true;
   error.value = '';
   try {
+    const logs = props.scope === 'logs';
+    const login = logs ? api.logScmLogin : api.scmLogin;
+    const logout = logs ? api.logScmLogout : api.scmLogout;
+    const load = logs ? api.logScmStatus : api.scmStatus;
     const value =
       action === 'login'
-        ? await api.scmLogin(
-            baseUrl.value.trim(),
-            username.value.trim(),
-            password.value,
-            remember.value,
-          )
+        ? await login(baseUrl.value.trim(), username.value.trim(), password.value, remember.value)
         : action === 'logout'
-          ? await api.scmLogout()
-          : await api.scmStatus();
+          ? await logout()
+          : await load();
     if (disposed || token !== generation) return;
     password.value = '';
     accept(value);
@@ -107,11 +111,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="scm-connection" aria-label="SCM 连接">
+  <section class="scm-connection" :aria-label="title">
     <div class="connection-heading">
-      <strong>SCM 连接</strong
+      <strong>{{ title }}{{ scope === 'logs' ? ' · 生产环境' : '' }}</strong
       ><span>{{ status?.connected && !expired ? '已连接' : '未连接' }}</span>
     </div>
+    <p v-if="scope === 'logs'" class="hint">
+      请填写生产 SCM 的 HTTPS 根地址。本通道只查生产日志，不连接测试跳板机，也不会使用后端工作台的账号。
+    </p>
     <p v-if="!desktop" class="hint">浏览器预览：SCM 登录需要桌面应用。</p>
     <p v-if="expired" role="alert">会话已过期，请重新登录。</p>
     <div v-if="status?.connected && !expired" class="connection-summary">

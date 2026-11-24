@@ -7,7 +7,19 @@ import { defaultConfig, type NodeVersion, type Settings } from '../types';
 
 vi.mock('../api', () => ({
   desktop: true,
-  api: { choosePath: vi.fn(), nodeVersions: vi.fn() },
+  api: {
+    choosePath: vi.fn(),
+    nodeVersions: vi.fn(),
+    scmStatus: vi.fn(),
+    scmLogin: vi.fn(),
+    scmLogout: vi.fn(),
+    logScmStatus: vi.fn(),
+    logScmLogin: vi.fn(),
+    logScmLogout: vi.fn(),
+    logMcpStatus: vi.fn(),
+    logMcpToken: vi.fn(),
+    mcpClientStatus: vi.fn(),
+  },
 }));
 async function flush() {
   await Promise.resolve();
@@ -411,4 +423,67 @@ describe('SettingsPage 公共 Node.js 环境', () => {
       panel.dispose();
     }
   });
+});
+
+it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令牌并刷新 MCP', async () => {
+  const disconnected = {
+    connected: false,
+    baseUrl: null,
+    username: null,
+    remembered: false,
+    message: null,
+  };
+  vi.mocked(api.logScmStatus).mockResolvedValue(disconnected);
+  vi.mocked(api.logScmLogin).mockResolvedValue({
+    ...disconnected,
+    connected: true,
+    username: 'logs',
+  });
+  vi.mocked(api.logScmLogout).mockResolvedValue(disconnected);
+  vi.mocked(api.logMcpStatus).mockResolvedValue({
+    enabled: true,
+    endpoint: 'http://localhost/mcp',
+  });
+  vi.mocked(api.logMcpToken).mockResolvedValue('fixture-session-token');
+  const panel = mount();
+  try {
+    await flush();
+    const login = panel.root.querySelector<HTMLElement>('[aria-label="日志 SCM 登录"]')!;
+    expect(login).toBeTruthy();
+    expect(api.logScmStatus).toHaveBeenCalled();
+    await change(login, '[name=baseUrl]', 'https://example.invalid');
+    await change(login, '[name=username]', 'logs');
+    await change(login, '[name=password]', 'fixture');
+    login.querySelector<HTMLInputElement>('[type=checkbox]')!.click();
+    for (const action of ['login', 'logout']) {
+      const tokenButton = Array.from(panel.root.querySelectorAll('button')).find(
+        (b) => b.textContent?.trim() === '显示令牌',
+      );
+      tokenButton!.click();
+      await flush();
+      expect(panel.root.textContent).toContain('fixture-session-token');
+      vi.mocked(api.logMcpStatus).mockClear();
+      if (action === 'login')
+        login.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+      else
+        Array.from(login.querySelectorAll('button'))
+          .find((b) => b.textContent?.trim() === '退出登录')!
+          .click();
+      await flush();
+      expect(panel.root.textContent).not.toContain('fixture-session-token');
+      expect(api.logMcpStatus).toHaveBeenCalledOnce();
+    }
+    expect(api.logScmLogin).toHaveBeenCalledExactlyOnceWith(
+      'https://example.invalid',
+      'logs',
+      'fixture',
+      true,
+    );
+    expect(api.logScmLogout).toHaveBeenCalledOnce();
+    expect(api.scmStatus).not.toHaveBeenCalled();
+    expect(api.scmLogin).not.toHaveBeenCalled();
+    expect(api.scmLogout).not.toHaveBeenCalled();
+  } finally {
+    panel.dispose();
+  }
 });

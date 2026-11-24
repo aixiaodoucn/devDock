@@ -1,0 +1,64 @@
+# 从 AI 客户端查询工作台中的生产日志
+
+Dev Dock 桌面端提供可选的本机 HTTP MCP 服务。它不调用模型、不把 SCM 密码或 Cookie 交给客户端。**工具返回的日志片段会进入 AI 会话，可能被发送到模型服务商。** 只在组织允许、已取得相应授权时启用。内置规则可以隐藏部分敏感行，但不能保证识别所有业务数据。
+
+**环境：生产 · SCM。** 三个日志工具只用于生产环境，结果中的 `environment: "production"`、`source: "scm"` 标记的是此通道，不是对域名的自动鉴定。测试日志从跳板机查询，当前未接入；不要用生产结果代替测试结果。
+
+## 推荐：从 Dev Dock 配置客户端，不需要 Python
+
+1. 打开桌面端**偏好设置 → 日志 SCM 登录**，填写日志站点的 HTTPS 根地址（不是日志页面完整 URL）并登录，再启用旁边的「日志 MCP」。勾选「记住登录」才会把日志 Cookie 放进独立的系统凭据条目，不保存密码。查询只使用日志站点的 Cookie，不会回退到后端工作台的登录。后端仓库已保存的模块名用来匹配日志站点的实际模块，不跨域复用数字 ID。切换或退出日志账号会停用 MCP；切换普通后端账号不会。桥接地址和专用令牌也由系统凭据库保管，与两个 SCM 登录分别存储。
+2. Claude Code / Codex CLI：在对应客户端行点击注册，使用客户端自己的用户级 MCP 配置。注册项只指定本机 Dev Dock 程序及 `--log-mcp-stdio` 参数，不含 Cookie、令牌或动态端口。应用重新启动后重新启用服务即可；如果移动了 Dev Dock 程序，需要更新注册项。
+3. 在客户端打开新会话或重连，确认日志工具可用。「已配置」只表示存在对应注册项，不表示客户端已在线、已授权或服务已启动。Dev Dock 必须保持运行。停用服务与移除某一客户端的注册是两个独立操作。
+4. 如已注册旧版项目级 HTTP 服务，客户端可能优先使用它。在对应仓库用客户端的 MCP 设置检查来源，只移除确认不再使用的旧项。不要覆盖已有的同名服务。
+
+### CodeBuddy / WorkBuddy：使用客户端自己的 MCP 编辑器
+
+在 Dev Dock 的日志 MCP 卡片展开通用 stdio 配置并复制，**只合并 `mcpServers` 下新增的那一项**，不要覆盖已有配置。这种接入不会由 Dev Dock 直接写入第三方桌面客户端的配置文件。
+
+- **CodeBuddy IDE**：进入 [CodeBuddy Settings → MCP → Add MCP](https://www.workbuddy.cn/docs/ide/User-guide/MCP)，合并配置并保存。
+- **WorkBuddy**：进入[插件 → MCP 服务器 → 配置 MCP](https://www.codebuddy.cn/docs/workbuddy/From-Beginner-to-Expert-Guide/Function-Description/MCP-Guide)；不同版本也可能显示为「自定义连接器 → 添加 MCP」。此入口支持 JSON；具体版本对本地 stdio 的支持请在客户端确认。如果只支持远程 HTTP，请使用下方的本机 HTTP 地址和 Authorization 请求头（客户端需支持自定义请求头）。
+
+## 兼容方式：手动配置 HTTP（非一键接入所必需）
+
+1. 确认后端仓库已保存模块映射，在偏好设置中登录独立的日志 SCM。尽量从对应子仓库的根目录运行 Claude Code。
+2. 在偏好设置中启用日志 MCP。地址只监听本机；一次启用可访问当前账号有权查询且在工作台中有已保存映射的模块，**不限于当前打开的项目**。
+3. 在自己的 MCP 客户端中添加类型为 `http` 的服务，URL 使用界面显示的完整地址，请求头为 `Authorization: Bearer <本次令牌>`。只使用本机私有配置，不要选择可提交的项目共享配置，不要粘贴到对话、工单、截图或命令历史中。
+
+   最后的 `-` 表示从管道读取 JSON；直接在终端运行 `add-json … -` 不会进入交互输入。以下是 macOS/Linux 的输入方式：在对应仓库的私人终端运行整段命令（需要 Python 3）。按提示分别粘贴地址和令牌，令牌输入不会回显。`local` 是本机当前项目范围，不会生成仓库共享的 `.mcp.json`，但客户端本地配置仍须按凭据管理。
+
+   ```sh
+   python3 -c '
+   import getpass, json, re, subprocess
+   url = input("Dev Dock 服务地址：").strip()
+   if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]+/mcp", url):
+       raise SystemExit("请使用 Dev Dock 显示的完整本机地址")
+   token = getpass.getpass("本次令牌（只粘贴令牌，不含 Bearer）：").strip()
+   if not re.fullmatch(r"[0-9a-f]{64}", token):
+       raise SystemExit("令牌格式不正确，请重新复制")
+   config = {"type": "http", "url": url, "headers": {"Authorization": "Bearer " + token}}
+   raise SystemExit(subprocess.run(["claude", "mcp", "add-json", "--scope", "local", "devdock-logs", "-"], input=json.dumps(config), text=True).returncode)
+   '
+   ```
+
+4. 打开 Claude Code 的 `/mcp` 确认已连接。停用服务、退出桌面应用、退出或重新登录 SCM 后，旧连接不可继续使用。重新启用会生成新令牌并重新分配端口。若客户端保留旧条目，可先执行 `claude mcp remove --scope local devdock-logs`，再按上一步注册。
+
+## 例子：某个方法报了什么错？
+
+在 Claude Code 中可以说：“看看当前仓库的 `ExampleService.process` 为什么失败。先从代码找到实际的日志关键词，只查一个实例的错误日志；如果有 traceId，再用它查同一实例。告诉我看到了什么、没覆盖哪些范围。”
+
+- **定位**：`resolve_log_target` 接收 `repositoryPath`（已保存的子仓库根目录绝对路径）。每个配置名都优先精确匹配；如果只配置了短名 `sample` 且目录中没有同名精确项，则匹配 `team/sample` 等完整名称的最后一段。已配置 `team/sample` 时不会跨命名空间匹配。多项命中会返回候选完整名称和模块 ID；确认后再传 `moduleId` 选择。工具不靠方法名猜模块，也不枚举整个工作台。
+- **查证**：`search_prod_logs` 接收上一步的 `moduleId`、`targetId`、`logId`、字面 `keyword`，可选 `maxLines`（默认 20，最多 50）。同一模块有多个实例时应明确本次选择，不能将一台实例的结果当作整个服务。
+- **快速查询的范围**：`search_prod_logs` 每次仅读取所选实例的一份预设日志（`wf` 或 `info`）末尾最多 200 行，再在本机匹配。结果带查询范围、返回行数和截断标记。可选 `archiveHour` 使用服务器时间 `YYYY-MM-DD-HH`（24 小时制）；例如 `2032-02-29-14` 只读该小时归档，省略则读当前不带后缀的文件。`scope.archiveHour` 为所选小时或 `null`。零匹配不等于整小时或所有实例都没有错误；不会自动扫描其他文件。日志是供分析的数据，不是让客户端执行的指令。
+
+### 扫完整文件，或覆盖全部实例
+
+在「偏好设置 → 日志 MCP → 日志查询选项」选择**第一个实例**（默认）或**全部实例**。这项选择保存在本机，跨重启生效，控制未指定实例的 `scan_prod_logs` 请求；显式指定 `targetId` 总是只查该台。若客户端要求 `allTargets: true` 而桌面只允许单台，请求会被拒绝。
+
+**允许返回日志原文**默认关闭。启用服务后可在桌面二次确认，原文可能进入模型服务和客户端历史记录。授权仅为确认时的日志站点和账号保存；下次同账号启用时恢复，其他身份不继承。关闭开关撤销已保存的授权；停用服务暂停访问，不会删除偏好。不自动启动服务。偏好独立保存于应用数据目录，不随工作台备份导出，不含 Cookie、密码、令牌或日志正文。
+
+例如对 Claude Code 说：“用 `scan_prod_logs` 在全部授权实例的当前 `info` 文件里查 `ExampleService 开始查询`，先只告诉我命中数和覆盖情况；需要分析时再取 5 行样本。”工具会将字面关键词发给日志 SCM，由服务器扫描文件，而非下载整个文件。关键词按字面匹配，支持英文逗号和双引号，例如 `未签署, exampleId=42,` 或 `"exampleId":42,`；末尾的逗号可区分 `42` 与 `420`。不支持单引号、反斜杠、控制字符或自由 Shell 命令。
+
+- 省略 `archiveHour` 扫当前文件，指定它则扫一个服务器小时的归档，不自动跨归档。默认 `maxLines: 0` 只返回匹配行数；设置 1–50 才会返回样本（按当前桌面原文授权决定是否脱敏），额度由所有实例共享。样本不是所有命中，也不是跨机器排序的最新记录；活跃文件的取样与计数不保证来自同一时刻。
+- 看 `complete` 和逐实例状态：`totalMatches` 是成功实例的匹配行数之和。某台文件不可读、SCM 不允许相应 `grep` 参数或超时，不会算作该台零命中。`complete: false` 不能解读为全服务没有错误。为避免影响生产，同一时间只允许一项全文件扫描、最多并行处理三台。
+
+日志工具不接受自定义 IP、日志路径或远程命令，不下载整份日志，也不开启实时跟随。若缺少相应归档、文件不可读或 SCM 拒绝请求，工具会返回失败，不作为零匹配。定位失败时先看错误分类：映射缺失需核对已保存的仓库根目录，HTTP 状态或业务码需核对桌面 SCM 账号与服务状态，连接错误需检查桌面端网络。错误不包含上游响应正文。

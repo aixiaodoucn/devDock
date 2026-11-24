@@ -666,6 +666,7 @@ watch(
   { deep: true },
 );
 function connectionChanged(status: ScmStatus) {
+  // SCM 会话切换会停用日志服务，重新挂载以清除旧凭据并查询状态。
   ++generation;
   invalidateRepositoryRefresh();
   activity.value = '';

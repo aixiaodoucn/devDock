@@ -21,12 +21,16 @@ import type {
   BackendGitPlan,
   BackendGitOperation,
   PomBlockChoice,
+  LogMcpStatus,
+  McpClient,
+  McpClientStatus,
   ScmStatus,
   ScmProject,
   ScmModule,
 } from './types';
 import { defaultConfig, normalizeProjectPlatforms } from './types';
 
+export type LogMcpScanScope = 'first' | 'all';
 export const desktop = isTauri();
 // 浏览器预览使用独立本地存储；构建和外部程序调用始终只在桌面应用中执行。
 const PREVIEW_KEY = 'dev-dock-preview-v1';
@@ -119,6 +123,51 @@ export const api = {
   },
   abortBackendGit(planId: string, repoId: string) {
     return native<void>('abort_backend_git', { planId, repoId });
+  },
+  logMcpStatus() {
+    return native<LogMcpStatus>('log_mcp_status');
+  },
+  logMcpRawStatus() {
+    return native<boolean>('log_mcp_raw_status');
+  },
+  logMcpSetRaw(enabled: boolean) {
+    return native<boolean>('log_mcp_set_raw', { enabled });
+  },
+  logMcpScanScope() {
+    return native<LogMcpScanScope>('log_mcp_scan_scope');
+  },
+  logMcpSetScanScope(scope: LogMcpScanScope) {
+    return native<LogMcpScanScope>('log_mcp_set_scan_scope', { scope });
+  },
+  logMcpEnable() {
+    return native<LogMcpStatus>('log_mcp_enable');
+  },
+  logMcpDisable() {
+    return native<LogMcpStatus>('log_mcp_disable');
+  },
+  logMcpToken() {
+    return native<string>('log_mcp_token');
+  },
+  mcpClientStatus(client: McpClient) {
+    return native<McpClientStatus>('mcp_client_status', { client });
+  },
+  mcpClientConnect(client: McpClient) {
+    return native<McpClientStatus>('mcp_client_connect', { client });
+  },
+  mcpClientDisconnect(client: McpClient) {
+    return native<McpClientStatus>('mcp_client_disconnect', { client });
+  },
+  mcpClientTemplate() {
+    return native<string>('mcp_client_template');
+  },
+  logScmStatus() {
+    return native<ScmStatus>('log_scm_status');
+  },
+  logScmLogin(baseUrl: string, username: string, password: string, remember: boolean) {
+    return native<ScmStatus>('log_scm_login', { baseUrl, username, password, remember });
+  },
+  logScmLogout() {
+    return native<ScmStatus>('log_scm_logout');
   },
   scmStatus() {
     return native<ScmStatus>('scm_status');
