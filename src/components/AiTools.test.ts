@@ -186,6 +186,9 @@ describe('项目终端命令', () => {
       const command = panel.root.querySelector<HTMLInputElement>(
         '[aria-label="终端命令 1 执行命令"]',
       )!;
+      // 跨模块校验会先显示终端命令面板，再将焦点移到错误字段。
+      await nextTick();
+      expect(panel.root.querySelector('nav [aria-current="page"]')?.textContent).toBe('终端命令');
       expect(document.activeElement).toBe(command);
       const exportButton = Array.from(
         panel.root.querySelectorAll<HTMLButtonElement>('button'),

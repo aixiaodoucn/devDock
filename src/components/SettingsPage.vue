@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import {
   Download,
   Upload,
   RefreshCw,
   SlidersHorizontal,
+  Plug,
   Terminal,
   ShieldCheck,
   Palette,
@@ -41,7 +42,20 @@ const draft = ref(cloneSettings(props.settings));
 const terminalNotice = computed(() => terminalFeedback(draft.value.terminal));
 // 日志登录变化后重建卡片，立即丢弃旧会话令牌和在途请求。
 const logSessionRevision = ref(0);
+const SETTINGS_SECTIONS = [
+  { id: 'tools', label: '开发工具', icon: SlidersHorizontal },
+  { id: 'commands', label: '终端命令', icon: Terminal },
+  { id: 'backup', label: '配置随你迁移', icon: ShieldCheck },
+  { id: 'mcp', label: 'MCP 服务', icon: Plug },
+  { id: 'appearance', label: '外观主题', icon: Palette },
+] as const;
+const activeSection = ref<(typeof SETTINGS_SECTIONS)[number]['id']>('tools');
 const settingsForm = ref<HTMLFormElement>();
+// 保存和导出共用草稿；错误字段可能在另一个模块，先切换再聚焦。
+function focusField(section: 'tools' | 'commands', selector: string) {
+  activeSection.value = section;
+  void nextTick(() => settingsForm.value?.querySelector<HTMLElement>(selector)?.focus());
+}
 const nodeMode = computed({
   get: () => draft.value.nodeManager || '',
   set: (value: NonNullable<Settings['nodeManager']>) => {
@@ -126,14 +140,12 @@ function validateDraft() {
   const manager = nodeMode.value;
   if (manager && !['system', 'nvm', 'fnm'].includes(manager)) {
     emit('error', '请选择有效的公共 Node.js 环境模式。');
-    settingsForm.value?.querySelector<HTMLSelectElement>('#settings-node-manager')?.focus();
+    focusField('tools', '#settings-node-manager');
     return false;
   }
   if ((manager === 'nvm' || manager === 'fnm') && !isAbsoluteRoot(nodeRoot.value)) {
     emit('error', `请为 ${NODE_MANAGER_LABELS[manager]} 填写非空的绝对版本数据目录。`);
-    settingsForm.value
-      ?.querySelector<HTMLInputElement>('[aria-label="公共 Node.js 版本数据目录"]')
-      ?.focus();
+    focusField('tools', '[aria-label="公共 Node.js 版本数据目录"]');
     return false;
   }
   for (const [index, tool] of draft.value.aiTools.entries()) {
@@ -145,9 +157,7 @@ function validateDraft() {
         ? `请填写第 ${index + 1} 个终端命令的名称。`
         : `请为「${tool.name.trim()}」填写执行命令，例如 claude、codex 或 git pull。`,
     );
-    settingsForm.value
-      ?.querySelector<HTMLInputElement>(`[aria-label="终端命令 ${index + 1} ${field}"]`)
-      ?.focus();
+    focusField('commands', `[aria-label="终端命令 ${index + 1} ${field}"]`);
     return false;
   }
   return true;
@@ -193,293 +203,372 @@ watch(
       </div>
       <SlidersHorizontal :size="32" class="heading-icon" />
     </div>
-    <form ref="settingsForm" class="settings-config" novalidate @submit.prevent="saveDraft">
-      <div class="settings-tools-grid">
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <h2>开发工具</h2>
-              <p>项目可以覆盖这里的默认配置。</p>
-            </div>
-            <div class="button-row settings-tool-actions">
-              <button
-                type="button"
-                class="button small"
-                :disabled="detecting || detectingNode || saving || busy || !desktop"
-                @click="detectTools"
-              >
-                <RefreshCw :size="14" :class="{ spinning: detecting || detectingNode }" />{{
-                  detecting || detectingNode ? '检测中' : '自动检测'
-                }}
-              </button>
-              <button
-                type="submit"
-                class="button primary small"
-                :disabled="saving || busy || detecting || detectingNode"
-              >
-                {{ saving ? '保存中…' : '保存设置' }}
-              </button>
-            </div>
-          </div>
-          <div class="form-stack">
-            <label
-              >HBuilderX 应用路径<PathInput
-                v-model="draft.hbuilderxPath"
-                :placeholder="
-                  isWindows
-                    ? 'C:\\Program Files\\HBuilderX\\HBuilderX.exe'
-                    : '/Applications/HBuilderX.app'
-                "
-                :directory="!isWindows"
-                @error="emit('error', $event)"
-            /></label>
-            <div>
-              <label for="default-jdk" class="field-label">默认 JDK 版本</label>
-              <div class="jdk-select-row">
-                <select id="default-jdk" v-model="draft.jdkPath">
-                  <option value="">使用系统 JAVA_HOME</option>
-                  <option v-for="tool in tools.jdks" :key="tool.path" :value="tool.path">
-                    {{ tool.name }}
-                  </option>
-                  <option
-                    v-if="draft.jdkPath && !tools.jdks.some((t) => t.path === draft.jdkPath)"
-                    :value="draft.jdkPath"
+    <div class="preferences-layout">
+      <nav class="preferences-nav" aria-label="偏好设置分类">
+        <button
+          v-for="item in SETTINGS_SECTIONS"
+          :key="item.id"
+          type="button"
+          :aria-current="activeSection === item.id ? 'page' : undefined"
+          @click="activeSection = item.id"
+        >
+          <component :is="item.icon" :size="16" aria-hidden="true" />{{ item.label }}
+        </button>
+      </nav>
+      <div class="preferences-content">
+        <form
+          v-show="activeSection === 'tools' || activeSection === 'commands'"
+          ref="settingsForm"
+          class="settings-config"
+          novalidate
+          @submit.prevent="saveDraft"
+        >
+          <div class="settings-tools-grid">
+            <section v-show="activeSection === 'tools'" class="panel">
+              <div class="panel-heading">
+                <div>
+                  <h2>开发工具</h2>
+                  <p>项目可以覆盖这里的默认配置。</p>
+                </div>
+                <div class="button-row settings-tool-actions">
+                  <button
+                    type="button"
+                    class="button small"
+                    :disabled="detecting || detectingNode || saving || busy || !desktop"
+                    @click="detectTools"
                   >
-                    {{ draft.jdkPath }}
-                  </option></select
-                ><button
-                  type="button"
-                  class="button"
-                  :disabled="detecting || !desktop"
-                  @click="emit('detect')"
-                >
-                  <RefreshCw :size="14" :class="{ spinning: detecting }" />{{
-                    detecting ? '获取中…' : '获取本地版本'
-                  }}
-                </button>
-              </div>
-              <p v-if="tools.jdks.length" class="field-help">
-                已发现 {{ tools.jdks.length }} 个本地 JDK，请在下拉框选择。
-              </p>
-            </div>
-            <PathInput
-              v-model="draft.jdkPath"
-              placeholder="手动指定 JDK Home"
-              label="默认 JDK 路径"
-              @error="emit('error', $event)"
-            />
-            <fieldset class="settings-node-fields form-stack" :disabled="saving || busy">
-              <div class="settings-node-heading">
-                <label for="settings-node-manager" class="field-label">公共 Node.js 环境</label>
-                <button
-                  v-if="nodeMode === 'nvm' || nodeMode === 'fnm'"
-                  type="button"
-                  class="button small"
-                  :disabled="saving || busy || detectingNode || !desktop"
-                  @click="detectNodeRoot()"
-                >
-                  <RefreshCw :size="14" :class="{ spinning: detectingNode }" />{{
-                    detectingNode ? '检测中…' : '检测本地目录'
-                  }}
-                </button>
-              </div>
-              <div class="settings-node-selection">
-                <select id="settings-node-manager" v-model="nodeMode">
-                  <option v-if="!nodeMode" value="">未设置（保留已有项目配置）</option>
-                  <option
-                    v-for="(label, manager) in NODE_MANAGER_LABELS"
-                    :key="manager"
-                    :value="manager"
+                    <RefreshCw :size="14" :class="{ spinning: detecting || detectingNode }" />{{
+                      detecting || detectingNode ? '检测中' : '自动检测'
+                    }}
+                  </button>
+                  <button
+                    type="submit"
+                    class="button primary small"
+                    :disabled="saving || busy || detecting || detectingNode"
                   >
-                    {{ label }}
-                  </option>
-                </select>
+                    {{ saving ? '保存中…' : '保存设置' }}
+                  </button>
+                </div>
+              </div>
+              <div class="form-stack">
+                <label
+                  >HBuilderX 应用路径<PathInput
+                    v-model="draft.hbuilderxPath"
+                    :placeholder="
+                      isWindows
+                        ? 'C:\\Program Files\\HBuilderX\\HBuilderX.exe'
+                        : '/Applications/HBuilderX.app'
+                    "
+                    :directory="!isWindows"
+                    @error="emit('error', $event)"
+                /></label>
+                <div>
+                  <label for="default-jdk" class="field-label">默认 JDK 版本</label>
+                  <div class="jdk-select-row">
+                    <select id="default-jdk" v-model="draft.jdkPath">
+                      <option value="">使用系统 JAVA_HOME</option>
+                      <option v-for="tool in tools.jdks" :key="tool.path" :value="tool.path">
+                        {{ tool.name }}
+                      </option>
+                      <option
+                        v-if="draft.jdkPath && !tools.jdks.some((t) => t.path === draft.jdkPath)"
+                        :value="draft.jdkPath"
+                      >
+                        {{ draft.jdkPath }}
+                      </option></select
+                    ><button
+                      type="button"
+                      class="button"
+                      :disabled="detecting || !desktop"
+                      @click="emit('detect')"
+                    >
+                      <RefreshCw :size="14" :class="{ spinning: detecting }" />{{
+                        detecting ? '获取中…' : '获取本地版本'
+                      }}
+                    </button>
+                  </div>
+                  <p v-if="tools.jdks.length" class="field-help">
+                    已发现 {{ tools.jdks.length }} 个本地 JDK，请在下拉框选择。
+                  </p>
+                </div>
                 <PathInput
-                  v-if="nodeMode === 'nvm' || nodeMode === 'fnm'"
-                  :key="nodeMode"
-                  v-model="nodeRoot"
-                  label="公共 Node.js 版本数据目录"
-                  :placeholder="
-                    nodeMode === 'nvm'
-                      ? 'nvm 版本数据根目录（NVM_DIR / NVM_HOME）'
-                      : 'fnm 版本数据根目录（FNM_DIR）'
-                  "
+                  v-model="draft.jdkPath"
+                  placeholder="手动指定 JDK Home"
+                  label="默认 JDK 路径"
                   @error="emit('error', $event)"
                 />
-              </div>
-              <p class="field-help">
-                未设置时，新建且未指定版本的项目使用终端默认环境，旧项目的 nvm
-                选择保持不变。明确设置后，公共 Node.js 环境对项目统一生效。
-              </p>
-              <template v-if="nodeMode === 'nvm' || nodeMode === 'fnm'">
-                <p class="field-help">
-                  {{
-                    nodeMode === 'nvm' ? 'NVM_DIR / NVM_HOME' : 'FNM_DIR'
-                  }}：请选择非空的绝对目录，仅保存配置，不执行或安装管理器。
-                </p>
-                <label v-if="nodeRoots.length > 1" for="settings-node-root"
-                  >选择检测到的版本数据目录
-                  <select
-                    id="settings-node-root"
-                    :value="nodeRoots.includes(nodeRoot) ? nodeRoot : ''"
-                    @change="nodeRoot = ($event.target as HTMLSelectElement).value"
-                  >
-                    <option value="" disabled>请选择目录</option>
-                    <option v-for="root in nodeRoots" :key="root" :value="root">{{ root }}</option>
-                  </select>
-                </label>
-              </template>
-              <p v-if="nodeDetectionMessage" class="field-help" role="status">
-                {{ nodeDetectionMessage }}
-              </p>
-            </fieldset>
-          </div>
-        </section>
-        <section class="panel settings-ai-panel">
-          <AiToolsEditor
-            v-model="draft.aiTools"
-            v-model:default-tool-id="draft.defaultAiToolId"
-            :disabled="saving || busy"
-          >
-            <template #actions>
-              <button
-                type="submit"
-                class="button primary small"
-                :disabled="saving || busy || detecting || detectingNode"
-              >
-                {{ saving ? '保存中…' : '保存设置' }}
-              </button>
-            </template>
-            <template #terminal>
-              <div class="settings-terminal-fields">
-                <label
-                  >默认终端<select v-model="draft.terminal">
-                    <option v-for="tool in tools.terminals" :key="tool.path" :value="tool.path">
-                      {{ tool.name }}
-                    </option>
-                    <option
-                      v-if="!tools.terminals.some((t) => t.path === draft.terminal)"
-                      :value="draft.terminal"
+                <fieldset class="settings-node-fields form-stack" :disabled="saving || busy">
+                  <div class="settings-node-heading">
+                    <label for="settings-node-manager" class="field-label">公共 Node.js 环境</label>
+                    <button
+                      v-if="nodeMode === 'nvm' || nodeMode === 'fnm'"
+                      type="button"
+                      class="button small"
+                      :disabled="saving || busy || detectingNode || !desktop"
+                      @click="detectNodeRoot()"
                     >
-                      {{ draft.terminal || '请选择终端' }}
-                    </option>
-                  </select></label
-                >
-                <label
-                  >默认终端路径
-                  <PathInput
-                    v-model="draft.terminal"
-                    :placeholder="isWindows ? '选择已适配终端的 EXE 文件' : '手动指定终端应用路径'"
-                    :directory="!isWindows"
-                    label="默认终端路径"
-                    @error="emit('error', $event)"
-                  />
-                </label>
+                      <RefreshCw :size="14" :class="{ spinning: detectingNode }" />{{
+                        detectingNode ? '检测中…' : '检测本地目录'
+                      }}
+                    </button>
+                  </div>
+                  <div class="settings-node-selection">
+                    <select id="settings-node-manager" v-model="nodeMode">
+                      <option v-if="!nodeMode" value="">未设置（保留已有项目配置）</option>
+                      <option
+                        v-for="(label, manager) in NODE_MANAGER_LABELS"
+                        :key="manager"
+                        :value="manager"
+                      >
+                        {{ label }}
+                      </option>
+                    </select>
+                    <PathInput
+                      v-if="nodeMode === 'nvm' || nodeMode === 'fnm'"
+                      :key="nodeMode"
+                      v-model="nodeRoot"
+                      label="公共 Node.js 版本数据目录"
+                      :placeholder="
+                        nodeMode === 'nvm'
+                          ? 'nvm 版本数据根目录（NVM_DIR / NVM_HOME）'
+                          : 'fnm 版本数据根目录（FNM_DIR）'
+                      "
+                      @error="emit('error', $event)"
+                    />
+                  </div>
+                  <p class="field-help">
+                    未设置时，新建且未指定版本的项目使用终端默认环境，旧项目的 nvm
+                    选择保持不变。明确设置后，公共 Node.js 环境对项目统一生效。
+                  </p>
+                  <template v-if="nodeMode === 'nvm' || nodeMode === 'fnm'">
+                    <p class="field-help">
+                      {{
+                        nodeMode === 'nvm' ? 'NVM_DIR / NVM_HOME' : 'FNM_DIR'
+                      }}：请选择非空的绝对目录，仅保存配置，不执行或安装管理器。
+                    </p>
+                    <label v-if="nodeRoots.length > 1" for="settings-node-root"
+                      >选择检测到的版本数据目录
+                      <select
+                        id="settings-node-root"
+                        :value="nodeRoots.includes(nodeRoot) ? nodeRoot : ''"
+                        @change="nodeRoot = ($event.target as HTMLSelectElement).value"
+                      >
+                        <option value="" disabled>请选择目录</option>
+                        <option v-for="root in nodeRoots" :key="root" :value="root">
+                          {{ root }}
+                        </option>
+                      </select>
+                    </label>
+                  </template>
+                  <p v-if="nodeDetectionMessage" class="field-help" role="status">
+                    {{ nodeDetectionMessage }}
+                  </p>
+                </fieldset>
               </div>
-              <p v-if="terminalNotice.message" class="note" role="status">
-                {{ terminalNotice.message }}
+            </section>
+            <section v-show="activeSection === 'commands'" class="panel settings-ai-panel">
+              <AiToolsEditor
+                v-model="draft.aiTools"
+                v-model:default-tool-id="draft.defaultAiToolId"
+                :disabled="saving || busy"
+              >
+                <template #actions>
+                  <button
+                    type="submit"
+                    class="button primary small"
+                    :disabled="saving || busy || detecting || detectingNode"
+                  >
+                    {{ saving ? '保存中…' : '保存设置' }}
+                  </button>
+                </template>
+                <template #terminal>
+                  <div class="settings-terminal-fields">
+                    <label
+                      >默认终端<select v-model="draft.terminal">
+                        <option v-for="tool in tools.terminals" :key="tool.path" :value="tool.path">
+                          {{ tool.name }}
+                        </option>
+                        <option
+                          v-if="!tools.terminals.some((t) => t.path === draft.terminal)"
+                          :value="draft.terminal"
+                        >
+                          {{ draft.terminal || '请选择终端' }}
+                        </option>
+                      </select></label
+                    >
+                    <label
+                      >默认终端路径
+                      <PathInput
+                        v-model="draft.terminal"
+                        :placeholder="
+                          isWindows ? '选择已适配终端的 EXE 文件' : '手动指定终端应用路径'
+                        "
+                        :directory="!isWindows"
+                        label="默认终端路径"
+                        @error="emit('error', $event)"
+                      />
+                    </label>
+                  </div>
+                  <p v-if="terminalNotice.message" class="note" role="status">
+                    {{ terminalNotice.message }}
+                  </p>
+                </template>
+              </AiToolsEditor>
+            </section>
+          </div>
+        </form>
+        <div
+          class="settings-support-grid"
+          v-show="activeSection === 'tools' || activeSection === 'backup'"
+        >
+          <section v-show="activeSection === 'backup'" class="panel backup-panel">
+            <div class="backup-header">
+              <div class="backup-symbol"><ShieldCheck :size="22" /></div>
+              <h2>配置随你迁移</h2>
+              <p>
+                导出项目、平台、操作命令、工具设置及终端命令配置。重新安装或更换设备后，从 JSON
+                备份恢复。
               </p>
-            </template>
-          </AiToolsEditor>
+            </div>
+            <div class="backup-count">
+              <span>{{ projectCount }}</span> 个项目配置
+            </div>
+            <div class="button-row">
+              <button class="button" :disabled="busy || saving" @click="exportDraft">
+                <Download :size="16" />导出 JSON</button
+              ><button class="button" :disabled="busy || saving" @click="emit('import')">
+                <Upload :size="16" />导入 JSON
+              </button>
+            </div>
+            <p class="field-help">
+              导出包含当前表单中的
+              终端命令名称、执行内容和启用状态。导入前会校验格式，并提供合并或替换选项。备份不包含源码、构建产物或
+              JDK；命令中的敏感值也会随配置导出，请妥善保存。
+            </p>
+          </section>
+          <section v-show="activeSection === 'tools'" class="environment-note">
+            <Terminal :size="20" />
+            <div>
+              <h3>{{ isWindows ? 'Windows 本地执行' : 'macOS 本地执行' }}</h3>
+              <p v-if="isWindows">
+                终端命令在所选终端的 PowerShell 会话执行，日志和停止在终端中处理。Tabby 需确认
+                Run，Warp 需注册启动协议。HBuilderX 菜单自动化及 APK/WGT
+                构建暂不支持，不会修改系统执行策略。
+              </p>
+              <p v-else>
+                HBuilderX 菜单操作需要辅助功能和自动化权限。终端任务在所选终端中查看日志和停止；App
+                构建日志在工作台显示。
+              </p>
+            </div>
+          </section>
+        </div>
+        <div v-if="activeSection === 'mcp'" class="settings-log-tools">
+          <template v-if="desktop">
+            <ScmConnection scope="logs" @change="logSessionRevision++" />
+            <LogMcpConnection :key="logSessionRevision" />
+          </template>
+          <section v-else class="panel">
+            <h2>MCP 服务</h2>
+            <p>请在 Dev Dock 桌面端配置生产日志 SCM 和 MCP 客户端。</p>
+          </section>
+        </div>
+        <section
+          v-if="activeSection === 'appearance'"
+          class="appearance-section"
+          aria-labelledby="appearance-title"
+        >
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow">外观</div>
+              <h2 id="appearance-title"><Palette :size="18" />外观主题</h2>
+              <p>为你的工作空间，选一种舒服的颜色。切换即保存。</p>
+            </div>
+            <span class="appearance-note">六种色彩，同样专注</span>
+          </div>
+          <div class="theme-options">
+            <button
+              v-for="theme in THEME_OPTIONS"
+              :key="theme.id"
+              type="button"
+              :class="['theme-option', { selected: settings.theme === theme.id }]"
+              :aria-pressed="settings.theme === theme.id"
+              :title="theme.description"
+              :disabled="saving"
+              @click="emit('theme', theme.id)"
+            >
+              <div :class="['theme-preview', theme.id]" aria-hidden="true">
+                <div class="theme-preview-sidebar"><span></span><i></i><i></i><i></i></div>
+                <div class="theme-preview-main">
+                  <span class="theme-preview-line"></span>
+                  <div class="theme-preview-cards"><i></i><i></i><i></i></div>
+                  <span class="theme-preview-line short"></span
+                  ><span class="theme-preview-action"></span>
+                </div>
+                <span class="theme-preview-check" v-if="settings.theme === theme.id"
+                  ><Check :size="16"
+                /></span>
+              </div>
+              <div class="theme-option-caption">
+                <span
+                  ><strong>{{ theme.name }}</strong
+                  ><small>{{ theme.english }}</small></span
+                ><span class="theme-color-swatch" :style="{ background: theme.color }"></span>
+              </div>
+            </button>
+          </div>
         </section>
       </div>
-    </form>
-    <div class="settings-support-grid">
-      <section class="panel backup-panel">
-        <div class="backup-header">
-          <div class="backup-symbol"><ShieldCheck :size="22" /></div>
-          <h2>配置随你迁移</h2>
-          <p>
-            导出项目、平台、操作命令、工具设置及终端命令配置。重新安装或更换设备后，从 JSON
-            备份恢复。
-          </p>
-        </div>
-        <div class="backup-count">
-          <span>{{ projectCount }}</span> 个项目配置
-        </div>
-        <div class="button-row">
-          <button class="button" :disabled="busy || saving" @click="exportDraft">
-            <Download :size="16" />导出 JSON</button
-          ><button class="button" :disabled="busy || saving" @click="emit('import')">
-            <Upload :size="16" />导入 JSON
-          </button>
-        </div>
-        <p class="field-help">
-          导出包含当前表单中的
-          终端命令名称、执行内容和启用状态。导入前会校验格式，并提供合并或替换选项。备份不包含源码、构建产物或
-          JDK；命令中的敏感值也会随配置导出，请妥善保存。
-        </p>
-      </section>
-      <section class="environment-note">
-        <Terminal :size="20" />
-        <div>
-          <h3>{{ isWindows ? 'Windows 本地执行' : 'macOS 本地执行' }}</h3>
-          <p v-if="isWindows">
-            终端命令在所选终端的 PowerShell 会话执行，日志和停止在终端中处理。Tabby 需确认 Run，Warp
-            需注册启动协议。HBuilderX 菜单自动化及 APK/WGT 构建暂不支持，不会修改系统执行策略。
-          </p>
-          <p v-else>
-            HBuilderX 菜单操作需要辅助功能和自动化权限。终端任务在所选终端中查看日志和停止；App
-            构建日志在工作台显示。
-          </p>
-        </div>
-      </section>
     </div>
-    <div v-if="desktop" class="settings-log-tools">
-      <ScmConnection scope="logs" @change="logSessionRevision++" />
-      <LogMcpConnection :key="logSessionRevision" />
-    </div>
-    <section class="appearance-section" aria-labelledby="appearance-title">
-      <div class="section-heading">
-        <div>
-          <div class="eyebrow">外观</div>
-          <h2 id="appearance-title"><Palette :size="18" />外观主题</h2>
-          <p>为你的工作空间，选一种舒服的颜色。切换即保存。</p>
-        </div>
-        <span class="appearance-note">六种色彩，同样专注</span>
-      </div>
-      <div class="theme-options">
-        <button
-          v-for="theme in THEME_OPTIONS"
-          :key="theme.id"
-          type="button"
-          :class="['theme-option', { selected: settings.theme === theme.id }]"
-          :aria-pressed="settings.theme === theme.id"
-          :title="theme.description"
-          :disabled="saving"
-          @click="emit('theme', theme.id)"
-        >
-          <div :class="['theme-preview', theme.id]" aria-hidden="true">
-            <div class="theme-preview-sidebar"><span></span><i></i><i></i><i></i></div>
-            <div class="theme-preview-main">
-              <span class="theme-preview-line"></span>
-              <div class="theme-preview-cards"><i></i><i></i><i></i></div>
-              <span class="theme-preview-line short"></span
-              ><span class="theme-preview-action"></span>
-            </div>
-            <span class="theme-preview-check" v-if="settings.theme === theme.id"
-              ><Check :size="16"
-            /></span>
-          </div>
-          <div class="theme-option-caption">
-            <span
-              ><strong>{{ theme.name }}</strong
-              ><small>{{ theme.english }}</small></span
-            ><span class="theme-color-swatch" :style="{ background: theme.color }"></span>
-          </div>
-        </button>
-      </div>
-    </section>
   </section>
 </template>
 
 <style scoped>
+.preferences-layout {
+  display: grid;
+  grid-template-columns: clamp(118px, 13vw, 166px) minmax(0, 1fr);
+  gap: clamp(12px, 2vw, 28px);
+  align-items: start;
+}
+.preferences-nav {
+  position: sticky;
+  top: 12px;
+  display: grid;
+  gap: 4px;
+  padding: 4px 10px 4px 0;
+  border-right: 1px solid var(--line);
+}
+.preferences-nav button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 7px;
+  padding: 7px 9px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.preferences-nav button:hover {
+  background: var(--surface-subtle);
+}
+.preferences-nav button[aria-current] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 650;
+  box-shadow: inset 2px 0 var(--accent);
+}
+.preferences-content {
+  min-width: 0;
+}
 .settings-log-tools {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: 16px;
-  margin-block: 24px;
+  margin: 0;
 }
 .settings-config {
   margin-bottom: 36px;
@@ -577,8 +666,8 @@ watch(
   color: var(--muted);
 }
 .appearance-section {
-  border-top: 1px solid var(--line);
-  padding-top: 22px;
+  padding-top: 0;
+  border-top: 0;
 }
 @media (max-width: 1100px) {
   .settings-tools-grid,
