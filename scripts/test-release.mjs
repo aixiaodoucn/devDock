@@ -264,7 +264,10 @@ test('macOS 测试与打包并行，保留测试和发布产物校验', () => {
   assert.doesNotMatch(buildJob, /^    needs:/m);
   assert.doesNotMatch(testJob, /^    needs:/m);
   assert.match(testJob, /pnpm test/);
-  assert.match(testJob, /cargo test --locked .*--lib -- --test-threads=1/);
+  const cargoTest = 'cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --';
+  const gitGroup = 'backend_git::tests::';
+  assert.ok(testJob.includes(`${cargoTest} ${gitGroup} --test-threads=4`));
+  assert.ok(testJob.includes(`${cargoTest} --skip ${gitGroup} --test-threads=1`));
   for (const script of [
     'test-version.mjs',
     'test-release.mjs',
