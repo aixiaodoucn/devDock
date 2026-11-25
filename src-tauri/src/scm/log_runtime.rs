@@ -10,6 +10,9 @@ impl Default for LogRuntime {
 }
 
 impl LogRuntime {
+    pub(crate) async fn has_live_session(&self) -> bool {
+        self.0.state.lock().await.session.is_some()
+    }
     pub async fn login(
         &self,
         base_url: String,

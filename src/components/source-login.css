@@ -1,0 +1,96 @@
+/* 仅用于生产连接设置；后端项目工作台的 SCM 表单不受影响。 */
+.source-login {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  container-type: inline-size;
+}
+.source-login p,
+.source-login dl,
+.source-login dd {
+  margin: 0;
+}
+.source-login .hint,
+.source-login p,
+.source-login label,
+.source-login dl {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.source-login fieldset {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.source-login label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.source-login input:not([type='checkbox']),
+.source-login select {
+  width: 100%;
+  min-width: 0;
+}
+.source-login .remember,
+.source-login .confirm,
+.source-login .actions,
+.source-login .connection-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 1/-1;
+}
+.source-login .confirm {
+  flex-flow: row nowrap;
+  justify-content: flex-start;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.source-login .confirm input {
+  flex-shrink: 0;
+}
+.source-login .auth-note {
+  grid-column: 1/-1;
+}
+.source-login .connection-summary {
+  display: grid;
+  gap: 12px;
+}
+.source-login .connection-summary dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+.source-login .connection-summary dl > div {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+.source-login dt {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.source-login dd {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.source-login [role='alert'] {
+  color: var(--danger-text);
+}
+@container (max-width:540px) {
+  .source-login fieldset {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

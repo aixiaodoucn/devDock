@@ -413,6 +413,33 @@ it('剪贴板拒绝时提示手动复制，不把失败报告为成功', async (
   }
 });
 
+it('拉取当前分支只预检勾选仓库，不按开发分支切换或推送', async () => {
+  const panel = await ready();
+  try {
+    click(panel.root, '取消全选');
+    await flush();
+    expect(button(panel.root, '拉取当前分支').disabled).toBe(true);
+    click(panel.root, '全选');
+    await flush();
+    click(panel.root, '拉取当前分支');
+    await flush();
+    expect(api.prepareBackendGit).toHaveBeenCalledExactlyOnceWith(
+      'example',
+      [expect.objectContaining({ developmentBranch: 'develop' })],
+      'pull-current',
+      false,
+      false,
+    );
+    expect(panel.root.querySelector('.plan')?.textContent).toContain('origin/main');
+    expect(api.executeBackendGit).not.toHaveBeenCalled();
+    click(panel.root, '确认执行计划');
+    await flush();
+    expect(panel.task).toHaveBeenCalledWith('task', '拉取当前分支');
+  } finally {
+    panel.close();
+  }
+});
+
 it('切换master不依赖测试目标，预检后确认执行且不采用合并选项', async () => {
   const initial = fixture();
   initial.scmTestProjectId = '';
@@ -1300,11 +1327,13 @@ beforeEach(() => {
         currentBranch: operation === 'push-dev' ? repository.developmentBranch : 'main',
         sourceSha: 'abc123',
         targetBranch:
-          operation === 'switch-master'
-            ? 'master'
-            : operation === 'switch' || operation === 'push-dev'
-              ? repository.developmentBranch
-              : repository.testBranch,
+          operation === 'pull-current'
+            ? 'main'
+            : operation === 'switch-master'
+              ? 'master'
+              : operation === 'switch' || operation === 'push-dev'
+                ? repository.developmentBranch
+                : repository.testBranch,
         targetSha: 'def',
         remoteSha: 'def',
         createTracking: false,

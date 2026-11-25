@@ -14,8 +14,11 @@ import {
 import type { Settings, Tools, ThemeName } from '../types';
 import { NODE_MANAGER_LABELS, THEME_OPTIONS } from '../types';
 import { api, desktop } from '../api';
+import ScmLogOptions from './ScmLogOptions.vue';
 import ScmConnection from './ScmConnection.vue';
 import LogMcpConnection from './LogMcpConnection.vue';
+import SqlpadConnection from './SqlpadConnection.vue';
+import McpToolCatalog from './McpToolCatalog.vue';
 import PathInput from './PathInput.vue';
 import AiToolsEditor from './AiToolsEditor.vue';
 import { isWindows } from '../platform';
@@ -42,6 +45,32 @@ const draft = ref(cloneSettings(props.settings));
 const terminalNotice = computed(() => terminalFeedback(draft.value.terminal));
 // 日志登录变化后重建卡片，立即丢弃旧会话令牌和在途请求。
 const logSessionRevision = ref(0);
+const logServiceEnabled = ref(false);
+const logOptionsRevision = ref(0);
+function updateLogService(enabled: boolean) {
+  logServiceEnabled.value = enabled;
+  logOptionsRevision.value++;
+}
+const MCP_TABS = [
+  { id: 'connections', label: '连接与权限' },
+  { id: 'catalog', label: '工具目录' },
+] as const;
+const mcpTab = ref<(typeof MCP_TABS)[number]['id']>(MCP_TABS[0].id);
+function navigateMcpTabs(event: KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  mcpTab.value =
+    event.key === 'Home'
+      ? MCP_TABS[0].id
+      : event.key === 'End'
+        ? MCP_TABS[MCP_TABS.length - 1].id
+        : mcpTab.value === 'catalog'
+          ? 'connections'
+          : 'catalog';
+  (event.currentTarget as HTMLElement)
+    .querySelector<HTMLButtonElement>(`#mcp-${mcpTab.value}-tab`)
+    ?.focus();
+}
 const SETTINGS_SECTIONS = [
   { id: 'tools', label: '开发工具', icon: SlidersHorizontal },
   { id: 'commands', label: '终端命令', icon: Terminal },
@@ -464,12 +493,65 @@ watch(
         </div>
         <div v-if="activeSection === 'mcp'" class="settings-log-tools">
           <template v-if="desktop">
-            <ScmConnection scope="logs" @change="logSessionRevision++" />
-            <LogMcpConnection :key="logSessionRevision" />
+            <div
+              role="tablist"
+              aria-label="MCP 服务视图"
+              class="mcp-tabs"
+              @keydown="navigateMcpTabs"
+            >
+              <button
+                v-for="tab in MCP_TABS"
+                :key="tab.id"
+                type="button"
+                role="tab"
+                :id="`mcp-${tab.id}-tab`"
+                :aria-controls="`mcp-${tab.id}-panel`"
+                :aria-selected="mcpTab === tab.id"
+                :tabindex="mcpTab === tab.id ? 0 : -1"
+                @click="mcpTab = tab.id"
+              >
+                {{ tab.label }}
+              </button>
+            </div>
+            <section
+              role="tabpanel"
+              id="mcp-catalog-panel"
+              aria-labelledby="mcp-catalog-tab"
+              :hidden="mcpTab !== 'catalog'"
+            >
+              <McpToolCatalog v-if="mcpTab === 'catalog'" />
+            </section>
+            <section
+              role="tabpanel"
+              id="mcp-connections-panel"
+              aria-labelledby="mcp-connections-tab"
+              :hidden="mcpTab !== 'connections'"
+            >
+              <div v-if="mcpTab === 'connections'" class="settings-log-tools">
+                <div class="connection-accounts" role="group" aria-label="生产数据源登录">
+                  <ScmConnection
+                    scope="logs"
+                    @change="
+                      updateLogService(false);
+                      logSessionRevision++;
+                    "
+                  >
+                    <template #options="{ connected }">
+                      <ScmLogOptions
+                        :key="logOptionsRevision"
+                        :service-enabled="connected && logServiceEnabled"
+                      />
+                    </template>
+                  </ScmConnection>
+                  <SqlpadConnection />
+                </div>
+                <LogMcpConnection :key="logSessionRevision" @service-state="updateLogService" />
+              </div>
+            </section>
           </template>
           <section v-else class="panel">
             <h2>MCP 服务</h2>
-            <p>请在 Dev Dock 桌面端配置生产日志 SCM 和 MCP 客户端。</p>
+            <p>请在 Dev Dock 桌面主窗口配置生产日志 SCM、SQLPad 连接和 MCP 客户端。</p>
           </section>
         </div>
         <section
@@ -562,6 +644,35 @@ watch(
 }
 .preferences-content {
   min-width: 0;
+}
+.mcp-tabs {
+  display: flex;
+  gap: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.mcp-tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  padding: 8px 2px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.mcp-tabs button[aria-selected='true'] {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 650;
+}
+.mcp-tabs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.connection-accounts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
 }
 .settings-log-tools {
   display: grid;

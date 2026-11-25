@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import SourceLoginHeader from './SourceLoginHeader.vue';
 import { api, desktop } from '../api';
 import type { ScmStatus } from '../types';
 const props = withDefaults(
@@ -111,13 +112,32 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="scm-connection" :aria-label="title">
-    <div class="connection-heading">
-      <strong>{{ title }}{{ scope === 'logs' ? ' · 生产环境' : '' }}</strong
+  <section class="scm-connection" :class="{ 'source-login': scope === 'logs' }" :aria-label="title">
+    <SourceLoginHeader
+      v-if="scope === 'logs'"
+      title="日志 SCM 登录"
+      :connected="!!status?.connected && !expired"
+      :state="
+        expired
+          ? '已过期'
+          : status?.connected
+            ? '已登录'
+            : pending
+              ? '检查中'
+              : status
+                ? '未登录'
+                : '状态未知'
+      "
+      :disabled="!desktop || pending || disabled"
+      @refresh="request('status')"
+    />
+    <div v-else class="connection-heading">
+      <strong>{{ title }}</strong
       ><span>{{ status?.connected && !expired ? '已连接' : '未连接' }}</span>
     </div>
     <p v-if="scope === 'logs'" class="hint">
-      请填写生产 SCM 的 HTTPS 根地址。本通道只查生产日志，不连接测试跳板机，也不会使用后端工作台的账号。
+      请填写生产 SCM 的 HTTPS
+      根地址。本通道只查生产日志，不连接测试跳板机，也不会使用后端工作台的账号。
     </p>
     <p v-if="!desktop" class="hint">浏览器预览：SCM 登录需要桌面应用。</p>
     <p v-if="expired" role="alert">会话已过期，请重新登录。</p>
@@ -134,6 +154,7 @@ onBeforeUnmount(() => {
       </dl>
       <div class="connection-actions">
         <button
+          v-if="scope !== 'logs'"
           class="button small"
           type="button"
           :disabled="!desktop || pending || disabled"
@@ -175,17 +196,26 @@ onBeforeUnmount(() => {
         <div class="connection-actions">
           <button class="button small primary" type="submit">
             {{ pending ? '处理中…' : '登录' }}</button
-          ><button class="button small" type="button" @click="request('status')">刷新状态</button>
+          ><button
+            v-if="scope !== 'logs'"
+            class="button small"
+            type="button"
+            @click="request('status')"
+          >
+            刷新状态
+          </button>
         </div>
       </fieldset>
     </form>
     <p v-if="status?.message && !expired" class="hint" role="status">{{ status.message }}</p>
     <p v-if="error" role="alert">{{ error }}</p>
+    <slot v-if="scope === 'logs'" name="options" :connected="!!status?.connected && !expired" />
   </section>
 </template>
 
 <style scoped>
-.scm-connection {
+/* 独立日志登录使用共享卡片样式，工作台沿用原布局。 */
+.scm-connection:not(.source-login) {
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 10px;

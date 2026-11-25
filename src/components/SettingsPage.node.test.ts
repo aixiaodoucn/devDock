@@ -13,9 +13,15 @@ vi.mock('../api', () => ({
     scmStatus: vi.fn(),
     scmLogin: vi.fn(),
     scmLogout: vi.fn(),
+    sqlpadStatus: vi
+      .fn()
+      .mockResolvedValue({ connected: false, baseUrl: '', connections: [], selectedId: null }),
     logScmStatus: vi.fn(),
     logScmLogin: vi.fn(),
     logScmLogout: vi.fn(),
+    mcpToolCatalog: vi.fn().mockResolvedValue([]),
+    logMcpScanScope: vi.fn().mockResolvedValue('first'),
+    logMcpRawStatus: vi.fn().mockResolvedValue(false),
     logMcpStatus: vi.fn(),
     logMcpToken: vi.fn(),
     mcpClientStatus: vi.fn(),
@@ -460,8 +466,24 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
     expect(menu[0].getAttribute('aria-current')).toBe('page');
     menu[3].click();
     await flush();
+    const tabs = [...panel.root.querySelectorAll('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['连接与权限', '工具目录']);
+    expect(tabs[0].getAttribute('aria-selected')).toBe('true');
+    expect(api.mcpToolCatalog).not.toHaveBeenCalled();
+    expect(api.logMcpToken).not.toHaveBeenCalled();
     const login = panel.root.querySelector<HTMLElement>('[aria-label="日志 SCM 登录"]')!;
     expect(login).toBeTruthy();
+    const cards = panel.root.querySelectorAll('#mcp-connections-panel section[aria-label]');
+    expect([...cards].map((card) => card.getAttribute('aria-label'))).toEqual([
+      '日志 SCM 登录',
+      '生产 SQLPad 数据库',
+      '日志 MCP',
+    ]);
+    expect(login.querySelector('input[value="all"]')).toBeTruthy();
+    expect(login.querySelector('[role="switch"][aria-label="允许返回日志原文"]')).toBeTruthy();
+    expect(panel.root.querySelector('[aria-label="日志 MCP"] .query-options')).toBeNull();
+    expect(panel.root.querySelector('[aria-label="生产 SQLPad 数据库"] form')).toBeTruthy();
+    expect(api.sqlpadStatus).toHaveBeenCalledOnce();
     expect(api.logScmStatus).toHaveBeenCalled();
     await change(login, '[name=baseUrl]', 'https://example.invalid');
     await change(login, '[name=username]', 'logs');
@@ -471,6 +493,8 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
       const tokenButton = Array.from(panel.root.querySelectorAll('button')).find(
         (b) => b.textContent?.trim() === '显示令牌',
       );
+      // 换账号会重挂连接面板；等本机服务和原文授权状态均加载完再操作。
+      await vi.waitFor(() => expect(tokenButton?.disabled).toBe(false));
       tokenButton!.click();
       await flush();
       expect(panel.root.textContent).toContain('fixture-session-token');

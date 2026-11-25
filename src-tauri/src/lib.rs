@@ -4,6 +4,7 @@ mod app_identity;
 mod backend_git;
 mod build_history;
 mod config;
+mod db_approval;
 mod environment;
 mod git;
 mod hbuilder_owner;
@@ -15,6 +16,7 @@ mod mcp_clients;
 mod nvm;
 mod paths;
 mod scm;
+mod sqlpad;
 mod system_tools;
 mod tasks;
 mod terminal_launch;
@@ -972,6 +974,8 @@ pub fn run() {
         .manage(backend_git::Runtime::default())
         .manage(scm::Runtime::default())
         .manage(scm::LogRuntime::default())
+        .manage(db_approval::Runtime::default())
+        .manage(sqlpad::Runtime::default())
         .manage(log_access::Runtime::default())
         .manage(tasks::Runtime::default())
         .manage(StartupLogs::default())
@@ -1028,6 +1032,7 @@ pub fn run() {
             mcp_clients::mcp_client_connect,
             mcp_clients::mcp_client_disconnect,
             mcp_clients::mcp_client_template,
+            log_access::mcp_tool_catalog,
             log_access::log_mcp_status,
             log_access::log_mcp_raw_status,
             log_access::log_mcp_set_raw,
@@ -1036,6 +1041,12 @@ pub fn run() {
             log_access::log_mcp_enable,
             log_access::log_mcp_disable,
             log_access::log_mcp_token,
+            db_approval::sqlpad_pending_approval,
+            db_approval::sqlpad_decide_approval,
+            sqlpad::sqlpad_status,
+            sqlpad::sqlpad_login,
+            sqlpad::sqlpad_select_connection,
+            sqlpad::sqlpad_logout,
             log_scm_status,
             log_scm_login,
             log_scm_logout,

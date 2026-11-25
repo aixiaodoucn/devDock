@@ -60,7 +60,7 @@ export interface BackendGitPlanRepository {
 export interface BackendGitPlan {
   planId: string;
   projectId: string;
-  operation: 'switch' | 'switch-test' | 'switch-master' | 'push-dev' | 'merge';
+  operation: 'switch' | 'switch-test' | 'switch-master' | 'pull-current' | 'push-dev' | 'merge';
   push: boolean;
   keepTestPom?: boolean;
   repositories: BackendGitPlanRepository[];
@@ -100,6 +100,44 @@ export type McpClient = 'claude' | 'codex';
 export interface McpClientStatus {
   state: 'missing' | 'available' | 'configured' | 'conflict' | 'unsupported';
   message: string;
+}
+
+export interface McpCatalogTool {
+  name: string;
+  title: string;
+  description: string;
+  source: string;
+  environment: string;
+  example: string;
+  inputSchema: {
+    type: 'object';
+    required: string[];
+    properties: Record<
+      string,
+      {
+        type: string;
+        description?: string;
+        default?: unknown;
+        minimum?: number;
+        maximum?: number;
+        enum?: unknown[];
+      }
+    >;
+  };
+}
+
+export interface SqlpadPendingApproval {
+  requestId: string;
+  connection: string;
+  preview: string;
+  expiresAt: number;
+}
+
+export interface SqlpadStatus {
+  connected: boolean;
+  baseUrl: string;
+  connections: { id: string; name: string; driver: string }[];
+  selectedId: string | null;
 }
 
 export interface LogMcpStatus {

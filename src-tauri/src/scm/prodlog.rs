@@ -19,7 +19,6 @@ use std::{
 const GET_TARGETS: &str = "/kpi/prodlog/getTargets";
 const QUERY: &str = "/kpi/prodlog/query";
 const MAX_BYTES: usize = 512 * 1024;
-const TAIL_LINES: usize = 200;
 const MAX_MATCHES: usize = 50;
 const BAD_RESPONSE: &str = "Protocol: SCM 日志响应格式或目标不匹配";
 const INVALID_TARGET: &str = "InvalidInput: 请选择已解析的单台机器及白名单日志";
@@ -62,12 +61,14 @@ pub struct SearchScope {
     pub target_id: String,
     pub log_id: String,
     pub archive_hour: Option<String>,
-    pub tail_lines: usize,
+    pub file_scope: &'static str,
     pub returned_lines: usize,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProdlogSearch {
+    pub total_matches: u64,
     pub lines: Vec<String>,
     pub truncated: bool,
     pub scope: SearchScope,
@@ -185,17 +186,6 @@ impl<'a> ArchiveHour<'a> {
     }
 }
 
-fn query_param(
-    catalog: &ProdlogResolution,
-    target_id: &str,
-    log_id: &str,
-    archive: Option<ArchiveHour<'_>>,
-) -> Result<Value> {
-    single_file_param(catalog, target_id, log_id, archive, |path| {
-        format!("tail -n {TAIL_LINES} {path}")
-    })
-}
-
 // 两种查询共用同一白名单路径与单机目标封装；客户端不能提供路径或命令。
 fn single_file_param(
     catalog: &ProdlogResolution,
@@ -235,23 +225,6 @@ fn bounded_line(line: &str, raw: bool) -> (String, bool) {
         end -= 1;
     }
     (line[..end].into(), end < line.len())
-}
-
-fn matching_lines(output: &str, keyword: &str, max_lines: usize, raw: bool) -> (Vec<String>, bool) {
-    let mut truncated = false;
-    let mut lines = Vec::new();
-    // 从文件末尾选择最近的命中，再恢复日志原有的时间顺序。
-    for line in output.lines().rev().filter(|s| s.contains(keyword)) {
-        if lines.len() == max_lines {
-            truncated = true;
-            break;
-        }
-        let (text, shortened) = bounded_line(line, raw);
-        truncated |= shortened;
-        lines.push(text);
-    }
-    lines.reverse();
-    (lines, truncated)
 }
 
 async fn post(session: &Session, path: &'static str, param: Value) -> Result<Value> {
@@ -305,34 +278,6 @@ fn scm_code(value: &Value) -> Option<i32> {
     text.parse::<i32>().ok().filter(|n| n.to_string() == text)
 }
 
-fn read_matches(
-    value: &Value,
-    target: &Target,
-    keyword: &str,
-    max_lines: usize,
-    raw: bool,
-) -> Result<(Vec<String>, bool)> {
-    let [item] = value["results"].as_array().ok_or(BAD_RESPONSE)?.as_slice() else {
-        return Err(BAD_RESPONSE.into());
-    };
-    if item["ip"].as_str().and_then(|ip| ip.parse::<IpAddr>().ok()) != Some(target.ip)
-        || item["user"].as_str() != Some(&target.user)
-        || item["module_name"].as_str() != Some(&target.module_name)
-    {
-        return Err(BAD_RESPONSE.into());
-    }
-    if scm_code(&item["return_code"]).ok_or(BAD_RESPONSE)? != 0 {
-        return Err("Protocol: SCM 读取日志文件失败".into());
-    }
-    let output = item["output"].as_str().ok_or(BAD_RESPONSE)?;
-    let remote_truncated = item["truncated"].as_bool().ok_or(BAD_RESPONSE)?;
-    if output.lines().count() > TAIL_LINES {
-        return Err(BAD_RESPONSE.into());
-    }
-    let (lines, shortened) = matching_lines(output, keyword, max_lines, raw);
-    Ok((lines, shortened || remote_truncated))
-}
-
 impl LogRuntime {
     pub async fn resolve_prodlog(&self, module_id: String) -> Result<ProdlogResolution> {
         if !numeric_id(&module_id) {
@@ -362,11 +307,11 @@ impl LogRuntime {
         archive_hour: Option<String>,
         raw: bool,
     ) -> Result<ProdlogSearch> {
-        let archive = archive_hour
+        archive_hour
             .as_deref()
             .map(ArchiveHour::parse)
             .transpose()?;
-        validate_keyword(&keyword)?;
+        full_file::validate_scan_keyword(&keyword)?;
         if !numeric_id(&module_id) || !(1..=MAX_MATCHES).contains(&max_lines) {
             return Err("InvalidInput: 无效的模块 ID 或匹配行数上限".into());
         }
@@ -379,25 +324,34 @@ impl LogRuntime {
                 &module_id,
                 &post(session, GET_TARGETS, json!({"git_pid":module_id})).await?,
             )?;
-            let param = query_param(&cat, &target_id, &log_id, archive)?;
             let target = cat
                 .targets
                 .iter()
                 .find(|t| t.id == target_id)
                 .ok_or(INVALID_TARGET)?;
-            let value = post(session, QUERY, param).await?;
-            let (lines, truncated) = read_matches(&value, target, &keyword, max_lines, raw)?;
+            let found = full_file::scan_one(
+                session,
+                &cat,
+                target,
+                &log_id,
+                archive_hour.as_deref(),
+                &keyword,
+                max_lines,
+                raw,
+            )
+            .await?;
             let scope = SearchScope {
                 module_id,
                 target_id,
                 log_id,
                 archive_hour: archive_hour.clone(),
-                tail_lines: TAIL_LINES,
-                returned_lines: lines.len(),
+                file_scope: "fullFile",
+                returned_lines: found.lines.len(),
             };
             Ok(ProdlogSearch {
-                lines,
-                truncated,
+                total_matches: found.total_matches,
+                lines: found.lines,
+                truncated: found.truncated,
                 scope,
             })
         }
@@ -429,7 +383,7 @@ mod tests {
         };
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
-        let keyword = "failure: code=7; $(sample)";
+        let keyword = "failure: code=7";
         let server = std::thread::spawn(move || {
             // 状态和模块清单都只访问日志首页，夹具不提供项目列表权限。
             for _ in 0..2 {
@@ -495,16 +449,15 @@ mod tests {
                 let mut reply = fixture();
                 if matches!(step, 2 | 4) {
                     let command = if step == 2 {
-                        "tail -n 200 /data/logs/sample/sample.log.info"
+                        "grep -aF -e 'failure: code=7' '/data/logs/sample/sample.log.info'"
                     } else {
-                        "tail -n 200 /data/logs/sample/sample.log.wf.2024-02-29-23"
+                        "grep -aF -e 'failure: code=7' '/data/logs/sample/sample.log.wf.2024-02-29-23'"
                     };
                     assert_eq!(
                         param,
                         json!({"git_pid":"7", "custom_ips":[], "target_keys":["sample-1"], "command":command})
                     );
-                    assert!(!fields[0].1.contains(keyword));
-                    reply = json!({"status":{"status_code":0},"results":[{"ip":"192.0.2.7","module_name":"sample","user":"demo","return_code":0,"truncated":false,"output":format!("{keyword} old\n{keyword} order=demo-7 token=fixture")} ]});
+                    reply = json!({"status":{"status_code":0},"results":[{"ip":"192.0.2.7","module_name":"sample","user":"demo","return_code":0,"truncated":false,"output":format!("INFO: 2024-02-29 23:05:00.001 {keyword} order=demo-7 token=fixture\nINFO: 2024-02-29 23:00:00.000 {keyword} old")} ]});
                 } else {
                     assert_eq!(param, json!({"git_pid":"7"}));
                     if step == 5 {
@@ -568,6 +521,8 @@ mod tests {
                 .unwrap_err()
                 .starts_with("InvalidInput:"));
             let result = search("info", None, false).await.unwrap();
+            assert_eq!(json!(result.scope)["fileScope"], "fullFile");
+            assert!(json!(result.scope).get("tailLines").is_none());
             assert_eq!(json!(result.scope).get("archiveHour"), Some(&Value::Null));
             assert_eq!(result.lines, vec!["[敏感内容已隐藏]"]);
             assert!(result.truncated);
@@ -577,7 +532,9 @@ mod tests {
             assert_eq!(json!(archive.scope)["archiveHour"], "2024-02-29-23");
             assert_eq!(
                 archive.lines,
-                vec![format!("{keyword} order=demo-7 token=fixture")]
+                vec![format!(
+                    "INFO: 2024-02-29 23:05:00.001 {keyword} order=demo-7 token=fixture"
+                )]
             );
             assert!(archive.truncated);
             assert_eq!(
@@ -594,15 +551,16 @@ mod tests {
     fn builds_only_two_fixed_commands_for_one_resolved_target() {
         let catalog = catalog("7", &fixture()).unwrap();
         let target = &catalog.targets[0];
-        let param = query_param(&catalog, &target.id, "wf", None).unwrap();
+        let path = |path: &str| path.to_owned();
+        let param = single_file_param(&catalog, &target.id, "wf", None, path).unwrap();
         assert_eq!(param["custom_ips"], serde_json::json!([]));
         assert_eq!(param["target_keys"], serde_json::json!(["sample-1"]));
         assert!(param["command"]
             .as_str()
             .unwrap()
-            .ends_with(" /data/logs/sample/sample.log.wf"));
-        assert!(query_param(&catalog, "192.0.2.42", "info", None).is_err());
-        assert!(query_param(&catalog, &target.id, "../../etc/passwd", None).is_err());
+            .ends_with("/data/logs/sample/sample.log.wf"));
+        assert!(single_file_param(&catalog, "192.0.2.42", "info", None, path).is_err());
+        assert!(single_file_param(&catalog, &target.id, "../../etc/passwd", None, path).is_err());
     }
 
     #[test]
@@ -701,57 +659,11 @@ mod tests {
     }
 
     #[test]
-    fn binds_result_to_exactly_one_machine_and_marks_limits() {
+    fn does_not_export_private_machine_identity() {
         let catalog = catalog("7", &fixture()).unwrap();
-        let target = &catalog.targets[0];
-        let item = json!({"ip":"192.0.2.7", "user":"demo", "module_name":"sample", "return_code":0, "truncated":false, "output":"ERROR A\nERROR B"});
-        let value = json!({"results":[item]});
-        assert_eq!(
-            read_matches(&value, target, "ERROR", 1, false).unwrap(),
-            (vec!["ERROR B".into()], true)
-        );
-        let mut wrong = value.clone();
-        wrong["results"][0]["ip"] = "192.0.2.8".into();
-        assert!(read_matches(&wrong, target, "ERROR", 1, false).is_err());
-        wrong = value.clone();
-        wrong["results"][0]["return_code"] = 1.into();
-        assert_eq!(
-            read_matches(&wrong, target, "ERROR", 1, false).unwrap_err(),
-            "Protocol: SCM 读取日志文件失败"
-        );
-        wrong["results"][0]["user"] = "other".into();
-        assert_eq!(
-            read_matches(&wrong, target, "ERROR", 1, false).unwrap_err(),
-            BAD_RESPONSE
-        );
-        wrong = json!({"results":[item,item]});
-        assert!(read_matches(&wrong, target, "ERROR", 1, false).is_err());
-        let mut remote = value;
-        remote["results"][0]["truncated"] = true.into();
-        assert!(read_matches(&remote, target, "absent", 1, true).unwrap().1);
         let exported = serde_json::to_string(&catalog).unwrap();
         for internal in ["sample-1", "192.0.2.7", "demo"] {
             assert!(!exported.contains(internal));
         }
-    }
-
-    #[test]
-    fn filters_before_return_and_withholds_sensitive_lines() {
-        let raw = "unrelated\nERROR id=1\nERROR Authorization: Bearer abc123\nERROR {\"password\":\"hunter2\"}\nERROR 手机 13812345678\n";
-        let (lines, _) = matching_lines(raw, "ERROR", MAX_MATCHES, false);
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[0], "ERROR id=1");
-        let joined = lines.join("\n");
-        for secret in ["unrelated", "abc123", "hunter2", "13812345678"] {
-            assert!(!joined.contains(secret));
-        }
-    }
-
-    #[test]
-    fn truncates_matches_and_long_utf8_lines() {
-        let raw = format!("ERROR {}\n", "错".repeat(2048)).repeat(200);
-        let (lines, truncated) = matching_lines(&raw, "ERROR", MAX_MATCHES, false);
-        assert!(truncated);
-        assert!(lines.len() == 50 && lines[0].len() <= 1024);
     }
 }

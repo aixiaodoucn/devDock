@@ -32,6 +32,7 @@ import {
   History,
   GitBranch as GitBranchIcon,
 } from 'lucide-vue-next';
+import SqlpadApproval from './components/SqlpadApproval.vue';
 import ProjectDialog from './components/ProjectDialog.vue';
 import GitBranch from './components/GitBranch.vue';
 import SettingsPage from './components/SettingsPage.vue';
@@ -1275,6 +1276,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         editProject();
       "
     />
+    <SqlpadApproval v-if="desktop" />
     <ProjectDialog
       v-if="editing"
       :project="editing"

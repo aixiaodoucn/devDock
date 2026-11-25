@@ -15,9 +15,9 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 
 const STDIO: &str = "--log-mcp-stdio";
 const NAME: &str = if cfg!(debug_assertions) {
-    "devdock-logs-dev"
+    "devDock-dev"
 } else {
-    "devdock-logs"
+    "devDock"
 };
 static REGISTRATION: Mutex<()> = Mutex::new(());
 

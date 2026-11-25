@@ -22,6 +22,9 @@ import type {
   BackendGitOperation,
   PomBlockChoice,
   LogMcpStatus,
+  SqlpadPendingApproval,
+  SqlpadStatus,
+  McpCatalogTool,
   McpClient,
   McpClientStatus,
   ScmStatus,
@@ -123,6 +126,27 @@ export const api = {
   },
   abortBackendGit(planId: string, repoId: string) {
     return native<void>('abort_backend_git', { planId, repoId });
+  },
+  mcpToolCatalog() {
+    return native<McpCatalogTool[]>('mcp_tool_catalog');
+  },
+  sqlpadPendingApproval() {
+    return native<SqlpadPendingApproval | null>('sqlpad_pending_approval');
+  },
+  sqlpadDecideApproval(requestId: string, approved: boolean) {
+    return native<void>('sqlpad_decide_approval', { requestId, approved });
+  },
+  sqlpadStatus() {
+    return native<SqlpadStatus>('sqlpad_status');
+  },
+  sqlpadLogin(baseUrl: string, email: string, password: string) {
+    return native<SqlpadStatus>('sqlpad_login', { baseUrl, email, password });
+  },
+  sqlpadSelectConnection(connectionId: string) {
+    return native<SqlpadStatus>('sqlpad_select_connection', { connectionId });
+  },
+  sqlpadLogout() {
+    return native<SqlpadStatus>('sqlpad_logout');
   },
   logMcpStatus() {
     return native<LogMcpStatus>('log_mcp_status');

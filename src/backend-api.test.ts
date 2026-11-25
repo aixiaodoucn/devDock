@@ -42,6 +42,7 @@ describe('后端 Git 与 SCM 桌面接口', () => {
   });
   it('日志 MCP 状态、启停和令牌使用独立桌面命令', async () => {
     for (const [request, command] of [
+      [api.mcpToolCatalog, 'mcp_tool_catalog'],
       [api.logMcpStatus, 'log_mcp_status'],
       [api.logMcpRawStatus, 'log_mcp_raw_status'],
       [api.logMcpEnable, 'log_mcp_enable'],

@@ -299,6 +299,7 @@ const gitActionLabels = {
   switch: '切换开发分支',
   'switch-test': '切换到测试分支',
   'switch-master': '切换master分支',
+  'pull-current': '拉取当前分支',
   'push-dev': '推送开发分支到远程',
   merge: '合并到测试分支',
 } satisfies Record<BackendGitPlan['operation'], string>;
@@ -311,6 +312,7 @@ function disabledReason(operationType: BackendGitPlan['operation']): string {
   if (!selectedRepositories.value.length) return '请至少勾选一个关联仓库。';
   if (dirty.value) return 'SCM 配置有更改，请重新加载模块并等待自动保存。';
   if (
+    operationType !== 'pull-current' &&
     selectedRepositories.value.some((repo) => !repo.remote.trim() || !repo.developmentBranch.trim())
   )
     return '请补全所选仓库的 remote 和开发分支。';
@@ -321,6 +323,14 @@ function disabledReason(operationType: BackendGitPlan['operation']): string {
     })
   )
     return '所选仓库状态未就绪，请刷新并处理未提交更改、合并或变基。';
+  if (
+    operationType === 'pull-current' &&
+    selectedRepositories.value.some(
+      (repo) =>
+        !repo.remote.trim() || !statusFor(repo.id)?.currentBranch || !statusFor(repo.id)?.remoteUrl,
+    )
+  )
+    return '请确认每个所选仓库已检出本地分支，并配置了有效的远端。';
   if (
     operationType === 'push-dev' &&
     selectedRepositories.value.some(
@@ -347,6 +357,7 @@ function disabledReason(operationType: BackendGitPlan['operation']): string {
 }
 const switchDisabledReason = computed(() => disabledReason('switch'));
 const switchTestDisabledReason = computed(() => disabledReason('switch-test'));
+const pullCurrentDisabledReason = computed(() => disabledReason('pull-current'));
 const switchMasterDisabledReason = computed(() => disabledReason('switch-master'));
 const pushDevDisabledReason = computed(() => disabledReason('push-dev'));
 const mergeDisabledReason = computed(() => disabledReason('merge'));
@@ -1077,6 +1088,14 @@ onBeforeUnmount(() => {
       <div class="toolbar">
         <button
           class="button small"
+          :disabled="!!pullCurrentDisabledReason"
+          :title="pullCurrentDisabledReason || '仅快进更新勾选仓库各自的当前分支，不切换、不推送。'"
+          @click="prepare('pull-current')"
+        >
+          拉取当前分支
+        </button>
+        <button
+          class="button small"
           :disabled="!!switchDisabledReason"
           :title="switchDisabledReason || '获取远端并预检，确认计划后切换开发分支。'"
           @click="prepare('switch')"
@@ -1132,6 +1151,9 @@ onBeforeUnmount(() => {
                 : '不推送远端'
           }}
         </p>
+        <p v-if="plan.operation === 'pull-current'">
+          仅快进更新下列仓库各自的当前分支，不切换分支，不推送。本地领先时保留提交；分叉时停止。
+        </p>
         <p v-if="plan.operation === 'switch-test' || plan.operation === 'switch-master'">
           切换后只允许快进同步：执行时重新获取远端，以当时最新提交为准；本地领先时保留提交，分叉时停止，不创建合并提交。
           有未提交修改时拒绝操作；无远端的本地仓库仅切换，不进行远程同步。
@@ -1147,9 +1169,13 @@ onBeforeUnmount(() => {
               <span>本地开发分支：</span><code>{{ item.repository.developmentBranch }}</code>
             </div>
             <div class="plan-branch">
-              <span>{{ plan.operation === 'push-dev' ? '目标远程分支：' : '目标分支：' }}</span>
+              <span>{{
+                plan.operation === 'push-dev' || plan.operation === 'pull-current'
+                  ? '目标远程分支：'
+                  : '目标分支：'
+              }}</span>
               <code>{{
-                plan.operation === 'push-dev'
+                plan.operation === 'push-dev' || plan.operation === 'pull-current'
                   ? `${item.repository.remote}/${item.targetBranch}`
                   : item.targetBranch
               }}</code>

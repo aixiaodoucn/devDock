@@ -7,7 +7,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Mutex,
+    sync::{LazyLock, Mutex},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -193,6 +193,27 @@ struct Entry {
 #[derive(Default)]
 pub struct Runtime {
     entries: Mutex<HashMap<String, Entry>>,
+}
+
+// 同一 Git common dir 的关联工作树共享分支引用，复验直至写入完成必须互斥。
+static BUSY_REPOSITORIES: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+struct RepositoryGuard(String);
+impl RepositoryGuard {
+    fn acquire(common_dir: &str) -> Result<Self> {
+        if !BUSY_REPOSITORIES.lock().unwrap().insert(common_dir.into()) {
+            return Err("仓库有其他 Git 操作进行中，请稍后重试".into());
+        }
+        Ok(Self(common_dir.into()))
+    }
+}
+impl Drop for RepositoryGuard {
+    fn drop(&mut self) {
+        BUSY_REPOSITORIES.lock().unwrap().remove(&self.0);
+    }
+}
+
+fn repository_common_dir(path: &Path) -> Result<String> {
+    canonical(&path.join(run(path, &["rev-parse", "--git-common-dir"], None)?))
 }
 
 fn git_command(path: &Path) -> Command {
@@ -649,6 +670,7 @@ fn validate_options(operation: &str, push: bool, keep_test_pom: bool) -> Result<
         "switch-master",
         "merge",
         "push-dev",
+        "pull-current",
     ]
     .contains(&operation)
     {
@@ -683,6 +705,7 @@ fn snapshot_with_task(
         "switch-master",
         "merge",
         "push-dev",
+        "pull-current",
     ]
     .contains(&operation)
     {
@@ -692,6 +715,9 @@ fn snapshot_with_task(
     let status = status(repo)?;
     if status.dirty || status.merging || status.rebasing {
         return Err("仓库有未提交修改或正在 merge/rebase".into());
+    }
+    if operation == "pull-current" {
+        return pull_snapshot(repo, status, task);
     }
     // 测试/master 切换只依赖各自目标，保留真实当前分支作为重验来源。
     if !["switch-test", "switch-master"].contains(&operation) {
@@ -825,6 +851,95 @@ fn snapshot_with_task(
         remote_identity: remote_identity(repo),
     })
 }
+// upstream 可以异名，但必须位于用户选定的远端。只有未配置 upstream 时才回退到同名分支。
+fn pull_target(repo: &Repository, current: &str) -> Result<String> {
+    let path = Path::new(&repo.path);
+    valid_branch(path, current)
+        .map_err(|_| "拉取需要已检出的本地分支，请检查 detached HEAD".to_string())?;
+    validate_remote(repo)?;
+    let key = |suffix| format!("branch.{current}.{suffix}");
+    let read = |name: &str| run(path, &["config", "--default", "", "--get", name], None);
+    let remote = read(&key("remote"))?;
+    let merge_key = key("merge");
+    let merge = read(&merge_key)?;
+    if remote.is_empty() && merge.is_empty() {
+        return Ok(current.into());
+    }
+    if remote != repo.remote || merge.is_empty() {
+        return Err("当前分支的 upstream 与所选远端不匹配或配置不完整".into());
+    }
+    if run(path, &["config", "--get-all", &merge_key], None)? != merge {
+        return Err("当前分支配置了多个 upstream".into());
+    }
+    let target = merge
+        .strip_prefix("refs/heads/")
+        .ok_or("upstream 不是远端分支")?;
+    valid_branch(path, target)?;
+    Ok(target.into())
+}
+
+fn pull_snapshot(
+    repo: &Repository,
+    status: RepositoryStatus,
+    task: Option<&tasks::Task>,
+) -> Result<PlanRepository> {
+    let path = Path::new(&repo.path);
+    let target = pull_target(repo, &status.current_branch)?;
+    let tracking = remote_ref(repo, &target);
+    if target == "HEAD" || run(path, &["symbolic-ref", "-q", &tracking], task).is_ok() {
+        return Err("远端跟踪引用是符号引用，无法安全拉取".into());
+    }
+    // 只更新目标跟踪引用，并禁用隐式 refmap，避免自定义 fetch 配置移动其他本地分支。
+    let identity = remote_identity(repo);
+    run(
+        path,
+        &[
+            "fetch",
+            "--no-tags",
+            "--no-prune",
+            "--no-recurse-submodules",
+            "--refmap=",
+            "--",
+            &repo.remote,
+            &format!("+refs/heads/{target}:{tracking}"),
+        ],
+        task,
+    )
+    .map_err(|_| "无法获取所选远端分支，请检查分支是否存在及远端连接".to_string())?;
+    let remote_sha = sha(path, &tracking)?;
+    if status.head != remote_sha
+        && run(
+            path,
+            &["merge-base", "--is-ancestor", &remote_sha, &status.head],
+            task,
+        )
+        .is_err()
+    {
+        run(
+            path,
+            &["merge-base", "--is-ancestor", &status.head, &remote_sha],
+            task,
+        )
+        .map_err(|_| "当前分支与远端已分叉，无法快进拉取".to_string())?;
+    }
+    let common_dir = repository_common_dir(path)?;
+    Ok(PlanRepository {
+        repository: repo.clone(),
+        root: status.root,
+        common_dir,
+        current_branch: status.current_branch,
+        source_sha: status.head.clone(),
+        target_sha: status.head,
+        target_branch: target,
+        create_tracking: false,
+        remote_sha,
+        remote_identity: identity,
+        development_remote_sha: String::new(),
+        sync_development_branch: false,
+        sync_test_branch: false,
+    })
+}
+
 fn remote_identity(repo: &Repository) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -858,7 +973,11 @@ fn preflight_with_task(
         if let Some(task) = task {
             task.check()?;
         }
-        match snapshot_with_task(repo, operation, task) {
+        let snapshot = repository_common_dir(Path::new(&repo.path)).and_then(|common| {
+            let _guard = RepositoryGuard::acquire(&common)?;
+            snapshot_with_task(repo, operation, task)
+        });
+        match snapshot {
             Ok(saved) if roots.insert(saved.common_dir.clone()) && ids.insert(repo.id.clone()) => {
                 result.push(saved)
             }
@@ -890,6 +1009,7 @@ fn revalidate_with_task(
     let sync_switch = ["switch-test", "switch-master"].contains(&operation);
     if now.root != saved.root
         || now.common_dir != saved.common_dir
+        || now.target_branch != saved.target_branch
         || now.current_branch != saved.current_branch
         || now.source_sha != saved.source_sha
         || (now.target_sha != saved.target_sha && !(sync_switch && saved.create_tracking))
@@ -1016,6 +1136,10 @@ fn prepare_plan(
     }
     let mut fetch_repositories = Vec::new();
     for repo in &repositories {
+        // 当前分支拉取在逐仓快照中解析 upstream，只 fetch 指定分支。
+        if operation == "pull-current" {
+            continue;
+        }
         let remotes = run(Path::new(&repo.path), &["remote"], None)?;
         // 无任何远端的本地仓库仍可切换/合并；推送必须有明确存在的远端。
         if remotes.is_empty() && !push {
@@ -1033,7 +1157,9 @@ fn prepare_plan(
     tasks::run_backend(app.clone(), project_id.clone(), move |task| {
         let result = (|| {
             for repo in &fetch_repositories {
-                fetch_remote(Path::new(&repo.path), repo, Some(task))?;
+                let path = Path::new(&repo.path);
+                let _guard = RepositoryGuard::acquire(&repository_common_dir(path)?)?;
+                fetch_remote(path, repo, Some(task))?;
             }
             preflight_with_task(&repositories, &preflight_operation, Some(task))
         })();
@@ -2476,16 +2602,16 @@ fn inspect_pom_conflict(
 }
 
 // 切换后以已确认的本地目标 SHA 为基线；fetch 只能改变远端引用，不能改变本地现场。
-fn validate_switched_target(saved: &PlanRepository) -> Result<()> {
+fn validate_checkout(saved: &PlanRepository, branch: &str, expected_head: &str) -> Result<()> {
     let repo = &saved.repository;
     let path = Path::new(&saved.root);
     let current = status(repo)?;
     let common = run(path, &["rev-parse", "--git-common-dir"], None)?;
     if current.root != saved.root
         || canonical(&path.join(common))? != saved.common_dir
-        || current.current_branch != saved.target_branch
-        || current.head != saved.target_sha
-        || sha(path, &format!("refs/heads/{}", saved.target_branch))? != saved.target_sha
+        || current.current_branch != branch
+        || current.head != expected_head
+        || sha(path, &format!("refs/heads/{branch}"))? != expected_head
         || current.dirty
         || current.merging
         || current.rebasing
@@ -2494,6 +2620,9 @@ fn validate_switched_target(saved: &PlanRepository) -> Result<()> {
         return Err("仓库在切换或同步期间已变化，现场已保留".into());
     }
     Ok(())
+}
+fn validate_switched_target(saved: &PlanRepository) -> Result<()> {
+    validate_checkout(saved, &saved.target_branch, &saved.target_sha)
 }
 fn sync_switched_target(saved: &PlanRepository, task: Option<&tasks::Task>) -> Result<()> {
     let repo = &saved.repository;
@@ -2657,6 +2786,7 @@ fn perform_with_options(
     if let Some(task) = task {
         task.check()?;
     }
+    let _guard = RepositoryGuard::acquire(&saved.common_dir)?;
     revalidate_with_task(saved, operation, task)?;
     // 新建跟踪分支时使用刚重验过的远端 tip，后续仍按实际创建基线保护本地 SHA。
     let tracking_saved =
@@ -2673,6 +2803,43 @@ fn perform_with_options(
     let saved = tracking_saved.as_ref().unwrap_or(saved);
     let repo = &saved.repository;
     let path = Path::new(&saved.root);
+    if operation == "pull-current" {
+        validate_checkout(saved, &saved.current_branch, &saved.source_sha)?;
+        if pull_target(repo, &saved.current_branch)? != saved.target_branch
+            || sha(path, &remote_ref(repo, &saved.target_branch))? != saved.remote_sha
+        {
+            return Err("当前分支的远端已变化，请重新准备操作".into());
+        }
+        if run(
+            path,
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &saved.remote_sha,
+                &saved.source_sha,
+            ],
+            task,
+        )
+        .is_ok()
+        {
+            return Ok(());
+        }
+        run(
+            path,
+            &[
+                "merge",
+                "--ff-only",
+                "--no-squash",
+                "--commit",
+                "--no-overwrite-ignore",
+                "--no-autostash",
+                "--",
+                &saved.remote_sha,
+            ],
+            task,
+        )?;
+        return validate_checkout(saved, &saved.current_branch, &saved.remote_sha);
+    }
     if operation == "push-dev" {
         // 固定已确认的提交；即使之后本地 ref 更新也绝不推送未经确认的提交。
         // 禁止配置附带 tags、mirror 或递归推送其他仓库；不跳过 hooks/签名/SSH。
@@ -3304,7 +3471,7 @@ fn finish_worktree(
     action: WorktreeAction,
 ) -> Result<()> {
     let operations = tasks::data_dir(app)?.join("backend-worktrees");
-    let (saved, worktree, index, project_id, pom_snapshot, blocks_snapshot, push) = {
+    let (saved, worktree, index, project_id, pom_snapshot, blocks_snapshot, push, guard) = {
         let runtime = app.state::<Runtime>();
         let mut entries = runtime.entries.lock().unwrap();
         let entry = entries.get_mut(&plan_id).ok_or("计划不存在")?;
@@ -3363,6 +3530,7 @@ fn finish_worktree(
             pom_snapshot,
             blocks_snapshot,
             entry.plan.push,
+            RepositoryGuard::acquire(&entry.plan.repositories[index].common_dir)?,
         );
         entry.state.status = "aborting".into();
         value
@@ -3404,6 +3572,7 @@ fn finish_worktree(
                 ),
             }
         };
+        drop(guard);
         let manual_remaining = matches!(outcome, Ok(true));
         let mut recovered = None;
         let files = if (outcome.is_err() || manual_remaining)
@@ -3858,6 +4027,96 @@ mod tests {
             ],
         )
     }
+    #[test]
+    fn pull_current_uses_configured_remote_and_preserves_local_commits() {
+        let (dir, mut repo, remote) = push_fixture(true);
+        repo.development_branch.clear();
+        repo.test_branch.clear();
+        let path = dir.path();
+        git(path, &["switch", "-c", "feature", "--track", "origin/test"]);
+        let base = sha(path, "HEAD").unwrap();
+        let tip = child_commit(remote.path(), &base, "remote advance");
+        git(remote.path(), &["update-ref", "refs/heads/test", &tip]);
+        let pull = || {
+            let plan = snapshot(&repo, "pull-current")?;
+            perform(&plan, "pull-current", false, path, None, || panic!())
+        };
+        pull().unwrap();
+        assert_eq!(branch(path), "feature");
+        assert_eq!(sha(path, "HEAD").unwrap(), tip);
+        change(path, "local commit");
+        let ahead = sha(path, "HEAD").unwrap();
+        pull().unwrap();
+        assert_eq!(sha(path, "HEAD").unwrap(), ahead);
+        assert_eq!(sha(remote.path(), "refs/heads/test").unwrap(), tip);
+        let other = child_commit(remote.path(), &tip, "diverged");
+        git(remote.path(), &["update-ref", "refs/heads/test", &other]);
+        assert!(snapshot(&repo, "pull-current").is_err());
+        assert_eq!(sha(path, "HEAD").unwrap(), ahead);
+    }
+
+    #[test]
+    fn pull_current_batch_uses_each_checkout_and_preserves_other_branches() {
+        let (one, first, first_remote) = push_fixture(true);
+        let (two, mut second, second_remote) = push_fixture(true);
+        second.id = "second".into();
+        git(two.path(), &["switch", "test"]);
+        for (remote, name) in [(&first_remote, "dev"), (&second_remote, "test")] {
+            let reference = format!("refs/heads/{name}");
+            let base = sha(remote.path(), &reference).unwrap();
+            let tip = child_commit(remote.path(), &base, "advance");
+            git(remote.path(), &["update-ref", &reference, &tip]);
+        }
+        let plans = preflight(&[first, second], "pull-current").unwrap();
+        for (plan, path, name, other) in [
+            (&plans[0], one.path(), "dev", "test"),
+            (&plans[1], two.path(), "test", "dev"),
+        ] {
+            assert_eq!(plan.current_branch, name);
+            let untouched = sha(path, other).unwrap();
+            perform(plan, "pull-current", false, path, None, || panic!()).unwrap();
+            assert_eq!(branch(path), name);
+            assert_eq!(sha(path, "HEAD").unwrap(), plan.remote_sha);
+            assert_eq!(sha(path, other).unwrap(), untouched);
+        }
+    }
+
+    #[test]
+    fn pull_current_rechecks_confirmation_and_rejects_unsafe_states() {
+        let (dir, repo, remote) = push_fixture(true);
+        let path = dir.path();
+        let saved = snapshot(&repo, "pull-current").unwrap();
+        let guard = RepositoryGuard::acquire(&saved.common_dir).unwrap();
+        assert!(
+            perform(&saved, "pull-current", false, path, None, || panic!())
+                .unwrap_err()
+                .contains("其他 Git 操作")
+        );
+        drop(guard);
+        assert!(validate_options("pull-current", true, false).is_err());
+        assert!(validate_options("pull-current", false, true).is_err());
+        let tip = child_commit(remote.path(), &saved.source_sha, "after confirmation");
+        git(remote.path(), &["update-ref", "refs/heads/dev", &tip]);
+        assert!(perform(&saved, "pull-current", false, path, None, || panic!()).is_err());
+        assert_eq!(sha(path, "HEAD").unwrap(), saved.source_sha);
+        let saved = snapshot(&repo, "pull-current").unwrap();
+        fs::write(path.join("untracked"), "edit").unwrap();
+        assert!(revalidate(&saved, "pull-current").is_err());
+        fs::remove_file(path.join("untracked")).unwrap();
+        fs::write(path.join(".git/MERGE_HEAD"), &tip).unwrap();
+        assert!(snapshot(&repo, "pull-current").is_err());
+        fs::remove_file(path.join(".git/MERGE_HEAD")).unwrap();
+        git(path, &["switch", "--detach"]);
+        assert!(snapshot(&repo, "pull-current").is_err());
+        git(path, &["switch", "dev"]);
+        git(path, &["config", "branch.dev.remote", "other"]);
+        git(path, &["config", "branch.dev.merge", "refs/heads/dev"]);
+        assert!(snapshot(&repo, "pull-current").is_err());
+        git(path, &["config", "branch.dev.remote", "origin"]);
+        git(remote.path(), &["update-ref", "-d", "refs/heads/dev"]);
+        assert!(snapshot(&repo, "pull-current").is_err());
+    }
+
     #[test]
     fn switch_sync_fetches_latest_and_preserves_ahead_or_diverged_history() {
         for operation in ["switch-test", "switch-master"] {

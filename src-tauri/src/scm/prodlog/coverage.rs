@@ -1,6 +1,6 @@
 use super::super::{log_runtime::parse_log_modules, LoginPage};
 use super::*;
-use std::{sync::Arc, time::Duration};
+use std::{cmp::Reverse, collections::BinaryHeap, sync::Arc, time::Duration};
 use tokio::{
     sync::Semaphore,
     task::JoinSet,
@@ -29,6 +29,17 @@ pub struct ProdlogScan {
     pub success_count: usize,
     pub failure_count: usize,
     pub targets: Vec<InstanceScan>,
+    pub latest_matches: Vec<LatestMatch>,
+    /// 最新前缀因样本字节预算提前结束；不包括行数限制或单行缩短。
+    pub byte_limit_reached: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatestMatch {
+    pub timestamp: String,
+    pub target_id: String,
+    pub line: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -159,6 +170,8 @@ impl LogRuntime {
                 failure_count: target_count,
                 complete: false,
                 truncated: false,
+                latest_matches: Vec::new(),
+                byte_limit_reached: false,
                 targets: indices
                     .iter()
                     .map(|&i| InstanceScan {
@@ -170,7 +183,8 @@ impl LogRuntime {
                     })
                     .collect(),
             };
-            let (mut remaining_lines, mut remaining_bytes) = (max_lines, SAMPLE_BYTES);
+            // 堆顶是保留项中最旧的一项；同毫秒由清单位置、单机样本顺序打破平局。
+            let mut latest = BinaryHeap::with_capacity(max_lines + 1);
             let mut pending = indices.into_iter().enumerate();
             // JoinSet 的 Drop 取消全部请求；deadline 未启动/未完成的实例保留 Timeout，而不是零命中。
             let mut jobs = JoinSet::new();
@@ -187,7 +201,6 @@ impl LogRuntime {
                         report.archive_hour.clone(),
                         keyword.clone(),
                     );
-                    let limit = remaining_lines;
                     jobs.spawn(async move {
                         let end = deadline.min(Instant::now() + INSTANCE_BUDGET);
                         let result = timeout_at(
@@ -199,7 +212,7 @@ impl LogRuntime {
                                 &log,
                                 hour.as_deref(),
                                 &k,
-                                limit,
+                                max_lines,
                                 raw,
                             ),
                         )
@@ -222,22 +235,43 @@ impl LogRuntime {
                             .checked_add(found.total_matches)
                             .ok_or("Limit: 命中总数超出计数上限")?;
                         row.total_matches = Some(found.total_matches);
-                        row.truncated = max_lines != 0
-                            && (found.truncated || found.total_matches > found.lines.len() as u64);
-                        for line in found.lines {
-                            if remaining_lines == 0 || line.len() > remaining_bytes {
-                                row.truncated |= max_lines != 0;
-                                continue;
+                        row.truncated = max_lines != 0 && found.truncated;
+                        for (index, (timestamp, line)) in
+                            found.timestamps.into_iter().zip(found.lines).enumerate()
+                        {
+                            latest.push((Reverse(timestamp), slot, index, line));
+                            if latest.len() > max_lines {
+                                latest.pop();
                             }
-                            remaining_lines -= 1;
-                            remaining_bytes -= line.len();
-                            row.lines.push(line);
                         }
-                        report.truncated |= row.truncated;
                         row.error = None;
                         report.success_count += 1;
                     }
                 }
+            }
+            let mut remaining_bytes = SAMPLE_BYTES;
+            for (Reverse(timestamp), slot, _, line) in latest.into_sorted_vec() {
+                let row = &mut report.targets[slot];
+                // 两个视图中的正文都占预算；只交付连续的最新前缀。
+                let cost = 2 * line.len() + timestamp.len() + row.target_id.len();
+                if cost > remaining_bytes {
+                    report.byte_limit_reached = true;
+                    break;
+                }
+                remaining_bytes -= cost;
+                row.lines.push(line.clone());
+                report.latest_matches.push(LatestMatch {
+                    timestamp,
+                    target_id: row.target_id.clone(),
+                    line,
+                });
+            }
+            for row in &mut report.targets {
+                row.truncated |= max_lines != 0
+                    && row
+                        .total_matches
+                        .is_some_and(|total| total > row.lines.len() as u64);
+                report.truncated |= row.truncated;
             }
             report.failure_count -= report.success_count;
             report.complete = report.failure_count == 0;
@@ -329,11 +363,12 @@ mod tests {
                                         gate.acquire().await.unwrap().forget();
                                     }
                                     let output = if command.contains("'LONG'") {
-                                        format!("LONG order=demo token=fixture\t{}\n", "长".repeat(400)).repeat(40)
+                                        format!("INFO: 2025-01-01 00:00:00.001 LONG order=demo token=fixture\t{}\n", "长".repeat(400)).repeat(39) + "INFO: 2025-01-01 00:00:00.000 LONG old\n"
                                     } else if is_count {
                                         "3\n".to_owned()
                                     } else {
-                                        "ERR one\nERR two\n".to_owned()
+                                        let i: usize = key.strip_prefix("private-").unwrap().parse().unwrap();
+                                        [i, i + 4, 9].into_iter().map(|ms| format!("INFO: 2025-01-01 00:00:00.{ms:03} ERR GOOD sample\n")).collect()
                                     };
                                     observed.lock().unwrap().push((key.to_owned(), is_count));
                                     match key {
@@ -367,7 +402,7 @@ mod tests {
             let scan = |module: &str, id, limit| {
                 runtime.scan_prodlog(module.into(), id, "info".into(), "ERR".into(), limit, None, false)
             };
-            let all = scan("7", ScanTargets::All, 1).await.unwrap();
+            let all = scan("7", ScanTargets::All, 3).await.unwrap();
             assert_eq!(
                 (
                     all.target_count,
@@ -379,7 +414,16 @@ mod tests {
             );
             assert!(!all.complete && all.truncated);
             assert_eq!(all.targets.len(), 4);
-            assert_eq!(all.targets.iter().map(|t| t.lines.len()).sum::<usize>(), 1);
+            assert_eq!(all.targets.iter().map(|t| t.lines.len()).sum::<usize>(), 3);
+            let view = serde_json::to_value(&all).unwrap();
+            for (i, (ms, slot)) in [(9, 0), (9, 1), (6, 1)].into_iter().enumerate() {
+                let timestamp = format!("2025-01-01 00:00:00.{ms:03}");
+                assert_eq!(view["latestMatches"][i], json!({"timestamp": timestamp, "targetId": all.targets[slot].target_id, "line": format!("INFO: {timestamp} ERR GOOD sample")}));
+            }
+            assert_eq!(view["latestMatches"].as_array().unwrap().len(), 3);
+            // 第四台在首批任务后才调度，仍须索取样本并参与并列排序。
+            let late = runtime.scan_prodlog("7".into(), ScanTargets::All, "info".into(), "GOOD".into(), 5, None, true).await.unwrap();
+            assert_eq!(serde_json::to_value(&late).unwrap()["latestMatches"][4]["targetId"], late.targets[3].target_id);
             assert!(all.targets[2..]
                 .iter()
                 .all(|t| t.error.is_some() && t.total_matches.is_none()));
@@ -420,9 +464,11 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert!(large.complete && large.truncated && large.total_matches == 40);
+            assert!(large.complete && large.truncated && large.byte_limit_reached && large.total_matches == 40);
+            assert!(large.latest_matches.iter().all(|item| item.timestamp.ends_with(".001")));
+            assert_eq!(large.latest_matches.len(), large.targets[0].lines.len());
             let lines = &large.targets[0].lines;
-            let expected = format!("LONG order=demo token=fixture\t{}", "长".repeat(400));
+            let expected = format!("INFO: 2025-01-01 00:00:00.001 LONG order=demo token=fixture\t{}","长".repeat(400));
             assert!(lines.iter().all(|line| expected.starts_with(line) && (1022..=1024).contains(&line.len())));
             assert!(
                 !lines.is_empty()

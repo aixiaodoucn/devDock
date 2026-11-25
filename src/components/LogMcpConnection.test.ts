@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
-import { createApp, h, nextTick } from 'vue';
+import { createApp, h, nextTick, ref } from 'vue';
+import ScmLogOptions from './ScmLogOptions.vue';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { api } from '../api';
 import LogMcpConnection from './LogMcpConnection.vue';
@@ -30,7 +31,20 @@ const token = 'fixture-token-only';
 const root = document.createElement('div');
 let app: ReturnType<typeof createApp>;
 async function mount() {
-  app = createApp({ render: () => h(LogMcpConnection) });
+  const enabled = ref(false);
+  const revision = ref(0);
+  app = createApp({
+    render: () =>
+      h('div', [
+        env.desktop && h(ScmLogOptions, { serviceEnabled: enabled.value, key: revision.value }),
+        h(LogMcpConnection, {
+          onServiceState: (value: boolean) => {
+            enabled.value = value;
+            revision.value++;
+          },
+        }),
+      ]),
+  });
   app.mount(root);
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
@@ -144,10 +158,11 @@ it('切换范围时等待后端确认后再勾选', async () => {
 });
 
 it('读取或更新失败均显示未知范围，刷新后恢复实际值', async () => {
-  vi.mocked(api.logMcpScanScope).mockRejectedValueOnce(new Error()).mockResolvedValue('all');
+  vi.mocked(api.logMcpScanScope).mockRejectedValue(new Error());
   vi.mocked(api.logMcpSetScanScope).mockRejectedValueOnce(new Error());
   await mount();
   expect(root.textContent).toContain('读取日志查询范围失败');
+  vi.mocked(api.logMcpScanScope).mockResolvedValue('all');
   expect(root.querySelector('input:checked')).toBeNull();
   await click('刷新状态');
   expect(root.querySelector<HTMLInputElement>('input[value="all"]')!.checked).toBe(true);

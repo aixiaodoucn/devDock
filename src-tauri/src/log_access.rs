@@ -157,6 +157,12 @@ fn field<'a>(args: &'a Value, name: &str) -> Result<&'a str> {
 }
 
 async fn dispatch(app: AppHandle, tool: &str, args: Value) -> Result<Value> {
+    if matches!(tool, "prod_db_describe_table" | "prod_db_query_readonly") {
+        let db = app.state::<crate::sqlpad::Runtime>();
+        let prepared = db.prepare(tool, &args).await?;
+        crate::db_approval::approve(&app, &prepared.connection, &prepared.preview).await?;
+        return db.execute(prepared).await;
+    }
     let cfg = tasks::load(&app).map_err(|_| "无法读取工作台映射".to_owned())?;
     let repos = cfg
         .projects
@@ -266,6 +272,12 @@ fn scan_targets(all_allowed: bool, args: &Value) -> Result<scm::prodlog::ScanTar
 }
 
 #[tauri::command]
+pub(crate) fn mcp_tool_catalog(window: WebviewWindow) -> Result<Vec<log_mcp::CatalogEntry>> {
+    ensure_backend_window(&window)?;
+    Ok(log_mcp::tool_catalog())
+}
+
+#[tauri::command]
 pub async fn log_mcp_scan_scope(app: AppHandle, window: WebviewWindow) -> Result<&'static str> {
     ensure_backend_window(&window)?;
     let all = Preferences::load(&tasks::data_dir(&app)?)?.scan_all;
@@ -346,18 +358,21 @@ pub async fn log_mcp_enable(app: AppHandle, window: WebviewWindow) -> Result<Sta
         return Err("工作台正在退出".into());
     }
     if guard.server.is_none() {
-        let login = app
-            .state::<scm::LogRuntime>()
-            .status()
-            .await
-            .map_err(|_| "请先在偏好设置中登录日志 SCM".to_owned())?;
-        let (Some(base), Some(user)) = (login.base_url, login.username) else {
-            return Err("请先在偏好设置中登录日志 SCM".into());
+        // 两种数据源共享本机传输，不共享登录。SQLPad 已选连接时不要求日志站点在线。
+        let sql_ready = app.state::<crate::sqlpad::Runtime>().ready().await;
+        let subject = if sql_ready && !app.state::<scm::LogRuntime>().has_live_session().await {
+            None
+        } else {
+            app.state::<scm::LogRuntime>()
+                .status()
+                .await
+                .ok()
+                .filter(|s| s.connected)
+                .and_then(|s| Some(preferences::subject(&s.base_url?, &s.username?)))
         };
-        if !login.connected || base.is_empty() || user.is_empty() {
-            return Err("请先在偏好设置中登录日志 SCM".into());
+        if subject.is_none() && !sql_ready {
+            return Err("请先登录日志 SCM，或登录 SQLPad 并选定只读连接".into());
         }
-        let subject = preferences::subject(&base, &user);
         let prefs = Preferences::load(&tasks::data_dir(&app)?)?;
         let handle = app.clone();
         let server = log_mcp::start_log_mcp(true, 0, move |name, args| {
@@ -369,8 +384,8 @@ pub async fn log_mcp_enable(app: AppHandle, window: WebviewWindow) -> Result<Sta
         .ok_or_else(|| "无法启动本机日志 MCP 服务".to_owned())?;
         guard.publish(server, &SystemStore)?;
         guard.scan_all = prefs.scan_all;
-        guard.set_raw(prefs.raw_subject.as_ref() == Some(&subject))?;
-        guard.active_subject = Some(subject);
+        guard.set_raw(subject.is_some() && prefs.raw_subject == subject)?;
+        guard.active_subject = subject;
     }
     Ok(status(guard.server.as_ref()))
 }
