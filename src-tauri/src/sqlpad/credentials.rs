@@ -1,12 +1,11 @@
-//! SQLPad 使用独立系统凭据，不保存密码、已选数据库或免审批授权。
+//! SQLPad 使用独立的本机私有存储条目，保存会话及所选连接，不保存密码或免审批授权。
 use super::*;
 use cookie_store::{Cookie, CookieStore};
 use reqwest::cookie::CookieStore as HttpCookies;
 use std::sync::RwLock;
 
-pub(super) const WARNING: &str = "系统凭据不可用，SQLPad 登录仅在本次运行有效";
-pub(super) const CLEAR_WARNING: &str =
-    "无法删除已记住的 SQLPad 会话，请在系统凭据管理中移除 SQLPad 条目";
+pub(super) const WARNING: &str = "本机私有存储不可用，SQLPad 登录仅在本次运行有效";
+pub(super) const CLEAR_WARNING: &str = "无法删除本机已记住的 SQLPad 会话";
 
 #[derive(Default)]
 pub(super) struct Jar(RwLock<CookieStore>);
@@ -35,9 +34,18 @@ impl HttpCookies for Jar {
 struct Saved {
     root: String,
     cookies: Vec<Cookie<'static>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    connection: Option<Connection>,
 }
 impl Jar {
-    pub(super) fn snapshot(&self, root: &Url) -> Result<String> {
+    pub(super) fn snapshot(
+        &self,
+        root: &Url,
+        username: Option<&str>,
+        connection: Option<&Connection>,
+    ) -> Result<String> {
         let store = self.0.read().map_err(|_| WARNING)?;
         let mut cookies: Vec<_> = store.iter_unexpired().cloned().collect();
         if cookies.is_empty() {
@@ -48,11 +56,13 @@ impl Jar {
         });
         serde_json::to_string(&Saved {
             root: root.to_string(),
+            username: username.map(str::to_owned),
+            connection: connection.cloned(),
             cookies,
         })
         .map_err(|_| WARNING.into())
     }
-    pub(super) fn restore(value: &str) -> Result<(Url, Self)> {
+    pub(super) fn restore(value: &str) -> Result<Session> {
         let saved: Saved = serde_json::from_str(value).map_err(|_| INVALID_RESPONSE)?;
         let root = root_url(&saved.root)?;
         // 保留 Cookie 原始域、路径和到期时间，过期项不会被重新赋予有效期。
@@ -61,69 +71,73 @@ impl Jar {
         if store.iter_unexpired().next().is_none() {
             return Err(AUTH_REQUIRED.into());
         }
-        Ok((root, Self(RwLock::new(store))))
+        let mut session = Session::new(root, Self(RwLock::new(store)))?;
+        session.status.username = saved.username;
+        session.pending_connection = saved.connection;
+        Ok(session)
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn entry() -> Result<keyring::Entry> {
-    let service = if cfg!(debug_assertions) {
-        "cn.aixiaodou.devdock.dev.sqlpad"
-    } else {
-        "cn.aixiaodou.devdock.sqlpad"
-    };
-    keyring::Entry::new(service, "default").map_err(|_| WARNING.into())
-}
+const KEY: &str = "sqlpad";
+
 pub(super) async fn load() -> Result<Option<String>> {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        tokio::task::spawn_blocking(|| match entry()?.get_password() {
-            Ok(v) => Ok(Some(v)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(WARNING.into()),
-        })
+    tokio::task::spawn_blocking(|| crate::local_credentials::load(KEY))
         .await
         .map_err(|_| WARNING)?
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        Ok(None)
-    }
+        .map_err(|_| WARNING.into())
 }
 pub(super) async fn save(value: String) -> Result<()> {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        tokio::task::spawn_blocking(move || {
-            entry()?.set_password(&value).map_err(|_| WARNING.into())
-        })
+    tokio::task::spawn_blocking(move || crate::local_credentials::save(KEY, &value))
         .await
         .map_err(|_| WARNING)?
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        let _ = value;
-        Err(WARNING.into())
-    }
+        .map_err(|_| WARNING.into())
 }
 pub(super) async fn clear() -> Result<()> {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        tokio::task::spawn_blocking(|| match entry()?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(_) => Err(CLEAR_WARNING.into()),
-        })
+    tokio::task::spawn_blocking(|| crate::local_credentials::clear(KEY))
         .await
         .map_err(|_| CLEAR_WARNING)?
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        Ok(())
-    }
+        .map_err(|_| CLEAR_WARNING.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remembered_user_and_connection_require_a_fresh_catalog() {
+        let site = root_url("https://fixture.invalid").unwrap();
+        let jar = Jar::default();
+        let cookie = header::HeaderValue::from_static("session=test; Path=/; Secure");
+        jar.set_cookies(&mut [&cookie].into_iter(), &site);
+        let conn = Connection {
+            id: "one".into(),
+            name: "Example".into(),
+            driver: "mysql".into(),
+        };
+        let saved = jar
+            .snapshot(&site, Some("user@example.invalid"), Some(&conn))
+            .unwrap();
+        let mut session = Jar::restore(&saved).unwrap();
+        assert_eq!(
+            session.status.username.as_deref(),
+            Some("user@example.invalid")
+        );
+        assert!(session.status.selected_id.is_none());
+        session.update_connections(vec![conn.clone()]).unwrap();
+        assert_eq!(session.status.selected_id.as_deref(), Some("one"));
+        assert!(!session.status.auto_approve);
+        for visible in [
+            vec![],
+            vec![Connection {
+                driver: "postgres".into(),
+                ..conn.clone()
+            }],
+        ] {
+            let mut session = Jar::restore(&saved).unwrap();
+            session.update_connections(visible).unwrap();
+            assert!(session.status.selected_id.is_none());
+        }
+    }
+
     #[test]
     fn round_trip_preserves_scope_and_excludes_expired_cookies() {
         let root = root_url("https://fixture.invalid").unwrap();
@@ -132,9 +146,11 @@ mod tests {
             header::HeaderValue::from_static("session=fixture; Path=/api; Secure; HttpOnly");
         let expired = header::HeaderValue::from_static("expired=no; Path=/; Max-Age=0");
         jar.set_cookies(&mut [&cookie, &expired].into_iter(), &root);
-        let value = jar.snapshot(&root).unwrap();
+        let value = jar.snapshot(&root, None, None).unwrap();
         assert!(!value.contains("expired=no"));
-        let (site, restored) = Jar::restore(&value).unwrap();
+        let session = Jar::restore(&value).unwrap();
+        assert!(session.status.username.is_none() && session.pending_connection.is_none());
+        let (site, restored) = (session.root, session.jar);
         assert_eq!(site, root);
         assert!(restored.cookies(&site).is_none());
         assert_eq!(

@@ -1,51 +1,26 @@
 use super::{Record, Result, OFFLINE};
+use crate::local_credentials;
 
 pub(crate) trait Store {
     fn load(&self) -> Result<Record>;
     fn save(&self, record: &Record) -> Result<()>;
     fn clear(&self) -> Result<()>;
 }
-pub(crate) struct SystemStore;
-const UNAVAILABLE: &str = "日志 MCP 专用系统凭据存储不可用";
+pub(crate) struct LocalStore;
+const KEY: &str = "mcp-bridge";
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-impl SystemStore {
-    fn entry(&self) -> Result<keyring::Entry> {
-        let service = if cfg!(debug_assertions) {
-            "cn.aixiaodou.devdock.dev.log-mcp"
-        } else {
-            "cn.aixiaodou.devdock.log-mcp"
-        };
-        keyring::Entry::new(service, "stdio").map_err(|_| UNAVAILABLE.into())
-    }
-}
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-impl Store for SystemStore {
+impl Store for LocalStore {
     fn load(&self) -> Result<Record> {
-        let value = self.entry()?.get_password().map_err(|_| OFFLINE)?;
+        let value = local_credentials::load(KEY)
+            .map_err(|_| OFFLINE)?
+            .ok_or(OFFLINE)?;
         serde_json::from_str(&value).map_err(|_| OFFLINE.into())
     }
     fn save(&self, record: &Record) -> Result<()> {
-        self.entry()?
-            .set_password(&serde_json::to_string(record).map_err(|_| UNAVAILABLE)?)
-            .map_err(|_| UNAVAILABLE.into())
+        let value = serde_json::to_string(record).map_err(|_| "无法编码 MCP 桥接凭据")?;
+        local_credentials::save(KEY, &value)
     }
     fn clear(&self) -> Result<()> {
-        match self.entry()?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(_) => Err("无法删除系统中的日志 MCP 专用凭据，请重试停用".into()),
-        }
-    }
-}
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-impl Store for SystemStore {
-    fn load(&self) -> Result<Record> {
-        Err(OFFLINE.into())
-    }
-    fn save(&self, _: &Record) -> Result<()> {
-        Err(UNAVAILABLE.into())
-    }
-    fn clear(&self) -> Result<()> {
-        Ok(())
+        local_credentials::clear(KEY).map_err(|_| "无法删除本机 MCP 桥接凭据，请重试停用".into())
     }
 }

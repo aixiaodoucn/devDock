@@ -18,7 +18,7 @@ use tokio::net::TcpStream;
 mod credentials;
 #[cfg(test)]
 mod tests;
-pub(crate) use credentials::{Store, SystemStore};
+pub(crate) use credentials::{LocalStore, Store};
 const OFFLINE: &str = "Dev Dock 日志 MCP 不可用，请打开工作台并重新启用";
 const IO_ERROR: &str = "日志 MCP 标准输入输出已断开";
 
@@ -149,5 +149,5 @@ fn relay(store: &impl Store, mut input: impl BufRead, mut output: impl Write) ->
 }
 
 pub fn run_stdio() -> Result<()> {
-    relay(&SystemStore, io::stdin().lock(), io::stdout().lock())
+    relay(&LocalStore, io::stdin().lock(), io::stdout().lock())
 }

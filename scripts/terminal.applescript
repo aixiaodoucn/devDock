@@ -5,11 +5,22 @@ on loginShellCommand(commandText, shellPath)
 end loginShellCommand
 
 -- Ghostty 使用原生 Apple Events 四字符代码，避免其他终端用户编译脚本时必须安装 Ghostty。
-on openGhostty(terminalPath, workingDirectory, commandText)
- set launchCommand to my loginShellCommand(commandText, system attribute "SHELL")
+-- 项目 Node 环境要留在同一交互 shell 中。初始输入仅含固定语句，不把用户命令当成按键输入。
+on ghosttyProjectConfig(workingDirectory, commandText, shellPath)
+ if shellPath is "" then set shellPath to "/bin/zsh"
+ return {«class GScD»:workingDirectory, «class GScC»:(quoted form of shellPath & " -l -i"), «class GScE»:{"DEVDOCK_INITIAL_ACTION=" & commandText}, «class GScI»:(" eval \"unset DEVDOCK_INITIAL_ACTION; $DEVDOCK_INITIAL_ACTION\"" & return)}
+end ghosttyProjectConfig
+
+on openGhostty(terminalPath, workingDirectory, commandText, keepNodeSession)
+ if keepNodeSession then
+  set surfaceOptions to my ghosttyProjectConfig(workingDirectory, commandText, system attribute "SHELL")
+ else
+  set launchCommand to my loginShellCommand(commandText, system attribute "SHELL")
+  set surfaceOptions to {«class GScD»:workingDirectory, «class GScC»:launchCommand, «class GScW»:true}
+ end if
  try
   tell application terminalPath
-   set surfaceConfig to «event GhstNSCf» given «class GScS»:{«class GScD»:workingDirectory, «class GScC»:launchCommand, «class GScW»:true}
+   set surfaceConfig to «event GhstNSCf» given «class GScS»:surfaceOptions
    if (count of «class Gwnd») > 0 then
     «event GhstNTab» given «class GNtW»:front «class Gwnd», «class GNtS»:surfaceConfig
    else
@@ -105,7 +116,9 @@ on run argv
   end tell
  else if terminalPath ends with "/Ghostty.app" then
   if windowTitle is not "" then set commandText to (my oscTitleCommand(windowTitle)) & commandText
-  my openGhostty(terminalPath, workingDirectory, commandText)
+  set keepNodeSession to false
+  if (count of argv) >= 5 then set keepNodeSession to ((item 5 of argv) is "keep-node-session")
+  my openGhostty(terminalPath, workingDirectory, commandText, keepNodeSession)
  else if terminalPath ends with "/iTerm.app" or terminalPath ends with "/iTerm2.app" then
   if windowTitle is not "" then set commandText to (my oscTitleCommand(windowTitle)) & commandText
   my openITerm(terminalPath, commandText)

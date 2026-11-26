@@ -215,7 +215,7 @@ where
     {
         return reject(403);
     }
-    // 仅持有钥匙串探测密钥的桥可取得实例标记；此步不携带令牌或日志请求。
+    // 仅持有本次桥接探测密钥的桥可取得实例标记；此步不携带令牌或日志请求。
     if request.method() == hyper::Method::GET
         && request.uri() == "/log-mcp-identity"
         && single(h, "origin") == Ok(None)

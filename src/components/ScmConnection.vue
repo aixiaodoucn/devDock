@@ -163,7 +163,7 @@ onBeforeUnmount(() => {
           刷新状态
         </button>
         <button
-          class="button small"
+          class="button small negative"
           type="button"
           :disabled="!desktop || pending || disabled"
           @click="request('logout')"
@@ -191,7 +191,7 @@ onBeforeUnmount(() => {
             autocomplete="current-password"
         /></label>
         <label class="remember"
-          ><input v-model="remember" type="checkbox" />记住登录（系统凭据存储）</label
+          ><input v-model="remember" type="checkbox" />记住登录（本机私有存储）</label
         >
         <div class="connection-actions">
           <button class="button small primary" type="submit">

@@ -69,7 +69,7 @@ fn reused_port_gets_neither_bearer_nor_request() {
                     assert_ne!(peer.read_line(&mut wire).await.unwrap(), 0);
                 }
                 peer.get_mut()
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nwrong")
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 32\r\n\r\n00000000000000000000000000000000")
                     .await
                     .unwrap();
                 peer.read_to_string(&mut wire).await.unwrap();

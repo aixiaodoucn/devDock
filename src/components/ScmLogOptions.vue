@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
 import { api, desktop, type LogMcpScanScope } from '../api';
-const props = defineProps<{ serviceEnabled: boolean }>();
+const props = defineProps<{ connected: boolean }>();
 const pending = ref(false);
 const scanScope = ref<LogMcpScanScope | null>(null);
 const scopeBusy = ref(false);
@@ -26,8 +26,7 @@ async function syncRaw(enabled?: boolean) {
 }
 
 async function setRaw(enabled: boolean) {
-  if (!desktop || !active || pending.value || !props.serviceEnabled || rawEnabled.value === null)
-    return;
+  if (!desktop || !active || pending.value || !props.connected || rawEnabled.value === null) return;
   rawDialog.value?.close();
   pending.value = true;
   try {
@@ -92,7 +91,7 @@ async function syncMatchLimit(limit?: number) {
 onMounted(() => {
   void syncMatchLimit();
   void syncScanScope();
-  if (props.serviceEnabled) void syncRaw();
+  if (desktop && props.connected) void syncRaw();
 });
 onBeforeUnmount(() => {
   active = false;
@@ -130,13 +129,13 @@ onBeforeUnmount(() => {
           aria-label="允许返回日志原文"
           :checked="rawEnabled === true"
           aria-describedby="raw-policy-hint"
-          :disabled="pending || !serviceEnabled || rawEnabled === null"
+          :disabled="pending || !connected || rawEnabled === null"
           @click.prevent="rawEnabled ? setRaw(false) : rawDialog?.showModal()"
         />
-        <span id="raw-policy-hint"
-          >原文授权仅对确认时的日志 SCM
-          站点和账号有效。停用或退出会暂停服务，服务未启动时不会返回原文。在同一站点用相同账号重新启用服务可恢复授权。取消勾选会撤销已保存的授权。</span
-        >
+        <span id="raw-policy-hint">
+          <template v-if="!connected">请先登录日志 SCM，再设置原文授权。</template>
+          <template v-else>授权保存在当前日志 SCM 站点和账号下。取消勾选可撤销授权。</template>
+        </span>
       </label>
       <p v-if="rawError" class="error" role="alert">原文状态未知，请刷新状态。</p>
       <dialog
@@ -171,7 +170,7 @@ onBeforeUnmount(() => {
         />
         <button
           type="button"
-          class="button"
+          class="button primary"
           :disabled="!canSaveLimit"
           @click="validLimit(matchLimit) && syncMatchLimit(matchLimit)"
         >

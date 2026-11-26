@@ -1,5 +1,6 @@
 use tauri::Config;
 
+pub const PRODUCTION_ID: &str = "cn.aixiaodou.devdock";
 pub const DEVELOPMENT_ID: &str = "cn.aixiaodou.devdock.dev";
 pub const DEVELOPMENT_NAME: &str = "DevDock Dev";
 
@@ -45,7 +46,7 @@ mod tests {
         let original = serde_json::to_value(&config).unwrap();
         configure(&mut config, false);
         assert_eq!(serde_json::to_value(&config).unwrap(), original);
-        assert_eq!(config.identifier, "cn.aixiaodou.devdock");
+        assert_eq!(config.identifier, PRODUCTION_ID);
         assert_eq!(config.product_name.as_deref(), Some("DevDock"));
     }
 }

@@ -32,19 +32,20 @@ const running = { enabled: true, endpoint: 'http://127.0.0.1:49152/mcp' };
 const token = 'fixture-token-only';
 const root = document.createElement('div');
 let app: ReturnType<typeof createApp>;
-async function mount() {
-  const enabled = ref(false);
-  const revision = ref(0);
+const connected = ref(false);
+const revision = ref(0);
+async function refreshLogin(isConnected = connected.value) {
+  connected.value = isConnected;
+  revision.value++;
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+async function mount(isConnected = true) {
+  connected.value = isConnected;
   app = createApp({
     render: () =>
       h('div', [
-        env.desktop && h(ScmLogOptions, { serviceEnabled: enabled.value, key: revision.value }),
-        h(LogMcpConnection, {
-          onServiceState: (value: boolean) => {
-            enabled.value = value;
-            revision.value++;
-          },
-        }),
+        env.desktop && h(ScmLogOptions, { connected: connected.value, key: revision.value }),
+        h(LogMcpConnection),
       ]),
   });
   app.mount(root);
@@ -111,7 +112,7 @@ it('独立查询和刷新服务与注册状态，按客户端注册或断开', a
   vi.mocked(api.mcpClientConnect).mockResolvedValue({ state: 'configured', message: '注册完成' });
   vi.mocked(api.mcpClientDisconnect).mockResolvedValue({ state: 'available', message: '断开完成' });
   await mount();
-  expect(root.textContent).toContain('系统凭据库');
+  expect(root.textContent).toContain('将桥接凭据保存在本机，供 stdio 客户端读取');
   expect(root.textContent).toContain('已停用');
   expect(root.textContent).toContain('codex 状态说明');
   await click('注册 Claude Code');
@@ -186,13 +187,13 @@ it('读取或更新失败均显示未知范围，刷新后恢复实际值', asyn
   expect(root.textContent).toContain('读取日志查询范围失败');
   vi.mocked(api.logMcpScanScope).mockResolvedValue('all');
   expect(root.querySelector('input:checked')).toBeNull();
-  await click('刷新状态');
+  await refreshLogin();
   expect(root.querySelector<HTMLInputElement>('input[value="all"]')!.checked).toBe(true);
   root.querySelector<HTMLInputElement>('input[value="first"]')!.click();
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   expect(root.textContent).toContain('更新日志查询范围失败');
   expect(root.querySelector('input:checked')).toBeNull();
-  await click('刷新状态');
+  await refreshLogin();
   expect(root.querySelector<HTMLInputElement>('input[value="all"]')!.checked).toBe(true);
   expect(root.querySelector('[role="alert"]')).toBeNull();
 });
@@ -200,10 +201,12 @@ it('读取或更新失败均显示未知范围，刷新后恢复实际值', asyn
 const rawCheckbox = () =>
   root.querySelector<HTMLInputElement>('input[type="checkbox"][aria-label="允许返回日志原文"]')!;
 
-it('本次启用后须确认原文披露，取消不写入，关闭直接生效', async () => {
-  await mount();
+it('未登录时提示登录，登录后可在服务停用时确认或撤销原文授权', async () => {
+  await mount(false);
+  expect(api.logMcpRawStatus).not.toHaveBeenCalled();
+  expect(root.textContent).toContain('请先登录日志 SCM');
   expect(rawCheckbox().disabled).toBe(true);
-  await click('启用');
+  await refreshLogin(true);
   expect(rawCheckbox().disabled).toBe(false);
   rawCheckbox().click();
   await nextTick();
@@ -222,10 +225,11 @@ it('本次启用后须确认原文披露，取消不写入，关闭直接生效'
   rawCheckbox().click();
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   expect(api.logMcpSetRaw).toHaveBeenLastCalledWith(false);
+  expect(api.logMcpEnable).not.toHaveBeenCalled();
   expect(rawCheckbox().checked).toBe(false);
 });
 
-it('重挂与刷新读取实际状态，读写失败和停用均撤下开启标记', async () => {
+it('刷新登录状态恢复偏好，服务启停不重新读取，退出登录清除授权显示', async () => {
   vi.mocked(api.logMcpStatus).mockResolvedValue(running);
   vi.mocked(api.logMcpRawStatus).mockResolvedValue(true);
   await mount();
@@ -236,20 +240,23 @@ it('重挂与刷新读取实际状态，读写失败和停用均撤下开启标�
   expect(rawCheckbox().disabled).toBe(true);
   expect(rawCheckbox().checked).toBe(false);
   vi.mocked(api.logMcpRawStatus).mockRejectedValueOnce(new Error('fixture'));
-  await click('刷新状态');
+  await refreshLogin();
   expect(root.textContent).toContain('原文状态未知');
-  await click('刷新状态');
+  await refreshLogin();
   expect(rawCheckbox().checked).toBe(true);
+  const reads = vi.mocked(api.logMcpRawStatus).mock.calls.length;
   await click('停用');
-  expect(rawCheckbox().disabled).toBe(true);
-  expect(rawCheckbox().checked).toBe(false);
+  expect(rawCheckbox().disabled).toBe(false);
+  expect(rawCheckbox().checked).toBe(true);
   await click('启用');
   expect(rawCheckbox().checked).toBe(true);
   expect(api.logMcpSetRaw).toHaveBeenCalledTimes(1);
-  // 切换日志 SCM 账号时，设置页会重新挂载组件。
+  expect(api.logMcpRawStatus).toHaveBeenCalledTimes(reads);
+  await refreshLogin(false);
+  expect(rawCheckbox().disabled).toBe(true);
+  expect(rawCheckbox().checked).toBe(false);
   vi.mocked(api.logMcpRawStatus).mockResolvedValue(false);
-  app.unmount();
-  await mount();
+  await refreshLogin(true);
   expect(rawCheckbox().checked).toBe(false);
 });
 

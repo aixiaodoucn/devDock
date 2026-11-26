@@ -720,6 +720,34 @@ fn env_prefix(text: &str) -> Result<String> {
 }
 
 #[cfg(any(not(windows), test))]
+fn pin_project_npm(node: &Path, command: &str) -> Result<String> {
+    // 只绑定直接启动的 npm；保留参数、引号、重定向和后续 shell 命令，不解析或重写其内容。
+    let Some(args) = command
+        .trim_start()
+        .strip_prefix("npm")
+        .filter(|s| s.is_empty() || s.starts_with([' ', '\t', '\n']))
+    else {
+        return Ok(command.to_owned());
+    };
+    let cli = node
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("Node 安装目录无效")?
+        .join("lib/node_modules/npm/bin/npm-cli.js");
+    if !cli.is_file() {
+        return Err(format!(
+            "所选 Node 安装中找不到 npm：{}；未改用终端默认 npm",
+            cli.display()
+        ));
+    }
+    Ok(format!(
+        "{} {}{args}",
+        quote(node.to_str().ok_or("Node 路径编码无效")?),
+        quote(cli.to_str().ok_or("npm 路径编码无效")?)
+    ))
+}
+
+#[cfg(any(not(windows), test))]
 pub fn command_for(project: &Project, action: &Action) -> Result<String> {
     if action.kind != "shell" {
         return Ok(action.command.clone());
@@ -748,7 +776,7 @@ pub fn command_for(project: &Project, action: &Action) -> Result<String> {
                     "test -x {} && export PATH={}:\"$PATH\" && eval {}",
                     quote(node.to_str().ok_or("Node 路径编码无效")?),
                     quote(bin),
-                    quote(&action.command)
+                    quote(&pin_project_npm(&node, &action.command)?)
                 )
             }
             _ => action.command.clone(),
@@ -791,12 +819,13 @@ fn activation(dir: &str, version: &str, command: &str, scripts: &[PathBuf]) -> R
         .find(|path| path.is_absolute() && path.is_file())
         .ok_or("找不到 nvm.sh；请检查 nvm 数据目录或 Homebrew nvm 安装")?;
     let script = script.to_str().ok_or("nvm.sh 路径编码无效")?;
+    let command = pin_project_npm(&node, command)?;
     let node = node.to_str().ok_or("Node 路径编码无效")?;
     // AppleScript 已先 cd；所有数据使用单引号引用。eval 将整段用户命令放在
     // && 的同一个分支中，避免用户命令含分号/换行时绕过激活失败保护。
     Ok(format!(
         "test -x {} && test -r {} && export NVM_DIR={} && source {} --no-use && nvm use --silent {} && eval {}",
-        quote(node), quote(script), quote(dir), quote(script), quote(version), quote(command),
+        quote(node), quote(script), quote(dir), quote(script), quote(version), quote(&command),
     ))
 }
 
@@ -1208,6 +1237,39 @@ mod tests {
     }
 
     #[test]
+    fn project_npm_uses_selected_node_and_cli_even_with_shell_override() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fnm ' path");
+        let node = installed_fnm(&root, "v22.10.0");
+        // 解释器替身输出启动参数，检查入口和带空格的参数未被 shell 重新拆分。
+        fs::write(&node, "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\"\n").unwrap();
+        let cli = node
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("lib/node_modules/npm/bin/npm-cli.js");
+        fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        fs::write(&cli, "fixture").unwrap();
+        let project = selected_fnm(&root);
+        let action: Action = serde_json::from_value(serde_json::json!({"id":"dev","name":"Dev","platform":"web","kind":"shell","menuPath":[],"command":"npm run 'probe script'"})).unwrap();
+        let command = command_for(&project, &action).unwrap();
+        for shell in ["/bin/bash", "/bin/zsh"] {
+            let out = Command::new(shell)
+                .args(["-c", &format!("npm() {{ printf default; }}\n{command}")])
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            assert_eq!(
+                String::from_utf8(out.stdout).unwrap(),
+                format!("{}\n{}\nrun\nprobe script\n", node.display(), cli.display())
+            );
+        }
+        fs::remove_file(cli).unwrap();
+        assert!(command_for(&project, &action).is_err());
+    }
+
+    #[test]
     fn fnm_activation_quotes_command_and_guards_entire_command_without_running_node() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("fnm ' $(false)");
@@ -1329,6 +1391,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("nvm data");
         installed(&root, "v22.10.0");
+        let npm_dir = root.join("versions/node/v22.10.0/lib/node_modules/npm/bin");
+        fs::create_dir_all(&npm_dir).unwrap();
+        fs::write(npm_dir.join("npm-cli.js"), "fixture").unwrap();
         fs::write(root.join("nvm.sh"), "# fake").unwrap();
         let mut project: Project = serde_json::from_value(serde_json::json!({"id":"node","name":"Node","type":"nodejs","path":"/tmp/node-project","platforms":["web"],"manifestPath":"","androidAppId":"","iosAppId":"","androidProjectPath":"","androidModule":"","jdkPath":"","gradleTask":"","outputDir":"","syncMainVersion":false,"terminal":"Terminal","commands":[]})).unwrap();
         let mut action: Action = serde_json::from_value(serde_json::json!({"id":"dev","name":"Dev","platform":"web","kind":"shell","menuPath":[],"command":"npm run dev"})).unwrap();
@@ -1339,7 +1404,8 @@ mod tests {
         assert!(command.starts_with(
             "export ALERT_EMAIL_FROM='示例发件人 <sender@example.com>' && export TOKEN='a'\\''b' && test -x "
         ));
-        assert!(command.contains("nvm use --silent 'v22.10.0' && eval 'npm run dev'"));
+        assert!(command.contains("nvm use --silent 'v22.10.0' && eval "));
+        assert!(command.contains("lib/node_modules/npm/bin/npm-cli.js"));
         // 未配置环境变量时保持原命令；菜单动作不注入环境变量。
         action.env_vars.clear();
         assert!(command_for(&project, &action)

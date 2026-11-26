@@ -46,12 +46,6 @@ const draft = ref(cloneSettings(props.settings));
 const terminalNotice = computed(() => terminalFeedback(draft.value.terminal));
 // 日志登录变化后重建卡片，立即丢弃旧会话令牌和在途请求。
 const logSessionRevision = ref(0);
-const logServiceEnabled = ref(false);
-const logOptionsRevision = ref(0);
-function updateLogService(enabled: boolean) {
-  logServiceEnabled.value = enabled;
-  logOptionsRevision.value++;
-}
 const MCP_TABS = [
   { id: 'connections', label: '连接与权限' },
   { id: 'catalog', label: '工具目录' },
@@ -365,8 +359,9 @@ watch(
                     />
                   </div>
                   <p class="field-help">
-                    未设置时，新建且未指定版本的项目使用终端默认环境，旧项目的 nvm
-                    选择保持不变。明确设置后，公共 Node.js 环境对项目统一生效。
+                    未设置时，保留各项目已有的 Node.js
+                    配置；未指定版本的项目使用终端默认环境。设置后，各项目统一使用公共 Node.js
+                    环境。
                   </p>
                   <template v-if="nodeMode === 'nvm' || nodeMode === 'fnm'">
                     <p class="field-help">
@@ -490,7 +485,7 @@ watch(
             </div>
           </section>
         </div>
-        <div v-if="activeSection === 'mcp'" class="settings-log-tools">
+        <div v-if="activeSection === 'mcp'" class="settings-log-tools mcp-settings">
           <template v-if="desktop">
             <div
               role="tablist"
@@ -536,23 +531,14 @@ watch(
             >
               <div v-if="mcpTab === 'connections'" class="settings-log-tools">
                 <div class="connection-accounts" role="group" aria-label="生产数据源登录">
-                  <ScmConnection
-                    scope="logs"
-                    @change="
-                      updateLogService(false);
-                      logSessionRevision++;
-                    "
-                  >
+                  <ScmConnection scope="logs" @change="logSessionRevision++">
                     <template #options="{ connected }">
-                      <ScmLogOptions
-                        :key="logOptionsRevision"
-                        :service-enabled="connected && logServiceEnabled"
-                      />
+                      <ScmLogOptions :key="logSessionRevision" :connected="connected" />
                     </template>
                   </ScmConnection>
                   <SqlpadConnection />
                 </div>
-                <LogMcpConnection :key="logSessionRevision" @service-state="updateLogService" />
+                <LogMcpConnection :key="logSessionRevision" />
               </div>
             </section>
           </template>
@@ -651,6 +637,35 @@ watch(
 }
 .preferences-content {
   min-width: 0;
+}
+/* 颜色按操作含义区分；仅影响 MCP 页，不改变共享登录组件在其他页面的外观。 */
+.mcp-settings :deep(.button:not(.primary)) {
+  --action-text: var(--accent-text);
+  --action-fill: var(--accent-soft);
+  --action-border: var(--accent-border);
+  color: var(--action-text);
+  background: var(--action-fill);
+  border-color: var(--action-border);
+}
+.mcp-settings :deep(.button.positive) {
+  --action-text: var(--success-text);
+  --action-fill: var(--success-soft);
+  --action-border: color-mix(in srgb, var(--success-text) 32%, var(--paper));
+}
+.mcp-settings :deep(.button.negative) {
+  --action-text: var(--danger);
+  --action-fill: var(--danger-soft);
+  --action-border: var(--danger-border);
+}
+.mcp-settings :deep(.button:not(.primary):hover:not(:disabled)) {
+  background: color-mix(in srgb, var(--action-text) 9%, var(--action-fill));
+  border-color: var(--action-text);
+}
+.mcp-settings :deep(.button:disabled) {
+  color: var(--muted);
+  background: var(--surface-subtle);
+  border-color: var(--line);
+  box-shadow: none;
 }
 .mcp-tabs {
   display: flex;

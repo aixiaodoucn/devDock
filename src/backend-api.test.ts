@@ -40,6 +40,22 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     repositories[0].testBranch = 'changed';
     expect(payload.repositories[0].testBranch).toBe('testing');
   });
+  it('SQLPad 历史摘要、详情、上限和删除使用各自的桌面命令', async () => {
+    await api.sqlpadExecutionHistory();
+    await api.sqlpadExecutionDetail('record-id');
+    await api.sqlpadHistoryLimit();
+    await api.sqlpadSetHistoryLimit(10000);
+    await api.sqlpadDeleteExecution('record-id');
+    await api.sqlpadClearHistory();
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ['sqlpad_execution_history', undefined],
+      ['sqlpad_execution_detail', { id: 'record-id' }],
+      ['sqlpad_history_limit', undefined],
+      ['sqlpad_set_history_limit', { limit: 10000 }],
+      ['sqlpad_delete_execution', { id: 'record-id' }],
+      ['sqlpad_clear_history', undefined],
+    ]);
+  });
   it('SQLPad 重新执行只向桌面端传递原记录 ID', async () => {
     await api.sqlpadRerunExecution('record-id');
     expect(invoke).toHaveBeenCalledWith('sqlpad_rerun_execution', { id: 'record-id' });

@@ -1,6 +1,8 @@
 //! 生产查询结果仅保存于本机私有目录，按开始顺序保留最近的执行记录。
+mod store;
 use super::*;
 use std::{fs, path::Path, sync::Mutex as SyncMutex};
+pub(crate) use store::History;
 use tauri::{AppHandle, Manager};
 
 const LIMIT: usize = 100;
@@ -30,112 +32,12 @@ pub(crate) struct Execution {
     replay: Option<Replay>,
 }
 
-#[derive(Default)]
-pub(crate) struct History(SyncMutex<()>);
-
-fn read(dir: &Path) -> Result<Vec<Execution>> {
-    match fs::read(dir.join(FILE)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "SQLPad 执行记录格式无效".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(_) => Err("无法读取 SQLPad 执行记录".into()),
-    }
-}
-
 pub(crate) fn directory(app: &AppHandle) -> Result<std::path::PathBuf> {
     Ok(app
         .path()
         .app_data_dir()
         .map_err(|_| "无法定位执行记录")?
         .join("sqlpad-history"))
-}
-
-impl History {
-    fn update(
-        &self,
-        dir: &Path,
-        change: impl FnOnce(&mut Vec<Execution>) -> Result<()>,
-    ) -> Result<()> {
-        let _guard = self.0.lock().map_err(|_| "SQLPad 执行记录不可用")?;
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder
-            .recursive(true)
-            .create(dir)
-            .map_err(|_| "无法创建执行记录目录")?;
-        let mut records = read(dir)?;
-        change(&mut records)?;
-        let json = serde_json::to_string(&records).map_err(|_| "无法编码执行记录")?;
-        crate::config::atomic_write(&dir.join(FILE), &json)
-    }
-
-    fn start(
-        &self,
-        dir: &Path,
-        tool: &str,
-        connection: &str,
-        sql: &str,
-        replay: Option<&Replay>,
-        parent: Option<&str>,
-    ) -> Result<String> {
-        let id = uuid::Uuid::new_v4().to_string();
-        self.update(dir, |records| {
-            let mut index = match parent {
-                Some(id) => {
-                    records
-                        .iter()
-                        .position(|r| r.id == id)
-                        .ok_or("原记录已移除")?
-                        + 1
-                }
-                None => 0,
-            };
-            // 展示顺序不等于时间顺序。按时间淘汰最老项，保留本次原记录和新记录。
-            if records.len() >= LIMIT {
-                let oldest = records
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .filter(|(_, r)| Some(r.id.as_str()) != parent)
-                    .min_by_key(|(_, r)| r.started_at)
-                    .map(|(i, _)| i)
-                    .ok_or("执行记录不可用")?;
-                records.remove(oldest);
-                index -= usize::from(oldest < index);
-            }
-            records.insert(
-                index,
-                Execution {
-                    id: id.clone(),
-                    started_at: crate::build_history::now_ms(),
-                    tool: tool.into(),
-                    connection: connection.into(),
-                    sql: sql.into(),
-                    replay: replay.cloned(),
-                    result: None,
-                    error: Some(UNKNOWN.into()),
-                },
-            );
-            Ok(())
-        })?;
-        Ok(id)
-    }
-
-    pub(crate) fn finish(&self, dir: &Path, id: &str, outcome: &Result<Value>) -> Result<()> {
-        self.update(dir, |records| {
-            if let Some(record) = records.iter_mut().find(|r| r.id == id) {
-                record.result = outcome.as_ref().ok().cloned();
-                record.error = outcome
-                    .as_ref()
-                    .err()
-                    .map(|e| crate::log_mcp::sqlpad_error(e).to_owned());
-            }
-            Ok(())
-        })
-    }
 }
 
 pub(crate) async fn execute_recorded(
@@ -170,10 +72,7 @@ pub(crate) async fn sqlpad_rerun_execution(
     id: String,
 ) -> Result<()> {
     ensure_backend_window(&window)?;
-    let source = read(&directory(&app)?)?
-        .into_iter()
-        .find(|row| row.id == id)
-        .ok_or("找不到原执行记录，请刷新")?;
+    let source = app.state::<History>().detail(&directory(&app)?, &id)?;
     let replay = source
         .replay
         .ok_or("旧记录缺少原始查询参数，无法重新执行")?;
@@ -186,32 +85,77 @@ pub(crate) async fn sqlpad_rerun_execution(
         .map_err(|e| crate::log_mcp::sqlpad_error(&e).into())
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ExecutionView {
-    #[serde(flatten)]
-    record: Execution,
-    can_rerun: bool,
-}
-
 #[tauri::command]
 pub(crate) async fn sqlpad_execution_history(
     window: WebviewWindow,
     app: AppHandle,
-) -> Result<Vec<ExecutionView>> {
+) -> Result<Vec<store::Summary>> {
     ensure_backend_window(&window)?;
-    Ok(read(&directory(&app)?)?
-        .into_iter()
-        .map(|mut record| {
-            let can_rerun = record.replay.take().is_some();
-            ExecutionView { record, can_rerun }
-        })
-        .collect())
+    app.state::<History>().list(&directory(&app)?)
+}
+
+#[derive(Serialize)]
+pub(crate) struct Detail {
+    sql: String,
+    result: Option<Value>,
+    error: Option<String>,
+}
+#[tauri::command]
+pub(crate) async fn sqlpad_execution_detail(
+    window: WebviewWindow,
+    app: AppHandle,
+    id: String,
+) -> Result<Detail> {
+    ensure_backend_window(&window)?;
+    let record = app.state::<History>().detail(&directory(&app)?, &id)?;
+    Ok(Detail {
+        sql: record.sql,
+        result: record.result,
+        error: record.error,
+    })
+}
+#[tauri::command]
+pub(crate) async fn sqlpad_history_limit(window: WebviewWindow, app: AppHandle) -> Result<usize> {
+    ensure_backend_window(&window)?;
+    app.state::<History>().limit(&directory(&app)?)
+}
+#[tauri::command]
+pub(crate) async fn sqlpad_set_history_limit(
+    window: WebviewWindow,
+    app: AppHandle,
+    limit: usize,
+) -> Result<usize> {
+    ensure_backend_window(&window)?;
+    app.state::<History>().set_limit(&directory(&app)?, limit)
+}
+#[tauri::command]
+pub(crate) async fn sqlpad_delete_execution(
+    window: WebviewWindow,
+    app: AppHandle,
+    id: String,
+) -> Result<()> {
+    ensure_backend_window(&window)?;
+    app.state::<History>().remove(&directory(&app)?, Some(&id))
+}
+#[tauri::command]
+pub(crate) async fn sqlpad_clear_history(window: WebviewWindow, app: AppHandle) -> Result<()> {
+    ensure_backend_window(&window)?;
+    app.state::<History>().remove(&directory(&app)?, None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use store::detail_path;
+
+    fn read(dir: &Path) -> Result<Vec<Execution>> {
+        let store = History::default();
+        store
+            .list(dir)?
+            .into_iter()
+            .map(|r| store.detail(dir, &r.id))
+            .collect()
+    }
     #[test]
     fn rerun_is_inserted_after_source_without_changing_its_outcome() {
         let temp = tempfile::tempdir().unwrap();
@@ -261,6 +205,57 @@ mod tests {
         assert_eq!(rows[LIMIT - 2].result, Some(Value::from(0)));
         assert_eq!(rows[LIMIT - 1].id, id);
         assert!(!rows.iter().any(|r| r.id == "1"));
+    }
+
+    #[test]
+    fn summaries_do_not_read_details_and_clear_keeps_retention() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let history = History::default();
+        history.set_limit(dir, 2).unwrap();
+        let id = history
+            .start(dir, "query", "db", "SELECT private", None, None)
+            .unwrap();
+        let other = history
+            .start(dir, "query", "db", "SELECT 2", None, None)
+            .unwrap();
+        fs::write(detail_path(dir, &id).unwrap(), b"corrupt").unwrap();
+        let summaries = history.list(dir).unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert!(!serde_json::to_string(&summaries)
+            .unwrap()
+            .contains("private"));
+        assert!(history.detail(dir, &id).is_err());
+        assert_eq!(history.detail(dir, &other).unwrap().sql, "SELECT 2");
+        history.remove(dir, Some(&id)).unwrap();
+        history.remove(dir, None).unwrap();
+        history.finish(dir, &other, &Ok(Value::from(3))).unwrap();
+        assert!(history.list(dir).unwrap().is_empty());
+        assert_eq!(History::default().limit(dir).unwrap(), 2);
+        assert!(!detail_path(dir, &other).unwrap().exists());
+    }
+
+    #[test]
+    fn reducing_retention_after_migration_prunes_files_not_just_summaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let old: Vec<_> = [1, 3, 2].into_iter().map(|i| serde_json::json!({"id":i.to_string(),"startedAt":i,"tool":"query","connection":"db","sql":"SELECT 1","result":i,"error":null})).collect();
+        fs::write(dir.join(FILE), serde_json::to_vec(&old).unwrap()).unwrap();
+        let store = History::default();
+        assert_eq!(store.list(dir).unwrap().len(), 3);
+        assert!(!dir.join(FILE).exists());
+        assert!(store.set_limit(dir, 0).is_err());
+        assert!(store.set_limit(dir, 10001).is_err());
+        store.set_limit(dir, 1).unwrap();
+        assert_eq!(store.list(dir).unwrap()[0].id, "3");
+        for id in ["1", "2"] {
+            assert!(!detail_path(dir, id).unwrap().exists());
+        }
+        let new = store
+            .start(dir, "query", "db", "SELECT 1", None, Some("3"))
+            .unwrap();
+        assert_eq!(store.list(dir).unwrap()[0].id, new);
+        assert!(!detail_path(dir, "3").unwrap().exists());
     }
 
     #[test]

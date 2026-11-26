@@ -97,15 +97,15 @@ it('退出登录后恢复登录表单，保留地址和用户名但不保留密�
     panel.close();
   }
 });
-it('系统凭据失败的安全提示可见，刷新发现过期后清除已连接状态', async () => {
+it('本机私有存储失败的安全提示可见，刷新发现过期后清除已连接状态', async () => {
   vi.mocked(api.scmStatus).mockResolvedValueOnce({
     ...status,
-    message: '系统凭据不可用，当前仅内存登录',
+    message: '本机私有存储不可用，当前仅内存登录',
   });
   const panel = mount();
   try {
     await flush();
-    expect(panel.root.textContent).toContain('系统凭据不可用');
+    expect(panel.root.textContent).toContain('本机私有存储不可用');
     vi.mocked(api.scmStatus).mockRejectedValueOnce('SessionExpired: SCM 会话已过期');
     [...panel.root.querySelectorAll('button')]
       .find((button) => button.textContent?.trim() === '刷新状态')!

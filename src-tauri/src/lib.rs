@@ -8,6 +8,7 @@ mod db_approval;
 mod environment;
 mod git;
 mod hbuilder_owner;
+mod local_credentials;
 mod log_access;
 pub mod log_bridge;
 mod log_mcp;
@@ -353,7 +354,7 @@ async fn log_scm_login(
     // 先停止使用旧日志身份的服务，整个切换期间不允许另一请求重新启用。
     let runtime = app.state::<log_access::Runtime>();
     let mut access = runtime.0.lock().await;
-    access.revoke().await?;
+    access.disable_and_forget(&app).await?;
     app.state::<scm::LogRuntime>()
         .login(base_url, username, password, remember)
         .await
@@ -363,7 +364,7 @@ async fn log_scm_logout(app: AppHandle, window: tauri::WebviewWindow) -> Result<
     ensure_backend_window(&window)?;
     let runtime = app.state::<log_access::Runtime>();
     let mut access = runtime.0.lock().await;
-    let revoked = access.revoke().await;
+    let revoked = access.disable_and_forget(&app).await;
     // 即使系统未能清理已失效的桥记录，仍应尽力清理日志 SCM 凭据。
     let result = app.state::<scm::LogRuntime>().logout().await;
     revoked?;
@@ -1008,6 +1009,21 @@ pub fn run() {
             *app.state::<StartupLogs>().0.lock().unwrap() = logs;
             // tray 初始化失败明确终止启动，避免主窗口隐藏后应用失联。
             tray::init(app.handle())?;
+            // 在取得本机实例锁后异步恢复，登录站点不可用不会阻塞窗口启动。
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if log_access::restore_on_startup(handle.clone())
+                    .await
+                    .is_err()
+                {
+                    handle
+                        .state::<StartupLogs>()
+                        .0
+                        .lock()
+                        .unwrap()
+                        .push("本机 MCP 未能恢复，请检查会话后手动启用。".into());
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1047,6 +1063,11 @@ pub fn run() {
             db_approval::sqlpad_pending_approval,
             db_approval::sqlpad_decide_approval,
             sqlpad::history::sqlpad_execution_history,
+            sqlpad::history::sqlpad_execution_detail,
+            sqlpad::history::sqlpad_history_limit,
+            sqlpad::history::sqlpad_set_history_limit,
+            sqlpad::history::sqlpad_delete_execution,
+            sqlpad::history::sqlpad_clear_history,
             sqlpad::history::sqlpad_rerun_execution,
             sqlpad::sqlpad_status,
             sqlpad::sqlpad_login,

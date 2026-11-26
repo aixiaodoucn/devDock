@@ -126,12 +126,15 @@ export interface McpCatalogTool {
   };
 }
 
-export interface SqlpadExecutionRecord {
+export interface SqlpadExecutionSummary {
   id: string;
   canRerun?: boolean;
   startedAt: number;
   tool: string;
   connection: string;
+  hasResult: boolean;
+}
+export interface SqlpadExecutionDetail {
   sql: string;
   result: unknown;
   error: string | null;
@@ -145,6 +148,7 @@ export interface SqlpadPendingApproval {
 
 export interface SqlpadStatus {
   connected: boolean;
+  username: string | null;
   remembered: boolean;
   warning: string | null;
   baseUrl: string;

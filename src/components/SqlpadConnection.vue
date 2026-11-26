@@ -112,8 +112,8 @@ onMounted(refresh);
             <dd>{{ status.baseUrl }}</dd>
           </div>
           <div>
-            <dt>登录状态</dt>
-            <dd>{{ status.remembered ? '已记住登录' : '仅本次会话' }}</dd>
+            <dt>登录用户</dt>
+            <dd>{{ status.username ?? '未知' }}</dd>
           </div>
           <div>
             <dt>当前连接</dt>
@@ -121,6 +121,13 @@ onMounted(refresh);
           </div>
         </dl>
       </div>
+      <p role="status" class="hint">
+        {{
+          status.remembered
+            ? '已记住登录。下次启动时会恢复选中的连接，免审批需重新开启。'
+            : '仅本次会话。'
+        }}
+      </p>
       <div class="source-options">
         <div v-if="status.connections.length" class="source-option">
           <label class="source-option-label" for="sqlpad-connection">选择唯一允许的连接</label>
@@ -176,7 +183,7 @@ onMounted(refresh);
           保存只读连接
         </button>
         <button
-          class="button"
+          class="button negative"
           type="button"
           :disabled="busy"
           @click="update(api.sqlpadLogout, '退出状态未知，请刷新状态。')"
@@ -207,7 +214,10 @@ onMounted(refresh);
             :disabled="busy"
         /></label>
         <label class="confirm"
-          ><input v-model="remember" type="checkbox" />在此设备上记住登录</label
+          ><input
+            v-model="remember"
+            type="checkbox"
+          />在此设备上记住登录（恢复选中的连接，免审批需重新开启）</label
         >
         <p role="status" class="hint auth-note">尚未登录或会话已失效。</p>
         <div class="actions">

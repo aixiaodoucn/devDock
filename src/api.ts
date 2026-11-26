@@ -22,7 +22,8 @@ import type {
   BackendGitOperation,
   PomBlockChoice,
   LogMcpStatus,
-  SqlpadExecutionRecord,
+  SqlpadExecutionDetail,
+  SqlpadExecutionSummary,
   SqlpadPendingApproval,
   SqlpadStatus,
   McpCatalogTool,
@@ -132,7 +133,22 @@ export const api = {
     return native<McpCatalogTool[]>('mcp_tool_catalog');
   },
   sqlpadExecutionHistory() {
-    return native<SqlpadExecutionRecord[]>('sqlpad_execution_history');
+    return native<SqlpadExecutionSummary[]>('sqlpad_execution_history');
+  },
+  sqlpadExecutionDetail(id: string) {
+    return native<SqlpadExecutionDetail>('sqlpad_execution_detail', { id });
+  },
+  sqlpadHistoryLimit() {
+    return native<number>('sqlpad_history_limit');
+  },
+  sqlpadSetHistoryLimit(limit: number) {
+    return native<number>('sqlpad_set_history_limit', { limit });
+  },
+  sqlpadDeleteExecution(id: string) {
+    return native<void>('sqlpad_delete_execution', { id });
+  },
+  sqlpadClearHistory() {
+    return native<void>('sqlpad_clear_history');
   },
   sqlpadRerunExecution(id: string) {
     return native<void>('sqlpad_rerun_execution', { id });

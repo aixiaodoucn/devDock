@@ -1,6 +1,6 @@
 use super::*;
 
-/// 日志站点独占会话和钥匙串条目，后端工作台可同时登录到另一站点。
+/// 日志站点独占会话和本机凭据条目，后端工作台可同时登录到另一站点。
 pub struct LogRuntime(pub(super) Runtime);
 
 impl Default for LogRuntime {
@@ -12,6 +12,12 @@ impl Default for LogRuntime {
 impl LogRuntime {
     pub(crate) async fn has_live_session(&self) -> bool {
         self.0.state.lock().await.session.is_some()
+    }
+    /// 仅使用已建立的日志会话，不因为修改桌面偏好而恢复或创建会话。
+    pub(crate) async fn current_identity(&self) -> Option<(String, String)> {
+        let state = self.0.state.lock().await;
+        let session = state.session.as_ref()?;
+        Some((session.base.to_string(), session.username.clone()))
     }
     pub async fn login(
         &self,

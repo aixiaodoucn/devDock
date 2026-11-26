@@ -585,6 +585,9 @@ pub fn action_with_title(
                         .arg(&project.path)
                         .arg(command)
                         .arg(terminal_title);
+                    if terminal.ends_with("/Ghostty.app") && project.project_type == "nodejs" && !project.node_version.is_empty() {
+                        c.arg("keep-node-session");
+                    }
                     c
                 };
                 task.command(c, 30).map_err(|error| {

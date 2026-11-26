@@ -1,6 +1,6 @@
 //! 在 MCP 协议层与 SCM 之间实施本机仓库映射授权，不向模型枚举整个工作台。
 mod preferences;
-use crate::log_bridge::{Record, Store, SystemStore};
+use crate::log_bridge::{LocalStore, Record, Store};
 use crate::{config::Result, ensure_backend_window, log_mcp, scm, tasks};
 use preferences::Preferences;
 use serde::Serialize;
@@ -31,6 +31,25 @@ impl Access {
             self.raw_grant.get_or_insert_with(Default::default);
         } else {
             self.raw_grant = None;
+        }
+        Ok(enabled)
+    }
+
+    fn save_raw_preference(&mut self, dir: &Path, subject: &str, enabled: bool) -> Result<bool> {
+        // 先撤销内存授权，即使偏好保存失败，已在途的原文查询也不能继续交付。
+        if !enabled {
+            self.set_raw(false)?;
+        }
+        let mut prefs = Preferences::load(dir)?;
+        if enabled {
+            prefs.raw_subject = Some(subject.to_owned());
+        } else if prefs.raw_subject.as_deref() == Some(subject) {
+            prefs.raw_subject = None;
+        }
+        prefs.save(dir)?;
+        // 保存偏好不启动服务；只有运行中的同身份日志服务可以取得实时授权。
+        if enabled && self.active_subject.as_deref() == Some(subject) && self.server.is_some() {
+            self.set_raw(true)?;
         }
         Ok(enabled)
     }
@@ -70,11 +89,17 @@ impl Access {
         }
         Ok(())
     }
+    pub(crate) async fn disable_and_forget(&mut self, app: &AppHandle) -> Result<()> {
+        // 即使无法写入偏好，也先终止本次监听，不让旧账号继续访问。
+        let saved = tasks::data_dir(app).and_then(|dir| Preferences::set_resume(&dir, false));
+        self.revoke().await?;
+        saved
+    }
     pub async fn revoke(&mut self) -> Result<()> {
-        self.stop(&SystemStore).await
+        self.stop(&LocalStore).await
     }
 }
-// Tauri 正常退出时不保证执行托管状态的 Drop，只在主动启用后安装退出清理。
+// 关闭应用只清理运行时监听和令牌，不改写用户下次启动的偏好。
 fn install_exit_hook(app: &AppHandle, runtime: &Runtime) -> Result<()> {
     runtime
         .1
@@ -339,11 +364,25 @@ pub async fn log_mcp_set_scan_scope(
     Ok(scope)
 }
 
+async fn current_log_subject(app: &AppHandle) -> Result<String> {
+    let (site, account) = app
+        .state::<scm::LogRuntime>()
+        .current_identity()
+        .await
+        .ok_or("请先登录日志 SCM")?;
+    Ok(preferences::subject(&site, &account))
+}
+
 #[tauri::command]
 pub async fn log_mcp_raw_status(app: AppHandle, window: WebviewWindow) -> Result<bool> {
     ensure_backend_window(&window)?;
-    let enabled = app.state::<Runtime>().0.lock().await.raw_grant.is_some();
-    Ok(enabled)
+    let runtime = app.state::<Runtime>();
+    let _guard = runtime.0.lock().await;
+    let subject = current_log_subject(&app).await?;
+    Ok(Preferences::load(&tasks::data_dir(&app)?)?
+        .raw_subject
+        .as_ref()
+        == Some(&subject))
 }
 
 #[tauri::command]
@@ -351,26 +390,8 @@ pub async fn log_mcp_set_raw(app: AppHandle, window: WebviewWindow, enabled: boo
     ensure_backend_window(&window)?;
     let runtime = app.state::<Runtime>();
     let mut access = runtime.0.lock().await;
-    if !enabled {
-        // 即使磁盘写入失败，也立即终止当前授权；向界面报告持久化失败，以便重试。
-        access.set_raw(false)?;
-    }
-    let subject = if enabled {
-        Some(
-            access
-                .active_subject
-                .clone()
-                .filter(|_| access.server.is_some() && !access.exiting)
-                .ok_or("请先启用日志 MCP 服务")?,
-        )
-    } else {
-        None
-    };
-    let dir = tasks::data_dir(&app)?;
-    let mut prefs = Preferences::load(&dir)?;
-    prefs.raw_subject = subject;
-    prefs.save(&dir)?;
-    access.set_raw(enabled)
+    let subject = current_log_subject(&app).await?;
+    access.save_raw_preference(&tasks::data_dir(&app)?, &subject, enabled)
 }
 
 #[tauri::command]
@@ -381,19 +402,45 @@ pub async fn log_mcp_status(app: AppHandle, window: WebviewWindow) -> Result<Sta
     Ok(status(guard.server.as_ref()))
 }
 
+pub(crate) async fn restore_on_startup(app: AppHandle) -> Result<()> {
+    let runtime = app.state::<Runtime>();
+    let mut guard = runtime.0.lock().await;
+    // 与手动停用、切换账号共用锁，避免延迟到达的恢复重新打开已停用的服务。
+    if guard.exiting
+        || guard.server.is_some()
+        || !Preferences::load(&tasks::data_dir(&app)?)?.resume_service
+    {
+        return Ok(());
+    }
+    enable_locked(&app, &mut guard, true).await.map(|_| ())
+}
+
 #[tauri::command]
 pub async fn log_mcp_enable(app: AppHandle, window: WebviewWindow) -> Result<Status> {
     ensure_backend_window(&window)?;
     let runtime = app.state::<Runtime>();
-    install_exit_hook(&app, &runtime)?;
     let mut guard = runtime.0.lock().await;
+    enable_locked(&app, &mut guard, false).await
+}
+
+async fn enable_locked(app: &AppHandle, guard: &mut Access, restoring: bool) -> Result<Status> {
     if guard.exiting {
         return Err("工作台正在退出".into());
     }
     if guard.server.is_none() {
         // 两种数据源共享本机传输，不共享登录。SQLPad 已选连接时不要求日志站点在线。
-        let sql_ready = app.state::<crate::sqlpad::Runtime>().ready().await;
-        let subject = if sql_ready && !app.state::<scm::LogRuntime>().has_live_session().await {
+        let runtime = app.state::<Runtime>();
+        install_exit_hook(app, &runtime)?;
+        let db = app.state::<crate::sqlpad::Runtime>();
+        let sql_ready = if restoring {
+            db.restore_ready().await.unwrap_or(false)
+        } else {
+            db.ready().await
+        };
+        let subject = if !restoring
+            && sql_ready
+            && !app.state::<scm::LogRuntime>().has_live_session().await
+        {
             None
         } else {
             app.state::<scm::LogRuntime>()
@@ -416,10 +463,16 @@ pub async fn log_mcp_enable(app: AppHandle, window: WebviewWindow) -> Result<Sta
         .flatten()
         .ok_or_else(|| "无法启动本机日志 MCP 服务".to_owned())?;
         server.set_match_limit(prefs.match_limit);
-        guard.publish(server, &SystemStore)?;
+        guard.publish(server, &LocalStore)?;
         guard.scan_all = prefs.scan_all;
         guard.set_raw(subject.is_some() && prefs.raw_subject == subject)?;
         guard.active_subject = subject;
+        if !restoring && !prefs.resume_service {
+            if let Err(error) = Preferences::set_resume(&tasks::data_dir(app)?, true) {
+                guard.revoke().await?;
+                return Err(error);
+            }
+        }
     }
     Ok(status(guard.server.as_ref()))
 }
@@ -443,13 +496,44 @@ pub async fn log_mcp_disable(app: AppHandle, window: WebviewWindow) -> Result<St
     let mut guard = runtime.0.lock().await;
     // 用户显式停用也清理上一次异常退出留下的记录。
     guard.cleanup_pending = true;
-    guard.revoke().await?;
+    guard.disable_and_forget(&app).await?;
     Ok(status(None))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_preference_is_account_scoped_and_does_not_start_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let alice = preferences::subject("https://example.invalid", "alice");
+        let bob = preferences::subject("https://example.invalid", "bob");
+        let mut access = Access::default();
+        assert!(access
+            .save_raw_preference(dir.path(), &alice, true)
+            .unwrap());
+        assert!(access.server.is_none() && access.raw_grant.is_none());
+        assert_eq!(
+            Preferences::load(dir.path())
+                .unwrap()
+                .raw_subject
+                .as_deref(),
+            Some(alice.as_str())
+        );
+        assert!(!access.save_raw_preference(dir.path(), &bob, false).unwrap());
+        assert_eq!(
+            Preferences::load(dir.path())
+                .unwrap()
+                .raw_subject
+                .as_deref(),
+            Some(alice.as_str())
+        );
+        assert!(!access
+            .save_raw_preference(dir.path(), &alice, false)
+            .unwrap());
+        assert!(Preferences::load(dir.path()).unwrap().raw_subject.is_none());
+    }
 
     #[test]
     fn cleanup_failure_stops_service_and_allows_retry() {

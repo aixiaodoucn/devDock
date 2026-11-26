@@ -15,6 +15,8 @@ const MAX_BYTES: u64 = 1024;
 pub(super) struct Preferences {
     #[serde(default = "default_match_limit")]
     pub(super) match_limit: usize,
+    #[serde(default)]
+    pub(super) resume_service: bool,
     pub(super) scan_all: bool,
     pub(super) raw_subject: Option<String>,
 }
@@ -27,6 +29,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             match_limit: DEFAULT_MATCH_LIMIT,
+            resume_service: false,
             scan_all: false,
             raw_subject: None,
         }
@@ -45,6 +48,15 @@ pub(super) fn subject(base_url: &str, username: &str) -> String {
 }
 
 impl Preferences {
+    pub(super) fn set_resume(dir: &Path, enabled: bool) -> Result<(), String> {
+        let mut prefs = Self::load(dir)?;
+        if prefs.resume_service != enabled {
+            prefs.resume_service = enabled;
+            prefs.save(dir)?;
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<(), String> {
         if !(1..=MAX_MATCHES).contains(&self.match_limit) {
             return Err(format!("匹配行数上限必须在 1 至 {MAX_MATCHES} 之间"));
@@ -117,6 +129,7 @@ mod tests {
         let digest = subject("https://example.invalid", "test-user");
         let prefs = Preferences {
             match_limit: 600,
+            resume_service: true,
             scan_all: true,
             raw_subject: Some(digest.clone()),
         };
@@ -125,11 +138,12 @@ mod tests {
             serde_json::from_slice(&fs::read(dir.join(FILE_NAME)).unwrap()).unwrap();
         assert_eq!(
             disk,
-            serde_json::json!({"match_limit":600,"scan_all": true, "raw_subject": digest})
+            serde_json::json!({"match_limit":600,"resume_service":true,"scan_all": true, "raw_subject": digest})
         );
         assert_eq!(Preferences::load(&dir).unwrap(), prefs);
         let invalid = Preferences {
             match_limit: 600,
+            resume_service: false,
             scan_all: false,
             raw_subject: Some("plaintext".into()),
         };
@@ -153,6 +167,18 @@ mod tests {
             assert!(prefs.save(dir.path()).is_err());
         }
         assert_eq!(Preferences::load(dir.path()).unwrap().match_limit, 1200);
+    }
+
+    #[test]
+    fn resume_requires_explicit_enable_and_survives_restart_until_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(FILE_NAME), r#"{"scan_all":true}"#).unwrap();
+        assert!(!Preferences::load(dir.path()).unwrap().resume_service);
+        Preferences::set_resume(dir.path(), true).unwrap();
+        assert!(Preferences::load(dir.path()).unwrap().resume_service);
+        Preferences::set_resume(dir.path(), false).unwrap();
+        let prefs = Preferences::load(dir.path()).unwrap();
+        assert!(!prefs.resume_service && prefs.scan_all);
     }
 
     #[test]

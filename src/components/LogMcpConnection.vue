@@ -21,7 +21,6 @@ const status = ref<LogMcpStatus | null>(null);
 const visibleToken = ref('');
 const pending = ref(false);
 const error = ref('');
-const emit = defineEmits<{ serviceState: [enabled: boolean] }>();
 let active = true;
 
 async function request(action: 'status' | 'enable' | 'disable' | 'token') {
@@ -35,17 +34,13 @@ async function request(action: 'status' | 'enable' | 'disable' | 'token') {
       const token = await api.logMcpToken();
       if (active) visibleToken.value = token;
     } else {
-      emit('serviceState', false);
       const load = {
         status: api.logMcpStatus,
         enable: api.logMcpEnable,
         disable: api.logMcpDisable,
       }[action];
       const result = await load();
-      if (active) {
-        status.value = result;
-        emit('serviceState', result.enabled);
-      }
+      if (active) status.value = result;
     }
   } catch {
     if (active) {
@@ -118,6 +113,7 @@ onBeforeUnmount(() => {
       <button
         v-if="status"
         class="button small"
+        :class="status.enabled ? 'negative' : 'positive'"
         type="button"
         :disabled="pending"
         @click="request(status.enabled ? 'disable' : 'enable')"
@@ -134,8 +130,9 @@ onBeforeUnmount(() => {
       </button>
     </div>
     <p class="hint">
+      启用后会记住状态，下次打开 Dev Dock 时如登录会话仍有效会自动恢复；手动停用后不再自动启动。
       SCM 日志适用于所有已保存映射的后端仓库。SQLPad 使用独立连接，默认逐次审批，不受 SCM
-      日志原文开关控制。启用时本机访问凭据存入系统凭据库。
+      日志原文开关控制。启用时，Dev Dock 将桥接凭据保存在本机，供 stdio 客户端读取。
     </p>
     <h4>客户端注册</h4>
     <p class="hint">注册后仍需启用上方日志服务，客户端才能访问日志。</p>
@@ -153,7 +150,7 @@ onBeforeUnmount(() => {
           <small v-if="!clientBusy[client]">{{ clientStatus[client]?.message }}</small>
           <button
             v-if="clientStatus[client]?.state === 'available'"
-            class="button small"
+            class="button small positive"
             type="button"
             :disabled="clientBusy[client]"
             @click="updateClient(client, 'connect')"
@@ -162,7 +159,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             v-if="clientStatus[client]?.state === 'configured'"
-            class="button small"
+            class="button small negative"
             type="button"
             :disabled="clientBusy[client]"
             @click="updateClient(client, 'disconnect')"

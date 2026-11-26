@@ -1,4 +1,4 @@
-//! SCM 的只读 HTML 协议适配；Cookie 和系统凭据始终留在 Rust 内。
+//! SCM 的只读 HTML 协议适配；Cookie 和登录凭据始终留在 Rust 内。
 
 mod log_runtime;
 pub mod prodlog;
@@ -16,7 +16,7 @@ use tauri::{async_runtime::Mutex, AppHandle, Manager};
 
 type Result<T> = std::result::Result<T, String>;
 const SESSION_EXPIRED: &str = "SessionExpired: SCM 会话已过期，请重新登录";
-const CREDENTIAL_WARNING: &str = "系统凭据存储不可用；当前仅内存登录，无法持久记住会话";
+const CREDENTIAL_WARNING: &str = "本机私有存储不可用；当前仅内存登录，无法持久记住会话";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,69 +83,27 @@ impl LoginPage {
     }
 }
 
-struct SystemCredentialStore(LoginPage);
+struct LocalCredentialStore(LoginPage);
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn credential_service(debug_assertions: bool) -> &'static str {
-    // 开发构建使用独立命名空间，避免读写或删除正式版会话。
-    if debug_assertions {
-        "cn.aixiaodou.devdock.dev.scm"
-    } else {
-        "cn.aixiaodou.devdock.scm"
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
-impl SystemCredentialStore {
-    fn service(&self, debug: bool) -> String {
-        let service = credential_service(debug);
+impl LocalCredentialStore {
+    fn key(&self) -> &'static str {
         match self.0 {
-            LoginPage::Projects => service.to_owned(),
-            LoginPage::Prodlog => format!("{service}.prodlog"),
+            LoginPage::Projects => "scm",
+            LoginPage::Prodlog => "scm-prodlog",
         }
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    fn entry(&self) -> Result<keyring::Entry> {
-        keyring::Entry::new(&self.service(cfg!(debug_assertions)), "default")
-            .map_err(|_| CREDENTIAL_WARNING.into())
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-impl CredentialStore for SystemCredentialStore {
+impl CredentialStore for LocalCredentialStore {
     fn load(&self) -> Result<Option<String>> {
-        match self.entry()?.get_password() {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(CREDENTIAL_WARNING.into()),
-        }
+        crate::local_credentials::load(self.key()).map_err(|_| CREDENTIAL_WARNING.to_owned())
     }
     fn save(&self, value: &str) -> Result<()> {
-        self.entry()?
-            .set_password(value)
-            .map_err(|_| CREDENTIAL_WARNING.into())
+        crate::local_credentials::save(self.key(), value).map_err(|_| CREDENTIAL_WARNING.to_owned())
     }
     fn clear(&self) -> Result<()> {
-        match self.entry()?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(_) => {
-                Err("Credential: 系统中已记住的 SCM 会话未能删除，请在系统凭据管理中移除".into())
-            }
-        }
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-impl CredentialStore for SystemCredentialStore {
-    fn load(&self) -> Result<Option<String>> {
-        Ok(None)
-    }
-    fn save(&self, _: &str) -> Result<()> {
-        Err("当前平台不支持持久记住 SCM 会话；当前仅内存登录".into())
-    }
-    fn clear(&self) -> Result<()> {
-        Ok(())
+        crate::local_credentials::clear(self.key())
+            .map_err(|_| "Credential: 无法删除本机已记住的 SCM 会话".to_owned())
     }
 }
 
@@ -157,7 +115,7 @@ struct Session {
     jar: Arc<Jar>,
     client: Client,
     remembered: bool,
-    // 仅留在 Rust 内存；成功保存的 Cookie 用于避免重复触发系统凭据授权。
+    // 仅留在 Rust 内存；成功保存的 Cookie 用于避免重复写入本机私有存储。
     saved_cookie: Option<String>,
     persistence_failed: bool,
     message: Option<String>,
@@ -189,7 +147,7 @@ impl Runtime {
         Self {
             page,
             state: Mutex::new(RuntimeState::default()),
-            credentials: Arc::new(SystemCredentialStore(page)),
+            credentials: Arc::new(LocalCredentialStore(page)),
         }
     }
 }
@@ -335,15 +293,15 @@ fn is_login_path(url: &Url) -> bool {
 async fn credential_load(store: Arc<dyn CredentialStore>) -> Result<Option<String>> {
     tauri::async_runtime::spawn_blocking(move || store.load())
         .await
-        .map_err(|_| "Credential: 无法读取系统凭据".to_string())?
+        .map_err(|_| "Credential: 无法读取本机登录凭据".to_string())?
 }
 async fn credential_clear(store: Arc<dyn CredentialStore>) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || store.clear())
         .await
-        .map_err(|_| "Credential: 无法清除系统凭据".to_string())?
+        .map_err(|_| "Credential: 无法清除本机登录凭据".to_string())?
 }
 async fn persist(session: &mut Session, store: Arc<dyn CredentialStore>) {
-    // 保存失败后保留当前内存会话，查询不再自动重试，避免反复弹出授权。
+    // 保存失败后保留当前内存会话，查询不再自动重试。
     if session.persistence_failed {
         return;
     }
@@ -407,7 +365,7 @@ impl Runtime {
                 state.credential_present = Some(true);
             }
         } else if state.credential_present != Some(false) {
-            // 未读取时直接删除一次，避免先读再删触发两次授权，也防止下次恢复旧账号。
+            // 未读取时直接删除一次，防止下次恢复旧账号。
             self.clear_remembered(state).await;
             session.message = state.message.clone();
         }
@@ -894,25 +852,6 @@ fn parse_modules(html: &str, repositories: &[Repository]) -> Result<Vec<ScmModul
 mod tests {
     use super::*;
 
-    #[test]
-    fn credential_service_isolates_development_and_preserves_release_namespace() {
-        let development = credential_service(true);
-        let release = credential_service(false);
-        assert_eq!(development, "cn.aixiaodou.devdock.dev.scm");
-        assert_eq!(release, "cn.aixiaodou.devdock.scm");
-        assert_ne!(development, release);
-    }
-
-    #[test]
-    fn credential_service_matches_build_mode() {
-        let expected = if cfg!(debug_assertions) {
-            "cn.aixiaodou.devdock.dev.scm"
-        } else {
-            "cn.aixiaodou.devdock.scm"
-        };
-        assert_eq!(credential_service(cfg!(debug_assertions)), expected);
-    }
-
     const PROJECTS: &str = r#"<table><tr><th>项目名称</th><th>项目状态</th><th>项目ID</th></tr>
       <tr><td><a href='/kpi/project/project?id=12'>Example app</a></td><td>开发中</td><td>12</td></tr>
       <tr><td>Example pending</td><td>待处理</td><td>99</td></tr>
@@ -1226,11 +1165,11 @@ mod tests {
 
     #[test]
     fn log_cookie_save_restore_and_logout_are_isolated_from_backend() {
-        let services: HashSet<_> = [LoginPage::Projects, LoginPage::Prodlog]
-            .into_iter()
-            .flat_map(|page| [true, false].map(|debug| SystemCredentialStore(page).service(debug)))
-            .collect();
-        assert_eq!(services.len(), 4);
+        assert_eq!(LocalCredentialStore(LoginPage::Projects).key(), "scm");
+        assert_eq!(
+            LocalCredentialStore(LoginPage::Prodlog).key(),
+            "scm-prodlog"
+        );
         tauri::async_runtime::block_on(async {
             let log_store = Arc::new(FakeCredentialStore::default());
             let backend_store = Arc::new(FakeCredentialStore::default());

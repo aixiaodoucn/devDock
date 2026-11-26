@@ -14,6 +14,11 @@ vi.mock('../api', () => ({
     scmLogin: vi.fn(),
     scmLogout: vi.fn(),
     sqlpadExecutionHistory: vi.fn(),
+    sqlpadExecutionDetail: vi.fn(),
+    sqlpadHistoryLimit: vi.fn().mockResolvedValue(100),
+    sqlpadSetHistoryLimit: vi.fn(),
+    sqlpadClearHistory: vi.fn(),
+    sqlpadDeleteExecution: vi.fn(),
     sqlpadRerunExecution: vi.fn(),
     sqlpadStatus: vi
       .fn()
@@ -439,17 +444,16 @@ it('重新执行期间阻止重复请求，结束后按桌面端顺序刷新并�
     startedAt: 1,
     tool: 'query',
     connection: 'demo',
-    sql: 'SELECT 1',
-    result: null,
-    error: null,
+    hasResult: false,
   };
   const replayable = { ...source, canRerun: true };
-  const legacy = { ...source, id: 'legacy', sql: 'SELECT 2' };
+  const legacy = { ...source, id: 'legacy' };
   const blocked = { ...source, id: 'blocked', canRerun: false };
   const inserted = { ...replayable, id: 'new', startedAt: 3 };
   vi.mocked(api.sqlpadExecutionHistory)
     .mockResolvedValueOnce([legacy, replayable, blocked])
-    .mockResolvedValue([legacy, inserted, replayable, blocked]);
+    .mockResolvedValueOnce([legacy, inserted, replayable, blocked])
+    .mockResolvedValueOnce([inserted]);
   let finish!: () => void;
   vi.mocked(api.sqlpadRerunExecution)
     .mockImplementationOnce(
@@ -468,7 +472,9 @@ it('重新执行期间阻止重复请求，结束后按桌面端顺序刷新并�
     panel.root.querySelector<HTMLButtonElement>('#mcp-history-tab')!.click();
     await flush();
     const history = panel.root.querySelector<HTMLElement>('#mcp-history-panel')!;
-    const buttons = () => [...history.querySelectorAll<HTMLButtonElement>('.history-row button')];
+    const buttons = () => [
+      ...history.querySelectorAll<HTMLButtonElement>('.history-row button.primary'),
+    ];
     for (const button of [buttons()[0], buttons()[2]]) {
       expect(button.disabled).toBe(true);
       expect(
@@ -496,7 +502,8 @@ it('重新执行期间阻止重复请求，结束后按桌面端顺序刷新并�
     expect(api.sqlpadExecutionHistory).toHaveBeenCalledTimes(3);
     expect(history.querySelector('[role=alert]')?.textContent).toContain('重新执行失败');
     expect(history.textContent).not.toContain('private endpoint');
-    expect(original.disabled).toBe(false);
+    expect(buttons()).toHaveLength(1);
+    expect(buttons()[0].disabled).toBe(false);
   } finally {
     panel.dispose();
   }
@@ -508,17 +515,19 @@ it('打开执行记录才加载 SQL 和结果，刷新可区分失败与空记�
     startedAt: 1700000000000,
     tool: 'prod_db_query_readonly',
     connection: '只读连接',
-    sql: 'SELECT label FROM demo',
+    hasResult: true,
   };
+  const sql = 'SELECT label FROM demo';
+  vi.mocked(api.sqlpadExecutionDetail)
+    .mockRejectedValueOnce(new Error('private endpoint'))
+    .mockResolvedValueOnce({
+      sql,
+      result: { rows: [{ label: '<script>sample</script>' }] },
+      error: null,
+    })
+    .mockResolvedValueOnce({ sql, result: null, error: '查询超时' });
   vi.mocked(api.sqlpadExecutionHistory)
-    .mockResolvedValueOnce([
-      {
-        ...base,
-        result: { columns: ['label'], rows: [{ label: '<script>sample</script>' }] },
-        error: null,
-      },
-      { ...base, id: 'two', result: null, error: '查询超时' },
-    ])
+    .mockResolvedValueOnce([base, { ...base, id: 'two', hasResult: false }])
     .mockRejectedValueOnce(new Error('private endpoint'))
     .mockResolvedValueOnce([]);
   const panel = mount();
@@ -531,13 +540,25 @@ it('打开执行记录才加载 SQL 和结果，刷新可区分失败与空记�
     panel.root.querySelector<HTMLButtonElement>('#mcp-history-tab')!.click();
     await flush();
     const history = panel.root.querySelector<HTMLElement>('#mcp-history-panel')!;
-    for (const text of [
-      base.tool,
-      base.connection,
-      base.sql,
-      '<script>sample</script>',
-      '查询超时',
-    ])
+    expect(api.sqlpadExecutionDetail).not.toHaveBeenCalled();
+    expect(history.textContent).not.toContain(sql);
+    expect(
+      [...history.querySelectorAll('.record-status')].map((el) => el.textContent?.trim()),
+    ).toEqual(['已返回结果', '未取得结果']);
+    const rows = history.querySelectorAll('details');
+    for (const row of rows) {
+      row.open = true;
+      row.dispatchEvent(new Event('toggle'));
+      await flush();
+      if (row === rows[0]) {
+        expect(row.textContent).toContain('读取详情失败');
+        expect(row.textContent).not.toContain('private endpoint');
+        row.querySelector('button')!.click();
+        await flush();
+      }
+    }
+    expect(vi.mocked(api.sqlpadExecutionDetail).mock.calls).toEqual([['one'], ['one'], ['two']]);
+    for (const text of [base.tool, base.connection, sql, '<script>sample</script>', '查询超时'])
       expect(history.textContent).toContain(text);
     expect(history.querySelector('script')).toBeNull();
     history.querySelector('button')!.click();
@@ -547,7 +568,77 @@ it('打开执行记录才加载 SQL 和结果，刷新可区分失败与空记�
     history.querySelector('button')!.click();
     await flush();
     expect(history.textContent).toContain('暂无执行记录');
-    expect(history.textContent).not.toContain(base.sql);
+    expect(history.textContent).not.toContain(sql);
+  } finally {
+    panel.dispose();
+  }
+});
+
+it('校验并保存保留上限，删除和清空都需要再次确认', async () => {
+  const first = { id: 'one', startedAt: 1, tool: 'query', connection: 'first', hasResult: true };
+  const second = { ...first, id: 'two', connection: 'second' };
+  vi.mocked(api.sqlpadExecutionHistory)
+    .mockResolvedValueOnce([first, second])
+    .mockResolvedValueOnce([first])
+    .mockResolvedValueOnce([second])
+    .mockResolvedValueOnce([]);
+  vi.mocked(api.sqlpadHistoryLimit).mockRejectedValueOnce(new Error('private endpoint'));
+  vi.mocked(api.sqlpadSetHistoryLimit)
+    .mockRejectedValueOnce(new Error('private endpoint'))
+    .mockResolvedValueOnce(1);
+  vi.mocked(api.sqlpadDeleteExecution)
+    .mockRejectedValueOnce(new Error('private endpoint'))
+    .mockResolvedValueOnce();
+  vi.mocked(api.sqlpadClearHistory)
+    .mockRejectedValueOnce(new Error('private endpoint'))
+    .mockResolvedValueOnce();
+  const panel = mount();
+  const button = (text: string) =>
+    [...panel.root.querySelectorAll('button')].find((item) => item.textContent?.trim() === text)!;
+  const click = async (text: string) => {
+    button(text).click();
+    await flush();
+  };
+  try {
+    await click('MCP 服务');
+    panel.root.querySelector<HTMLButtonElement>('#mcp-history-tab')!.click();
+    await flush();
+    const selector = 'input[aria-label="历史保留上限"]';
+    const field = panel.root.querySelector<HTMLInputElement>(selector)!;
+    expect(field.disabled).toBe(true);
+    await click('重试');
+    expect(field.value).toBe('100');
+    for (const value of ['', '0', '1.5', '10001']) {
+      await change(panel.root, selector, value);
+      expect(button('保存上限').disabled).toBe(true);
+    }
+    await change(panel.root, selector, '10000');
+    expect(button('保存上限').disabled).toBe(false);
+    await change(panel.root, selector, '1');
+    expect(panel.root.textContent).toContain('清理超出的最旧记录');
+    await click('保存上限');
+    expect(panel.root.textContent).toContain('保存保留上限失败');
+    await click('保存上限');
+    expect(api.sqlpadSetHistoryLimit).toHaveBeenCalledWith(1);
+    expect(panel.root.querySelectorAll('.history-row')).toHaveLength(1);
+    for (const [trigger, confirm, command, error] of [
+      ['删除', '确认删除', api.sqlpadDeleteExecution, '删除执行记录失败'],
+      ['清空记录', '确认清空', api.sqlpadClearHistory, '清空执行记录失败'],
+    ] as const) {
+      await click(trigger);
+      await click('取消');
+      expect(command).not.toHaveBeenCalled();
+      await click(trigger);
+      await click(confirm);
+      expect(panel.root.textContent).toContain(error);
+      await click(trigger);
+      await click(confirm);
+      expect(command).toHaveBeenCalledTimes(2);
+    }
+    expect(api.sqlpadDeleteExecution).toHaveBeenCalledWith('one');
+    expect(panel.root.textContent).toContain('暂无执行记录');
+    expect(panel.root.textContent).not.toContain('private endpoint');
+    expect(button('清空记录').disabled).toBe(true);
   } finally {
     panel.dispose();
   }
@@ -599,6 +690,9 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
     expect(api.logMcpToken).not.toHaveBeenCalled();
     const login = panel.root.querySelector<HTMLElement>('[aria-label="日志 SCM 登录"]')!;
     expect(login).toBeTruthy();
+    const rawCheckbox = () => login.querySelector<HTMLInputElement>('#log-raw-checkbox')!;
+    expect(rawCheckbox().disabled).toBe(true);
+    expect(api.logMcpRawStatus).not.toHaveBeenCalled();
     const cards = panel.root.querySelectorAll('#mcp-connections-panel section[aria-label]');
     expect([...cards].map((card) => card.getAttribute('aria-label'))).toEqual([
       '日志 SCM 登录',
@@ -636,6 +730,8 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
       await flush();
       expect(panel.root.textContent).not.toContain('fixture-session-token');
       expect(api.logMcpStatus).toHaveBeenCalledOnce();
+      expect(rawCheckbox().disabled).toBe(action === 'logout');
+      expect(api.logMcpRawStatus).toHaveBeenCalledOnce();
     }
     expect(api.logScmLogin).toHaveBeenCalledExactlyOnceWith(
       'https://example.invalid',

@@ -7,6 +7,7 @@ import SqlpadConnection from './SqlpadConnection.vue';
 vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => true, invoke: vi.fn() }));
 const offline = {
   connected: false,
+  username: null,
   remembered: false,
   warning: null,
   baseUrl: 'https://fixture.invalid',
@@ -123,7 +124,7 @@ it.each([
 ])('勾选记住登录后展示实际保存状态 $label', async ({ remembered, warning, label }) => {
   vi.mocked(invoke)
     .mockResolvedValueOnce(offline)
-    .mockResolvedValueOnce({ ...online, remembered, warning });
+    .mockResolvedValueOnce({ ...online, username: 'account@example.invalid', remembered, warning });
   await mount();
   const checkbox = root.querySelector<HTMLInputElement>('form input[type=checkbox]')!;
   expect(checkbox.checked).toBe(false);
@@ -138,7 +139,15 @@ it.each([
     password: 'test-only',
     remember: true,
   });
-  expect(root.querySelector('.connection-summary')?.textContent).toContain(label);
+  expect(root.querySelector('header')?.textContent).toContain('已登录');
+  expect(Array.from(root.querySelectorAll('dt'), (item) => item.textContent)).toEqual([
+    'SQLPad URL',
+    '登录用户',
+    '当前连接',
+  ]);
+  expect(root.querySelectorAll('dd')[1]?.textContent).toBe('account@example.invalid');
+  expect(root.querySelector('.connection-summary + [role=status]')?.textContent).toContain(label);
+  if (remembered) expect(root.textContent).toContain('恢复选中的连接，免审批需重新开启');
   if (warning) expect(root.textContent).toContain(warning);
   vi.mocked(invoke).mockResolvedValueOnce(offline);
   root.querySelector<HTMLButtonElement>('.actions button:last-child')!.click();
@@ -177,6 +186,8 @@ it('使用本次凭据独立登录，刷新发现会话失效后移除连接信�
   submit();
   await settle();
   expect(root.querySelector('select')).toBeTruthy();
+  expect(root.querySelectorAll('dd')[1]?.textContent).toBe('未知');
+  expect(root.textContent).not.toContain('fixture@example.invalid');
   expect(root.querySelector('[type=password]')).toBeNull();
   root.querySelector('header button')!.dispatchEvent(new Event('click'));
   await settle();

@@ -16,6 +16,10 @@ on run argv
  repeat 300 times
   set originalCommand to originalCommand & " 中文😀'\\\"$;"
  end repeat
+ set projectOptions to automation's ghosttyProjectConfig(tempDir, originalCommand, "/bin/zsh")
+ if «class GScC» of projectOptions is not "'/bin/zsh' -l -i" then error "项目必须启动持续存在的交互 shell"
+ if «class GScE» of projectOptions is not {"DEVDOCK_INITIAL_ACTION=" & originalCommand} then error "项目命令未完整保留"
+ if «class GScI» of projectOptions is not (" eval \"unset DEVDOCK_INITIAL_ACTION; $DEVDOCK_INITIAL_ACTION\"" & return) then error "初始输入只能包含固定交接语句"
  set wrappedCommand to automation's loginShellCommand(originalCommand, fakeShell)
  set actualArgs to do shell script wrappedCommand without altering line endings
  set expectedArgs to "-l" & linefeed & "-i" & linefeed & "-c" & linefeed & originalCommand & linefeed & "exec " & quoted form of fakeShell & " -l" & linefeed

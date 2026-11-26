@@ -421,6 +421,7 @@ mod tests {
                 session: Mutex::new(Some(Session {
                     jar: Default::default(),
                     saved: None,
+                    pending_connection: None,
                     client: Client::builder().no_proxy().build().unwrap(),
                     generation: uuid::Uuid::new_v4(),
                     root,

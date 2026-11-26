@@ -24,7 +24,7 @@ const BODY_LIMIT: usize = 512 * 1024;
 
 #[derive(Clone, Deserialize, Serialize, PartialEq)]
 pub(crate) struct Connection {
-    #[serde(rename(deserialize = "_id"))]
+    #[serde(rename(deserialize = "_id"), alias = "id")]
     id: String,
     name: String,
     driver: String,
@@ -35,6 +35,7 @@ pub(crate) struct Connection {
 pub(crate) struct Status {
     connected: bool,
     base_url: String,
+    username: Option<String>,
     connections: Vec<Connection>,
     selected_id: Option<String>,
     auto_approve: bool,
@@ -47,6 +48,7 @@ struct Session {
     client: Client,
     jar: Arc<credentials::Jar>,
     saved: Option<String>,
+    pending_connection: Option<Connection>,
     root: Url,
     status: Status,
 }
@@ -59,7 +61,64 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
-    // 仅在持有会话锁时更新标记；已知没有旧条目时不再访问系统凭据。
+    pub(crate) async fn restore_ready(&self) -> Result<bool> {
+        if self.ready().await {
+            return Ok(true);
+        }
+        Ok(self.status().await?.selected_id.is_some())
+    }
+
+    async fn status(&self) -> Result<Status> {
+        let mut slot = self.session.lock().await;
+        if slot.is_none() && !self.restore_attempted.swap(true, Ordering::Relaxed) {
+            match credentials::load().await {
+                Ok(Some(value)) => match credentials::Jar::restore(&value) {
+                    Ok(mut restored) => {
+                        restored.saved = Some(value);
+                        restored.status.remembered = true;
+                        *slot = Some(restored);
+                    }
+                    Err(_) => {
+                        return Ok(Status {
+                            warning: self.forget().await,
+                            ..Default::default()
+                        })
+                    }
+                },
+                Ok(None) => self.credential_empty.store(true, Ordering::Relaxed),
+                Err(_) => {
+                    self.restore_attempted.store(false, Ordering::Relaxed);
+                    return Ok(Status {
+                        warning: Some(credentials::WARNING.into()),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        let Some(session) = slot.as_mut() else {
+            return Ok(Status::default());
+        };
+        match session.refresh().await {
+            Ok(()) => {
+                if session.status.remembered {
+                    self.persist(session).await;
+                }
+                Ok(session.status.clone())
+            }
+            Err(e) => {
+                if e == AUTH_REQUIRED {
+                    *slot = None;
+                    return Ok(Status {
+                        warning: self.forget().await,
+                        ..Default::default()
+                    });
+                }
+                Err(e)
+            }
+        }
+    }
+
+    // 仅在持有会话锁时更新标记；已知没有旧条目时不再访问本机凭据。
     async fn forget(&self) -> Option<String> {
         self.restore_attempted.store(true, Ordering::Relaxed);
         if self.credential_empty.load(Ordering::Relaxed) {
@@ -73,7 +132,14 @@ impl Runtime {
     }
 
     async fn persist(&self, s: &mut Session) {
-        let snapshot = s.jar.snapshot(&s.root);
+        let selected = s
+            .status
+            .connections
+            .iter()
+            .find(|c| Some(&c.id) == s.status.selected_id.as_ref());
+        let snapshot = s
+            .jar
+            .snapshot(&s.root, s.status.username.as_deref(), selected);
         if let Ok(value) = snapshot {
             if s.saved.as_ref() == Some(&value) {
                 return;
@@ -175,6 +241,7 @@ impl Session {
             jar,
             client,
             saved: None,
+            pending_connection: None,
         })
     }
 
@@ -212,6 +279,10 @@ impl Session {
         let rows = data.get_mut("connections").ok_or(INVALID_RESPONSE)?.take();
         let connections: Vec<Connection> =
             serde_json::from_value(rows).map_err(|_| INVALID_RESPONSE)?;
+        self.update_connections(connections)
+    }
+
+    fn update_connections(&mut self, connections: Vec<Connection>) -> Result<()> {
         let mut ids = HashSet::new();
         if connections
             .iter()
@@ -219,7 +290,12 @@ impl Session {
         {
             return Err(INVALID_RESPONSE.into());
         }
-        if let Some(id) = &self.status.selected_id {
+        // 本机保存的连接只是候选；必须与当前会话刚获取的 ID、名称和驱动一致才恢复。
+        if let Some(saved) = self.pending_connection.take() {
+            if connections.contains(&saved) {
+                self.select(Some(saved.id));
+            }
+        } else if let Some(id) = &self.status.selected_id {
             let old = self.status.connections.iter().find(|item| &item.id == id);
             let current = connections.iter().find(|item| &item.id == id);
             if current.is_none() || old != current {
@@ -266,6 +342,7 @@ pub(crate) async fn sqlpad_login(
         .map_err(|_| "无法连接 SQLPad")?;
     json_response(response).await?;
     session.refresh().await?;
+    session.status.username = Some(email.trim().to_owned());
     if remember {
         runtime.persist(&mut session).await;
     } else {
@@ -282,54 +359,7 @@ pub(crate) async fn sqlpad_status(
     runtime: State<'_, Runtime>,
 ) -> Result<Status> {
     ensure_backend_window(&window)?;
-    let mut slot = runtime.session.lock().await;
-    if slot.is_none() && !runtime.restore_attempted.swap(true, Ordering::Relaxed) {
-        match credentials::load().await {
-            Ok(Some(value)) => match credentials::Jar::restore(&value) {
-                Ok((root, jar)) => {
-                    let mut restored = Session::new(root, jar)?;
-                    restored.saved = Some(value);
-                    restored.status.remembered = true;
-                    *slot = Some(restored);
-                }
-                Err(_) => {
-                    return Ok(Status {
-                        warning: runtime.forget().await,
-                        ..Default::default()
-                    })
-                }
-            },
-            Ok(None) => runtime.credential_empty.store(true, Ordering::Relaxed),
-            Err(_) => {
-                runtime.restore_attempted.store(false, Ordering::Relaxed);
-                return Ok(Status {
-                    warning: Some(credentials::WARNING.into()),
-                    ..Default::default()
-                });
-            }
-        }
-    }
-    let Some(session) = slot.as_mut() else {
-        return Ok(Status::default());
-    };
-    match session.refresh().await {
-        Ok(()) => {
-            if session.status.remembered {
-                runtime.persist(session).await;
-            }
-            Ok(session.status.clone())
-        }
-        Err(e) => {
-            if e == AUTH_REQUIRED {
-                *slot = None;
-                return Ok(Status {
-                    warning: runtime.forget().await,
-                    ..Default::default()
-                });
-            }
-            Err(e)
-        }
-    }
+    runtime.status().await
 }
 
 #[tauri::command]
@@ -358,10 +388,10 @@ pub(crate) async fn sqlpad_select_connection(
     {
         return Err("请选择当前账号可见的连接".into());
     }
+    session.select(Some(connection_id));
     if session.status.remembered {
         runtime.persist(session).await;
     }
-    session.select(Some(connection_id));
     Ok(session.status.clone())
 }
 
@@ -398,6 +428,24 @@ pub(crate) async fn sqlpad_logout(
 mod tests {
     use super::*;
     #[test]
+    fn restore_ready_reuses_selected_connection_and_handles_empty_session() {
+        tauri::async_runtime::block_on(async {
+            let runtime = Runtime::default();
+            runtime.restore_attempted.store(true, Ordering::Relaxed);
+            assert!(!runtime.restore_ready().await.unwrap());
+
+            let mut session = Session::new(
+                Url::parse("https://example.invalid/").unwrap(),
+                Default::default(),
+            )
+            .unwrap();
+            session.select(Some("selected".into()));
+            *runtime.session.lock().await = Some(session);
+            assert!(runtime.restore_ready().await.unwrap());
+        });
+    }
+
+    #[test]
     fn accepts_only_https_origins() {
         assert!(root_url("https://example.invalid:1443").is_ok());
         for s in [
@@ -416,13 +464,22 @@ mod tests {
         let root = Url::parse(&format!("http://{}/", server.local_addr().unwrap())).unwrap();
         let worker = std::thread::spawn(move || {
             let data = r#"{"connections":[{"_id":"test","driver":"postgres","name":"Example"}]}"#;
-            for response in [format!("200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{data}",data.len()), "302 Found\r\nLocation: /signin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into()] {
+            let success = format!("200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{data}", data.len());
+            for response in [
+                &success[..],
+                &success,
+                "302 Found\r\nLocation: /signin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ] {
                 let (mut stream, _) = server.accept().unwrap();
                 let mut input = BufReader::new(stream.try_clone().unwrap());
                 let mut first = String::new();
                 input.read_line(&mut first).unwrap();
                 assert_eq!(first.trim_end(), "GET /api/connections/ HTTP/1.1");
-                for line in input.lines() { if line.unwrap().is_empty() { break; } }
+                for line in input.lines() {
+                    if line.unwrap().is_empty() {
+                        break;
+                    }
+                }
                 write!(stream, "HTTP/1.1 {response}").unwrap();
             }
         });
@@ -430,6 +487,7 @@ mod tests {
             let mut session = Session {
                 jar: Default::default(),
                 saved: None,
+                pending_connection: None,
                 generation: uuid::Uuid::new_v4(),
                 client: Client::builder()
                     .no_proxy()
@@ -442,7 +500,15 @@ mod tests {
             session.refresh().await.unwrap();
             assert_eq!(session.status.connections[0].id, "test");
             assert!(session.status.selected_id.is_none());
-            assert_eq!(session.refresh().await.unwrap_err(), AUTH_REQUIRED);
+            session.pending_connection = Some(session.status.connections[0].clone());
+            let runtime = Runtime::default();
+            *runtime.session.lock().await = Some(session);
+            assert!(runtime.restore_ready().await.unwrap());
+            let mut slot = runtime.session.lock().await;
+            assert_eq!(
+                slot.as_mut().unwrap().refresh().await.unwrap_err(),
+                AUTH_REQUIRED
+            );
         });
         worker.join().unwrap();
     }
