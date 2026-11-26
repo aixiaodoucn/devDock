@@ -1,3 +1,4 @@
+use crate::scm::prodlog::{DEFAULT_MATCH_LIMIT, MAX_MATCHES};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -9,11 +10,27 @@ use tempfile::NamedTempFile;
 const FILE_NAME: &str = "log-access-preferences.json";
 const MAX_BYTES: u64 = 1024;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Preferences {
+    #[serde(default = "default_match_limit")]
+    pub(super) match_limit: usize,
     pub(super) scan_all: bool,
     pub(super) raw_subject: Option<String>,
+}
+
+fn default_match_limit() -> usize {
+    DEFAULT_MATCH_LIMIT
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            match_limit: DEFAULT_MATCH_LIMIT,
+            scan_all: false,
+            raw_subject: None,
+        }
+    }
 }
 
 pub(super) fn subject(base_url: &str, username: &str) -> String {
@@ -29,6 +46,9 @@ pub(super) fn subject(base_url: &str, username: &str) -> String {
 
 impl Preferences {
     fn validate(&self) -> Result<(), String> {
+        if !(1..=MAX_MATCHES).contains(&self.match_limit) {
+            return Err(format!("匹配行数上限必须在 1 至 {MAX_MATCHES} 之间"));
+        }
         if let Some(value) = &self.raw_subject {
             if value.len() != 64
                 || !value
@@ -96,6 +116,7 @@ mod tests {
         assert!(!defaults.scan_all && defaults.raw_subject.is_none());
         let digest = subject("https://example.invalid", "test-user");
         let prefs = Preferences {
+            match_limit: 600,
             scan_all: true,
             raw_subject: Some(digest.clone()),
         };
@@ -104,10 +125,11 @@ mod tests {
             serde_json::from_slice(&fs::read(dir.join(FILE_NAME)).unwrap()).unwrap();
         assert_eq!(
             disk,
-            serde_json::json!({"scan_all": true, "raw_subject": digest})
+            serde_json::json!({"match_limit":600,"scan_all": true, "raw_subject": digest})
         );
         assert_eq!(Preferences::load(&dir).unwrap(), prefs);
         let invalid = Preferences {
+            match_limit: 600,
             scan_all: false,
             raw_subject: Some("plaintext".into()),
         };
@@ -116,6 +138,21 @@ mod tests {
         defaults.save(&dir).unwrap();
         assert_eq!(Preferences::load(&dir).unwrap(), defaults);
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn match_limit_migrates_and_validates_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(FILE_NAME), r#"{"scan_all":true}"#).unwrap();
+        let mut prefs = Preferences::load(dir.path()).unwrap();
+        assert_eq!(prefs.match_limit, 500);
+        prefs.match_limit = 1200;
+        prefs.save(dir.path()).unwrap();
+        for invalid in [0, 10_001] {
+            prefs.match_limit = invalid;
+            assert!(prefs.save(dir.path()).is_err());
+        }
+        assert_eq!(Preferences::load(dir.path()).unwrap().match_limit, 1200);
     }
 
     #[test]

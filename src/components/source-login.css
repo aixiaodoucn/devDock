@@ -60,6 +60,53 @@
 .source-login .confirm input {
   flex-shrink: 0;
 }
+/* 两个生产连接面板共用标签列与内容缩进，避免不同元素继承出不同字重。 */
+.source-login .source-options {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  background: var(--surface-subtle);
+  border-block: 1px solid var(--line);
+}
+.source-login .source-option {
+  display: grid;
+  grid-template-columns: 10em minmax(0, 1fr);
+  align-items: center;
+  gap: 5px 12px;
+  font-size: 13px;
+}
+.source-login .source-option + .source-option {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.source-login .source-option-label {
+  display: block;
+  font-size: 13px;
+  line-height: 1.55;
+  font-weight: 650;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.source-login .source-option > p,
+.source-login .source-option > .confirm {
+  grid-column: 2;
+}
+.source-login .source-option > .confirm input {
+  align-self: flex-start;
+  margin: 0.2em 0 0;
+}
+@container (max-width: 400px) {
+  .source-login .source-options {
+    padding: 12px 8px;
+  }
+  .source-login .source-option {
+    grid-template-columns: 9.5em minmax(0, 1fr);
+    column-gap: 8px;
+  }
+  .source-login .source-option > p {
+    grid-column: 1 / -1;
+  }
+}
 .source-login .auth-note {
   grid-column: 1/-1;
 }

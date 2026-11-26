@@ -30,6 +30,7 @@ tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
 libc = "0.2"
+cookie_store = "0.22.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["cookies", "rustls", "form", "query", "charset"] }
 scraper = "0.24"
 tauri-plugin-updater = "2"

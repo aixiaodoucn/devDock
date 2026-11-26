@@ -9,6 +9,7 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     convert::Infallible,
     future::Future,
@@ -31,7 +32,9 @@ pub(crate) use protocol::{tool_catalog, CatalogEntry};
 #[path = "log_mcp/tests.rs"]
 mod tests;
 #[cfg(test)]
-use protocol::valid_args;
+fn valid_args(name: &str, args: &Value) -> bool {
+    protocol::valid_args(name, args, crate::scm::prodlog::DEFAULT_MATCH_LIMIT)
+}
 
 pub(crate) const REQUEST_LIMIT: usize = 32 * 1024;
 pub(crate) const RESPONSE_LIMIT: usize = 256 * 1024;
@@ -43,12 +46,16 @@ const BODY_TIMEOUT: Duration = Duration::from_secs(5);
 type Reply = Response<Full<Bytes>>;
 
 pub struct LogMcpServer {
+    match_limit: Arc<AtomicUsize>,
     addr: SocketAddr,
     token: String,
     pub(crate) identity: crate::log_bridge::Identity,
     task: JoinHandle<()>,
 }
 impl LogMcpServer {
+    pub(crate) fn set_match_limit(&self, limit: usize) {
+        self.match_limit.store(limit, Ordering::Relaxed);
+    }
     pub(crate) fn port(&self) -> u16 {
         self.addr.port()
     }
@@ -70,6 +77,7 @@ impl Drop for LogMcpServer {
 }
 
 struct State<F> {
+    match_limit: Arc<AtomicUsize>,
     host: String,
     origin: String,
     authorization: String,
@@ -115,7 +123,9 @@ where
         uuid::Uuid::new_v4().simple()
     );
     let identity = crate::log_bridge::Identity::new();
+    let match_limit = Arc::new(AtomicUsize::new(crate::scm::prodlog::DEFAULT_MATCH_LIMIT));
     let state = Arc::new(State {
+        match_limit: match_limit.clone(),
         identity: identity.clone(),
         host: addr.to_string(),
         origin: format!("http://{addr}"),
@@ -156,6 +166,7 @@ where
         }
     });
     Ok(Some(LogMcpServer {
+        match_limit,
         addr,
         token,
         identity,
@@ -260,5 +271,10 @@ where
         Ok(Err(_)) => return reject(413),
         Err(_) => return reject(408),
     };
-    protocol::rpc(&body, &state.dispatch).await
+    protocol::rpc(
+        &body,
+        state.match_limit.load(Ordering::Relaxed),
+        &state.dispatch,
+    )
+    .await
 }

@@ -134,6 +134,9 @@ export const api = {
   sqlpadExecutionHistory() {
     return native<SqlpadExecutionRecord[]>('sqlpad_execution_history');
   },
+  sqlpadRerunExecution(id: string) {
+    return native<void>('sqlpad_rerun_execution', { id });
+  },
   sqlpadPendingApproval() {
     return native<SqlpadPendingApproval | null>('sqlpad_pending_approval');
   },
@@ -143,8 +146,8 @@ export const api = {
   sqlpadStatus() {
     return native<SqlpadStatus>('sqlpad_status');
   },
-  sqlpadLogin(baseUrl: string, email: string, password: string) {
-    return native<SqlpadStatus>('sqlpad_login', { baseUrl, email, password });
+  sqlpadLogin(baseUrl: string, email: string, password: string, remember: boolean) {
+    return native<SqlpadStatus>('sqlpad_login', { baseUrl, email, password, remember });
   },
   sqlpadSetAutoApprove(connectionId: string, enabled: boolean) {
     return native<SqlpadStatus>('sqlpad_set_auto_approve', { connectionId, enabled });
@@ -163,6 +166,12 @@ export const api = {
   },
   logMcpSetRaw(enabled: boolean) {
     return native<boolean>('log_mcp_set_raw', { enabled });
+  },
+  logMcpMatchLimit() {
+    return native<number>('log_mcp_match_limit');
+  },
+  logMcpSetMatchLimit(limit: number) {
+    return native<number>('log_mcp_set_match_limit', { limit });
   },
   logMcpScanScope() {
     return native<LogMcpScanScope>('log_mcp_scan_scope');

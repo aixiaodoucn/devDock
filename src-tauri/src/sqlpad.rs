@@ -1,4 +1,5 @@
 //! SQLPad 3.x 独立会话，默认逐次审批，可由主窗口为当前只读连接临时授权。
+mod credentials;
 pub(crate) mod history;
 mod query;
 use crate::{config::Result, ensure_backend_window};
@@ -6,7 +7,14 @@ pub(crate) use query::valid_query_args;
 use reqwest::{header, redirect::Policy, Client, Response, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::HashSet,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tauri::{State, WebviewWindow};
 use tokio::sync::Mutex;
 
@@ -30,17 +38,61 @@ pub(crate) struct Status {
     connections: Vec<Connection>,
     selected_id: Option<String>,
     auto_approve: bool,
+    remembered: bool,
+    warning: Option<String>,
 }
 
 struct Session {
     generation: uuid::Uuid,
     client: Client,
+    jar: Arc<credentials::Jar>,
+    saved: Option<String>,
     root: Url,
     status: Status,
 }
 
 #[derive(Default)]
-pub(crate) struct Runtime(Mutex<Option<Session>>);
+pub(crate) struct Runtime {
+    session: Mutex<Option<Session>>,
+    restore_attempted: AtomicBool,
+    credential_empty: AtomicBool,
+}
+
+impl Runtime {
+    // 仅在持有会话锁时更新标记；已知没有旧条目时不再访问系统凭据。
+    async fn forget(&self) -> Option<String> {
+        self.restore_attempted.store(true, Ordering::Relaxed);
+        if self.credential_empty.load(Ordering::Relaxed) {
+            return None;
+        }
+        if credentials::clear().await.is_err() {
+            return Some(credentials::CLEAR_WARNING.into());
+        }
+        self.credential_empty.store(true, Ordering::Relaxed);
+        None
+    }
+
+    async fn persist(&self, s: &mut Session) {
+        let snapshot = s.jar.snapshot(&s.root);
+        if let Ok(value) = snapshot {
+            if s.saved.as_ref() == Some(&value) {
+                return;
+            }
+            self.credential_empty.store(false, Ordering::Relaxed);
+            if credentials::save(value.clone()).await.is_ok() {
+                s.saved = Some(value);
+                s.status.remembered = true;
+                return;
+            }
+        }
+        s.saved = None;
+        s.status.remembered = false;
+        s.status.warning = self
+            .forget()
+            .await
+            .or_else(|| Some(credentials::WARNING.into()));
+    }
+}
 
 fn root_url(input: &str) -> Result<Url> {
     let url = Url::parse(input.trim()).map_err(|_| "请输入 SQLPad HTTPS 根地址")?;
@@ -103,6 +155,29 @@ async fn json_response(mut response: Response) -> Result<Value> {
 }
 
 impl Session {
+    fn new(root: Url, jar: credentials::Jar) -> Result<Self> {
+        let jar = Arc::new(jar);
+        let client = Client::builder()
+            .cookie_provider(jar.clone())
+            .retry(reqwest::retry::never())
+            .redirect(Policy::none())
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|_| "无法创建 SQLPad 会话")?;
+        Ok(Self {
+            generation: uuid::Uuid::new_v4(),
+            status: Status {
+                connected: true,
+                base_url: root.to_string(),
+                ..Default::default()
+            },
+            root,
+            jar,
+            client,
+            saved: None,
+        })
+    }
+
     fn select(&mut self, id: Option<String>) {
         self.generation = uuid::Uuid::new_v4();
         self.status.selected_id = id;
@@ -163,42 +238,39 @@ pub(crate) async fn sqlpad_login(
     base_url: String,
     email: String,
     password: String,
+    remember: bool,
 ) -> Result<Status> {
     ensure_backend_window(&window)?;
-    let mut slot = runtime.0.lock().await;
+    let mut slot = runtime.session.lock().await;
     *slot = None;
+    runtime.restore_attempted.store(true, Ordering::Relaxed);
     let root = root_url(&base_url)?;
     if email.trim().is_empty() || password.is_empty() {
         return Err("请输入 SQLPad 邮箱和密码".into());
     }
-    let client = Client::builder()
-        .cookie_store(true)
-        .retry(reqwest::retry::never())
-        .redirect(Policy::none())
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|_| "无法创建 SQLPad 会话")?;
+    let mut session = Session::new(root, credentials::Jar::default())?;
     let body = serde_json::to_vec(&serde_json::json!({"email":email.trim(),"password":password}))
         .map_err(|_| INVALID_RESPONSE)?;
-    let response = client
-        .post(root.join("api/signin").map_err(|_| INVALID_RESPONSE)?)
+    let response = session
+        .client
+        .post(
+            session
+                .root
+                .join("api/signin")
+                .map_err(|_| INVALID_RESPONSE)?,
+        )
         .header(header::CONTENT_TYPE, "application/json")
         .body(body)
         .send()
         .await
         .map_err(|_| "无法连接 SQLPad")?;
     json_response(response).await?;
-    let mut session = Session {
-        generation: uuid::Uuid::new_v4(),
-        status: Status {
-            connected: true,
-            base_url: root.to_string(),
-            ..Default::default()
-        },
-        root,
-        client,
-    };
     session.refresh().await?;
+    if remember {
+        runtime.persist(&mut session).await;
+    } else {
+        session.status.warning = runtime.forget().await;
+    }
     let status = session.status.clone();
     *slot = Some(session);
     Ok(status)
@@ -210,15 +282,50 @@ pub(crate) async fn sqlpad_status(
     runtime: State<'_, Runtime>,
 ) -> Result<Status> {
     ensure_backend_window(&window)?;
-    let mut slot = runtime.0.lock().await;
+    let mut slot = runtime.session.lock().await;
+    if slot.is_none() && !runtime.restore_attempted.swap(true, Ordering::Relaxed) {
+        match credentials::load().await {
+            Ok(Some(value)) => match credentials::Jar::restore(&value) {
+                Ok((root, jar)) => {
+                    let mut restored = Session::new(root, jar)?;
+                    restored.saved = Some(value);
+                    restored.status.remembered = true;
+                    *slot = Some(restored);
+                }
+                Err(_) => {
+                    return Ok(Status {
+                        warning: runtime.forget().await,
+                        ..Default::default()
+                    })
+                }
+            },
+            Ok(None) => runtime.credential_empty.store(true, Ordering::Relaxed),
+            Err(_) => {
+                runtime.restore_attempted.store(false, Ordering::Relaxed);
+                return Ok(Status {
+                    warning: Some(credentials::WARNING.into()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
     let Some(session) = slot.as_mut() else {
         return Ok(Status::default());
     };
     match session.refresh().await {
-        Ok(()) => Ok(session.status.clone()),
+        Ok(()) => {
+            if session.status.remembered {
+                runtime.persist(session).await;
+            }
+            Ok(session.status.clone())
+        }
         Err(e) => {
             if e == AUTH_REQUIRED {
                 *slot = None;
+                return Ok(Status {
+                    warning: runtime.forget().await,
+                    ..Default::default()
+                });
             }
             Err(e)
         }
@@ -232,11 +339,14 @@ pub(crate) async fn sqlpad_select_connection(
     connection_id: String,
 ) -> Result<Status> {
     ensure_backend_window(&window)?;
-    let mut slot = runtime.0.lock().await;
+    let mut slot = runtime.session.lock().await;
     let session = slot.as_mut().ok_or(AUTH_REQUIRED)?;
     if let Err(e) = session.refresh().await {
         if e == AUTH_REQUIRED {
             *slot = None;
+            if let Some(warning) = runtime.forget().await {
+                return Err(warning);
+            }
         }
         return Err(e);
     }
@@ -247,6 +357,9 @@ pub(crate) async fn sqlpad_select_connection(
         .any(|c| c.id == connection_id)
     {
         return Err("请选择当前账号可见的连接".into());
+    }
+    if session.status.remembered {
+        runtime.persist(session).await;
     }
     session.select(Some(connection_id));
     Ok(session.status.clone())
@@ -260,7 +373,7 @@ pub(crate) async fn sqlpad_set_auto_approve(
     enabled: bool,
 ) -> Result<Status> {
     ensure_backend_window(&window)?;
-    let mut slot = runtime.0.lock().await;
+    let mut slot = runtime.session.lock().await;
     let session = slot.as_mut().ok_or(AUTH_REQUIRED)?;
     session.set_auto_approve(&connection_id, enabled)?;
     Ok(session.status.clone())
@@ -273,8 +386,12 @@ pub(crate) async fn sqlpad_logout(
 ) -> Result<Status> {
     ensure_backend_window(&window)?;
     // 本地退出，释放整个 CookieJar，不影响用户的浏览器会话。
-    *runtime.0.lock().await = None;
-    Ok(Status::default())
+    let mut slot = runtime.session.lock().await;
+    *slot = None;
+    Ok(Status {
+        warning: runtime.forget().await,
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]
@@ -311,6 +428,8 @@ mod tests {
         });
         tauri::async_runtime::block_on(async {
             let mut session = Session {
+                jar: Default::default(),
+                saved: None,
                 generation: uuid::Uuid::new_v4(),
                 client: Client::builder()
                     .no_proxy()

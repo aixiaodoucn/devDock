@@ -19,7 +19,8 @@ use std::{
 const GET_TARGETS: &str = "/kpi/prodlog/getTargets";
 const QUERY: &str = "/kpi/prodlog/query";
 const MAX_BYTES: usize = 512 * 1024;
-const MAX_MATCHES: usize = 50;
+pub(crate) const DEFAULT_MATCH_LIMIT: usize = 500;
+pub(crate) const MAX_MATCHES: usize = 10_000;
 const BAD_RESPONSE: &str = "Protocol: SCM 日志响应格式或目标不匹配";
 const INVALID_TARGET: &str = "InvalidInput: 请选择已解析的单台机器及白名单日志";
 static HASHER: LazyLock<RandomState> = LazyLock::new(RandomState::new);

@@ -14,6 +14,8 @@ vi.mock('../api', () => ({
     logMcpStatus: vi.fn(),
     logMcpRawStatus: vi.fn(async () => false),
     logMcpSetRaw: vi.fn(async (enabled: boolean) => enabled),
+    logMcpMatchLimit: vi.fn(async () => 500),
+    logMcpSetMatchLimit: vi.fn(async (limit: number) => limit),
     logMcpScanScope: vi.fn(),
     logMcpSetScanScope: vi.fn(),
     logMcpEnable: vi.fn(),
@@ -139,6 +141,26 @@ it('展示并原样复制后端返回的 stdio 配置', async () => {
     copy.mockRestore();
   }
 });
+it('读取匹配行数上限，仅允许保存范围内的整数并显示后端确认值', async () => {
+  await mount();
+  const input = root.querySelector<HTMLInputElement>('#log-mcp-match-limit')!;
+  const save = Array.from(root.querySelectorAll('button')).find(
+    (b) => b.textContent?.trim() === '保存上限',
+  )!;
+  expect(input.value).toBe('500');
+  expect(api.logMcpMatchLimit).toHaveBeenCalled();
+  for (const value of ['', '0', '10001', '1.5', '1', '10000']) {
+    input.value = value;
+    input.dispatchEvent(new Event('input'));
+    await nextTick();
+    expect(save.disabled).toBe(!['1', '10000'].includes(value));
+  }
+  vi.mocked(api.logMcpSetMatchLimit).mockResolvedValueOnce(9999);
+  await click('保存上限');
+  expect(api.logMcpSetMatchLimit).toHaveBeenCalledExactlyOnceWith(10000);
+  expect(input.value).toBe('9999');
+});
+
 it('切换范围时等待后端确认后再勾选', async () => {
   let confirm!: (scope: 'all') => void;
   vi.mocked(api.logMcpSetScanScope).mockReturnValueOnce(
@@ -175,58 +197,60 @@ it('读取或更新失败均显示未知范围，刷新后恢复实际值', asyn
   expect(root.querySelector('[role="alert"]')).toBeNull();
 });
 
-const rawSwitch = () => root.querySelector<HTMLButtonElement>('[role="switch"]')!;
+const rawCheckbox = () =>
+  root.querySelector<HTMLInputElement>('input[type="checkbox"][aria-label="允许返回日志原文"]')!;
 
 it('本次启用后须确认原文披露，取消不写入，关闭直接生效', async () => {
   await mount();
-  expect(rawSwitch().disabled).toBe(true);
+  expect(rawCheckbox().disabled).toBe(true);
   await click('启用');
-  expect(rawSwitch().disabled).toBe(false);
-  rawSwitch().click();
+  expect(rawCheckbox().disabled).toBe(false);
+  rawCheckbox().click();
   await nextTick();
   const confirmation = root.querySelector('dialog[open]')!;
   expect(confirmation.textContent).toMatch(/匹配行.*模型服务.*历史记录/);
   expect(confirmation.textContent).toMatch(/记住.*授权/);
   expect(root.textContent).toContain('实例范围跨重启保留');
   await click('取消');
+  expect(rawCheckbox().checked).toBe(false);
   expect(api.logMcpSetRaw).not.toHaveBeenCalled();
-  rawSwitch().click();
+  rawCheckbox().click();
   await nextTick();
   await click('确认开启');
   expect(api.logMcpSetRaw).toHaveBeenCalledWith(true);
-  expect(rawSwitch().getAttribute('aria-checked')).toBe('true');
-  rawSwitch().click();
+  expect(rawCheckbox().checked).toBe(true);
+  rawCheckbox().click();
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   expect(api.logMcpSetRaw).toHaveBeenLastCalledWith(false);
-  expect(rawSwitch().getAttribute('aria-checked')).toBe('false');
+  expect(rawCheckbox().checked).toBe(false);
 });
 
 it('重挂与刷新读取实际状态，读写失败和停用均撤下开启标记', async () => {
   vi.mocked(api.logMcpStatus).mockResolvedValue(running);
   vi.mocked(api.logMcpRawStatus).mockResolvedValue(true);
   await mount();
-  expect(rawSwitch().getAttribute('aria-checked')).toBe('true');
+  expect(rawCheckbox().checked).toBe(true);
   vi.mocked(api.logMcpSetRaw).mockRejectedValueOnce(new Error('fixture'));
-  rawSwitch().click();
+  rawCheckbox().click();
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  expect(rawSwitch().disabled).toBe(true);
-  expect(rawSwitch().getAttribute('aria-checked')).toBe('false');
+  expect(rawCheckbox().disabled).toBe(true);
+  expect(rawCheckbox().checked).toBe(false);
   vi.mocked(api.logMcpRawStatus).mockRejectedValueOnce(new Error('fixture'));
   await click('刷新状态');
   expect(root.textContent).toContain('原文状态未知');
   await click('刷新状态');
-  expect(rawSwitch().getAttribute('aria-checked')).toBe('true');
+  expect(rawCheckbox().checked).toBe(true);
   await click('停用');
-  expect(rawSwitch().disabled).toBe(true);
-  expect(rawSwitch().getAttribute('aria-checked')).toBe('false');
+  expect(rawCheckbox().disabled).toBe(true);
+  expect(rawCheckbox().checked).toBe(false);
   await click('启用');
-  expect(rawSwitch().getAttribute('aria-checked')).toBe('true');
+  expect(rawCheckbox().checked).toBe(true);
   expect(api.logMcpSetRaw).toHaveBeenCalledTimes(1);
   // 切换日志 SCM 账号时，设置页会重新挂载组件。
   vi.mocked(api.logMcpRawStatus).mockResolvedValue(false);
   app.unmount();
   await mount();
-  expect(rawSwitch().getAttribute('aria-checked')).toBe('false');
+  expect(rawCheckbox().checked).toBe(false);
 });
 
 it('浏览器预览不读取原生状态或凭据', async () => {

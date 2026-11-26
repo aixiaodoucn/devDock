@@ -100,8 +100,10 @@ const guides = [
     title: 'MCP：查询生产 SQLPad 数据库',
     steps: [
       '在 SQLPad 卡片选择 MySQL 或 PostgreSQL 连接，确认该账号在数据库端确实只有只读权限。勾选确认不会改变数据库权限。',
-      '查看结构可以问：“查看 example_orders 的列名和类型，不读取业务行。”prod_db_describe_table 最多返回 50 列；不在默认 schema 的表要同时说明 schema 名。',
-      '查看数据可以问：“查询 example_orders 中状态为 pending 且金额大于 100 的记录，只返回订单号和状态，最多 5 行。”prod_db_query_readonly 需要明确列名，默认 20 行、最多 50 行，不接受自由 SQL。',
+      '查看结构可以问：“查看 example_orders 的列名和类型，不读取业务行。”prod_db_describe_table 按顺序返回列名和类型，不再截取前 50 列；不在默认 schema 的表要同时说明 schema 名。',
+      '查看数据可以问：“查询 example_orders 中状态为 pending 且金额大于 100 的记录，只返回订单号和状态，最多 5 行。”prod_db_query_readonly 单表明细查询需指定 1 至 10 个不重复的列名，省略 limit 时不自动限制行数，不接受自由 SQL。',
+      '统计数据可以问：“按 example_orders 的 status 分组，统计每组订单数和 amount 总额。”groupBy 填分组列名，aggregates 的每项填写 fn 和输出别名 alias。可选 count、sum、avg、min、max，仅 count 可省略 column 来统计所有行。',
+      'groupBy 和 aggregates 可分别使用，也可组合使用，传入的数组至少有一项。仅用 groupBy 可列出不同的分组键组合。分组键忽略大小写后不能重复，与聚合列合计最多 10 列。分组或聚合时可省略 columns，若填写则列名集合须与 groupBy 相同。',
       '可用 filter（column、value）做单列等值匹配，或用非空数组 filters 按 AND 组合条件，两者互斥。数组每项必填 column 和 value，可选 op（eq、ne、gt、gte、lt、lte），默认 eq。',
       '每次查询（包括查看表结构）都要在 DevDock 主窗口核对连接和实际 SQL，点击批准才执行。拒绝或 60 秒未确认不会执行。「允许返回日志原文」不能代替数据库审批。',
     ],

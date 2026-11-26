@@ -14,6 +14,7 @@ vi.mock('../api', () => ({
     scmLogin: vi.fn(),
     scmLogout: vi.fn(),
     sqlpadExecutionHistory: vi.fn(),
+    sqlpadRerunExecution: vi.fn(),
     sqlpadStatus: vi
       .fn()
       .mockResolvedValue({ connected: false, baseUrl: '', connections: [], selectedId: null }),
@@ -432,6 +433,75 @@ describe('SettingsPage 公共 Node.js 环境', () => {
   });
 });
 
+it('重新执行期间阻止重复请求，结束后按桌面端顺序刷新并提示失败', async () => {
+  const source = {
+    id: 'source',
+    startedAt: 1,
+    tool: 'query',
+    connection: 'demo',
+    sql: 'SELECT 1',
+    result: null,
+    error: null,
+  };
+  const replayable = { ...source, canRerun: true };
+  const legacy = { ...source, id: 'legacy', sql: 'SELECT 2' };
+  const blocked = { ...source, id: 'blocked', canRerun: false };
+  const inserted = { ...replayable, id: 'new', startedAt: 3 };
+  vi.mocked(api.sqlpadExecutionHistory)
+    .mockResolvedValueOnce([legacy, replayable, blocked])
+    .mockResolvedValue([legacy, inserted, replayable, blocked]);
+  let finish!: () => void;
+  vi.mocked(api.sqlpadRerunExecution)
+    .mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockRejectedValueOnce(new Error('private endpoint'));
+  const panel = mount();
+  try {
+    [...panel.root.querySelectorAll<HTMLButtonElement>('nav button')]
+      .find((b) => b.textContent?.trim() === 'MCP 服务')!
+      .click();
+    await flush();
+    panel.root.querySelector<HTMLButtonElement>('#mcp-history-tab')!.click();
+    await flush();
+    const history = panel.root.querySelector<HTMLElement>('#mcp-history-panel')!;
+    const buttons = () => [...history.querySelectorAll<HTMLButtonElement>('.history-row button')];
+    for (const button of [buttons()[0], buttons()[2]]) {
+      expect(button.disabled).toBe(true);
+      expect(
+        document.getElementById(button.getAttribute('aria-describedby')!)?.textContent,
+      ).toContain('安全重新执行');
+      button.click();
+    }
+    const original = buttons()[1];
+    expect(original.textContent?.trim()).toBe('重新执行');
+    original.click();
+    original.click();
+    await flush();
+    expect(api.sqlpadRerunExecution).toHaveBeenCalledTimes(1);
+    expect(api.sqlpadRerunExecution).toHaveBeenCalledWith('source');
+    expect(original.disabled).toBe(true);
+    expect(original.textContent).toContain('重新执行中');
+    expect(api.sqlpadExecutionHistory).toHaveBeenCalledTimes(1);
+    finish();
+    await flush();
+    expect(buttons()).toHaveLength(4);
+    expect(buttons()[2]).toBe(original);
+    expect(original.disabled).toBe(false);
+    original.click();
+    await flush();
+    expect(api.sqlpadExecutionHistory).toHaveBeenCalledTimes(3);
+    expect(history.querySelector('[role=alert]')?.textContent).toContain('重新执行失败');
+    expect(history.textContent).not.toContain('private endpoint');
+    expect(original.disabled).toBe(false);
+  } finally {
+    panel.dispose();
+  }
+});
+
 it('打开执行记录才加载 SQL 和结果，刷新可区分失败与空记录', async () => {
   const base = {
     id: 'one',
@@ -536,7 +606,9 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
       '日志 MCP',
     ]);
     expect(login.querySelector('input[value="all"]')).toBeTruthy();
-    expect(login.querySelector('[role="switch"][aria-label="允许返回日志原文"]')).toBeTruthy();
+    expect(
+      login.querySelector('input[type="checkbox"][aria-label="允许返回日志原文"]'),
+    ).toBeTruthy();
     expect(panel.root.querySelector('[aria-label="日志 MCP"] .query-options')).toBeNull();
     expect(panel.root.querySelector('[aria-label="生产 SQLPad 数据库"] form')).toBeTruthy();
     expect(api.sqlpadStatus).toHaveBeenCalledOnce();

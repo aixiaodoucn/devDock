@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref } from 'vue';
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
 import { api, desktop, type LogMcpScanScope } from '../api';
 const props = defineProps<{ serviceEnabled: boolean }>();
 const pending = ref(false);
@@ -54,7 +54,43 @@ async function syncScanScope(scope?: LogMcpScanScope) {
   }
 }
 
+const matchLimit = ref<number | ''>('');
+const savedMatchLimit = ref<number | null>(null);
+const limitBusy = ref(false);
+const limitError = ref('');
+const canSaveLimit = computed(
+  () =>
+    !limitBusy.value &&
+    savedMatchLimit.value !== null &&
+    validLimit(matchLimit.value) &&
+    matchLimit.value !== savedMatchLimit.value,
+);
+
+function validLimit(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 10000;
+}
+
+async function syncMatchLimit(limit?: number) {
+  if (limitBusy.value || (limit !== undefined && !canSaveLimit.value)) return;
+  limitBusy.value = true;
+  limitError.value = '';
+  try {
+    const result =
+      limit === undefined ? await api.logMcpMatchLimit() : await api.logMcpSetMatchLimit(limit);
+    if (!validLimit(result)) throw new Error();
+    // 后端确认的值同时用于回显和判断是否有待保存的更改。
+    savedMatchLimit.value = result;
+    matchLimit.value = result;
+  } catch {
+    limitError.value =
+      limit === undefined ? '读取匹配行数上限失败，请刷新状态。' : '保存匹配行数上限失败，请重试。';
+  } finally {
+    limitBusy.value = false;
+  }
+}
+
 onMounted(() => {
+  void syncMatchLimit();
   void syncScanScope();
   if (props.serviceEnabled) void syncRaw();
 });
@@ -63,10 +99,14 @@ onBeforeUnmount(() => {
 });
 </script>
 <template>
-  <div class="query-options" role="group" aria-label="SCM 日志查询选项">
-    <fieldset :disabled="scopeBusy || scanScope === null">
-      <legend>查询实例</legend>
-      <div class="scope-picker">
+  <div class="query-options source-options" role="group" aria-label="SCM 日志查询选项">
+    <div class="source-option">
+      <span class="source-option-label" id="log-scope-label">查询实例</span>
+      <fieldset
+        class="scope-picker"
+        aria-labelledby="log-scope-label"
+        :disabled="scopeBusy || scanScope === null"
+      >
         <label v-for="(label, scope) in { first: '第一个实例', all: '全部实例' }" :key="scope">
           <input
             type="radio"
@@ -77,29 +117,27 @@ onBeforeUnmount(() => {
           />
           <span>{{ label }}</span>
         </label>
-      </div>
+      </fieldset>
       <p class="hint">未指定实例时使用此范围。实例范围跨重启保留。</p>
       <p v-if="scopeError" class="error" role="alert">{{ scopeError }}</p>
-    </fieldset>
-    <div class="raw-policy">
-      <div class="policy-heading">
-        <strong>允许返回日志原文</strong
-        ><button
-          type="button"
-          role="switch"
+    </div>
+    <div class="source-option">
+      <label class="source-option-label" for="log-raw-checkbox">允许返回日志原文</label>
+      <label class="confirm">
+        <input
+          id="log-raw-checkbox"
+          type="checkbox"
           aria-label="允许返回日志原文"
-          :aria-checked="rawEnabled === true"
+          :checked="rawEnabled === true"
           aria-describedby="raw-policy-hint"
-          class="raw-switch"
           :disabled="pending || !serviceEnabled || rawEnabled === null"
-          @click="rawEnabled ? setRaw(false) : rawDialog?.showModal()"
-        ></button>
-      </div>
-      <p class="hint" id="raw-policy-hint">
-        原文授权仅对确认时的日志 SCM
-        站点和账号有效。停用或退出会暂停服务，服务未启动时不会返回原文。
-        在同一站点用相同账号重新启用服务可恢复授权。关闭开关会撤销已保存的授权。
-      </p>
+          @click.prevent="rawEnabled ? setRaw(false) : rawDialog?.showModal()"
+        />
+        <span id="raw-policy-hint"
+          >原文授权仅对确认时的日志 SCM
+          站点和账号有效。停用或退出会暂停服务，服务未启动时不会返回原文。在同一站点用相同账号重新启用服务可恢复授权。取消勾选会撤销已保存的授权。</span
+        >
+      </label>
       <p v-if="rawError" class="error" role="alert">原文状态未知，请刷新状态。</p>
       <dialog
         ref="rawDialog"
@@ -117,6 +155,34 @@ onBeforeUnmount(() => {
           <button type="button" class="button primary" @click="setRaw(true)">确认开启</button>
         </footer>
       </dialog>
+    </div>
+    <div class="source-option">
+      <label class="source-option-label" for="log-mcp-match-limit">匹配行数上限</label>
+      <div class="limit-controls">
+        <input
+          id="log-mcp-match-limit"
+          v-model.number="matchLimit"
+          type="number"
+          min="1"
+          max="10000"
+          step="1"
+          aria-describedby="match-limit-hint"
+          :disabled="limitBusy || savedMatchLimit === null"
+        />
+        <button
+          type="button"
+          class="button"
+          :disabled="!canSaveLimit"
+          @click="validLimit(matchLimit) && syncMatchLimit(matchLimit)"
+        >
+          保存上限
+        </button>
+      </div>
+      <p class="hint" id="match-limit-hint">
+        显式指定的 maxLines 受此上限约束，默认上限为 500 行，可设为 1–10000 的整数。省略 maxLines
+        时，搜索最多返回 20 行或所设上限中的较小值，扫描默认仅统计匹配行数。
+      </p>
+      <p v-if="limitError" class="error" role="alert">{{ limitError }}</p>
     </div>
   </div>
 </template>
@@ -141,35 +207,29 @@ onBeforeUnmount(() => {
   line-height: 1.65;
   color: var(--text-secondary);
 }
-.query-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  margin: 0;
-  padding: 16px;
-  background: var(--surface-subtle);
-  border-block: 1px solid var(--line);
+.limit-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.query-options fieldset {
-  display: block;
+.limit-controls input {
+  max-width: 100px;
   min-width: 0;
-  border: 0;
-  padding: 0;
-  margin: 0;
 }
-.query-options legend,
-.policy-heading strong {
-  font-size: 13px;
-  font-weight: 650;
-  padding: 0;
+.limit-controls button {
+  flex: none;
 }
-.scope-picker {
+.query-options .scope-picker {
   display: inline-flex;
+  justify-self: start;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  gap: 0;
   border: 1px solid var(--line);
   border-radius: 7px;
   overflow: hidden;
   background: var(--paper);
-  margin-top: 6px;
 }
 .scope-picker label {
   position: relative;
@@ -201,51 +261,9 @@ onBeforeUnmount(() => {
   opacity: 0.65;
   cursor: not-allowed;
 }
-.raw-policy {
-  border-inline-start: 1px solid var(--line);
-  padding-inline-start: 18px;
-}
-.policy-heading {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-.raw-switch {
-  width: 32px;
-  height: 19px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 2px;
-  background: var(--line);
-  cursor: pointer;
-}
-.raw-switch:disabled {
-  opacity: 0.65;
-  cursor: not-allowed;
-}
-.raw-switch[aria-checked='true'] {
-  background: var(--accent);
-}
-.raw-switch[aria-checked='true']::before {
-  transform: translateX(13px);
-}
-.raw-switch::before {
-  content: '';
-  display: block;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  background: var(--paper);
-}
-@container (max-width: 510px) {
-  .query-options {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .raw-policy {
-    border-inline-start: 0;
-    border-top: 1px solid var(--line);
-    padding: 12px 0 0;
+@container (max-width: 400px) {
+  .scope-picker span {
+    padding-inline: 6px;
   }
 }
 </style>

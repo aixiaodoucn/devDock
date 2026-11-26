@@ -57,13 +57,40 @@ fn loopback_protocol_and_guards() {
 }
 
 #[test]
+fn live_match_limit_controls_schema_validation_and_default() {
+    sqlpad_test_runtime().block_on(async {
+        let server = start_log_mcp(true, 0, |_, args| async move { Ok(args) }).await.unwrap().unwrap();
+        for cap in [7, 1200] {
+            server.set_match_limit(cap);
+            let list = request(&server, "", r#"{"jsonrpc":"2.0","method":"tools/list","id":1}"#).await.1;
+            let list: Value = serde_json::from_str(&list).unwrap();
+            for name in ["search_prod_logs", "scan_prod_logs"] {
+                let schema = &list["result"]["tools"].as_array().unwrap().iter().find(|v| v["name"] == name).unwrap()["inputSchema"]["properties"]["maxLines"];
+                assert_eq!(schema["maximum"], cap);
+                let mut args = json!({"moduleId":"1","targetId":"one","logId":"info","keyword":"sample"});
+                for limit in [None, Some(cap), Some(cap + 1)] {
+                    if let Some(n) = limit { args["maxLines"] = json!(n); }
+                    let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}});
+                    let reply: Value = serde_json::from_str(&request(&server,"",&body.to_string()).await.1).unwrap();
+                    if limit == Some(cap + 1) { assert_eq!(reply["error"]["code"], -32602); } else {
+                        let dispatched: Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+                        assert_eq!(dispatched["maxLines"], json!(limit.or_else(|| (name == "search_prod_logs").then_some(cap.min(20)))));
+                    }
+                }
+            }
+        }
+        server.shutdown().await;
+    });
+}
+
+#[test]
 fn catalog_matches_tools_list_and_documents_each_parameter() {
     let request = br#"{"jsonrpc":"2.0","method":"tools/list","id":1}"#;
     let response = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
         .block_on(async {
-            let reply = protocol::rpc(request, &|_, _| async {
+            let reply = protocol::rpc(request, 500, &|_, _| async {
                 panic!("目录不能执行工具")
             })
             .await;
@@ -71,7 +98,7 @@ fn catalog_matches_tools_list_and_documents_each_parameter() {
         });
     let rpc: Value = serde_json::from_slice(&response).unwrap();
     let tools = rpc["result"]["tools"].as_array().unwrap();
-    let catalog = serde_json::to_value(tool_catalog()).unwrap();
+    let catalog = serde_json::to_value(tool_catalog(500)).unwrap();
     let entries = catalog.as_array().unwrap();
     let expected = [
         ("resolve_log_target", "scm", "SCM"),
@@ -91,6 +118,32 @@ fn catalog_matches_tools_list_and_documents_each_parameter() {
             .unwrap()
             .contains(&format!("生产环境 · {label}")));
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        if name == "prod_db_query_readonly" {
+            let properties = &tool["inputSchema"]["properties"];
+            assert_eq!(properties["limit"]["minimum"], 1);
+            assert!(properties["limit"].get("maximum").is_none());
+            assert!(properties["limit"].get("default").is_none());
+            assert_eq!(tool["inputSchema"]["required"], json!(["table"]));
+            assert_eq!(
+                tool["inputSchema"]["anyOf"],
+                json!([
+                    {"required":["columns"]}, {"required":["groupBy"]}, {"required":["aggregates"]}
+                ])
+            );
+            assert_eq!(properties["columns"]["maxItems"], 10);
+            assert_eq!(properties["groupBy"]["uniqueItems"], true);
+            for name in ["groupBy", "aggregates"] {
+                assert_eq!(properties[name]["minItems"], 1);
+                assert_eq!(properties[name]["maxItems"], 10);
+            }
+            let aggregate = &properties["aggregates"]["items"];
+            assert_eq!(aggregate["required"], json!(["fn", "alias"]));
+            assert_eq!(
+                aggregate["properties"]["fn"]["enum"],
+                json!(["count", "sum", "avg", "min", "max"])
+            );
+            assert_eq!(aggregate["additionalProperties"], false);
+        }
         assert_eq!(entry["environment"], "production");
         assert!(!entry["title"].as_str().unwrap().is_empty());
         for key in ["name", "description", "inputSchema"] {
@@ -112,10 +165,14 @@ fn catalog_matches_tools_list_and_documents_each_parameter() {
 
 #[test]
 fn tool_argument_allowlist() {
-    let args = json!({"moduleId":"sample","targetId":"sample","logId":"sample","keyword":"sample","maxLines":50});
+    let args = json!({"moduleId":"sample","targetId":"sample","logId":"sample","keyword":"sample","maxLines":500});
     assert!(valid_args("search_prod_logs", &args));
+    assert!(valid_args("scan_prod_logs", &args));
+    let mut over_limit = args.clone();
+    over_limit["maxLines"] = json!(501);
+    assert!(!valid_args("scan_prod_logs", &over_limit));
     for (key, value) in [
-        ("maxLines", json!(51)),
+        ("maxLines", json!(501)),
         ("keyword", json!(null)),
         ("command", json!("sample")),
     ] {
@@ -172,7 +229,7 @@ where
     Fut: Future<Output = Result<Value, String>>,
 {
     let msg = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}});
-    let reply = protocol::rpc(&serde_json::to_vec(&msg).unwrap(), &dispatch).await;
+    let reply = protocol::rpc(&serde_json::to_vec(&msg).unwrap(), 500, &dispatch).await;
     serde_json::from_slice(&reply.into_body().collect().await.unwrap().to_bytes()).unwrap()
 }
 
@@ -181,7 +238,12 @@ fn sqlpad_calls_use_approved_shapes_and_a_separate_timeout() {
     sqlpad_test_runtime().block_on(async {
     for (name, args) in [
         ("prod_db_describe_table", json!({"table":"orders"})),
-        ("prod_db_query_readonly", json!({"schema":"public", "table":"orders", "columns":["id"],"filter":{"column":"status","value":"待处理"},"limit":50})),
+        ("prod_db_query_readonly", json!({"table":"orders", "groupBy":["status"]})),
+        ("prod_db_query_readonly", json!({"table":"orders", "aggregates":[{"fn":"count","alias":"n"}]})),
+        ("prod_db_query_readonly", json!({"table":"orders", "groupBy":["region","status"], "columns":["status","region"], "aggregates":[{"fn":"sum","column":"amount","alias":"total"}]})),
+        ("prod_db_query_readonly", json!({"table":"orders", "groupBy":(0..9).map(|n| format!("field_{n}")).collect::<Vec<_>>(), "aggregates":[{"fn":"count","column":"id","alias":"n"}]})),
+        ("prod_db_query_readonly", json!({"table":"orders", "columns":(0..10).map(|n| format!("field_{n}")).collect::<Vec<_>>() })),
+        ("prod_db_query_readonly", json!({"schema":"public", "table":"orders", "columns":["id"],"filter":{"column":"status","value":"待处理"},"limit":501})),
     ] {
         let reply = db_call(name, args.clone(), |tool, args| async move {
             Ok(json!({"tool":tool,"args":args}))
@@ -199,6 +261,28 @@ fn sqlpad_calls_use_approved_shapes_and_a_separate_timeout() {
 }
 
 #[test]
+fn sqlpad_describe_transports_wide_schemas_within_response_capacity() {
+    sqlpad_test_runtime().block_on(async {
+        let rows: Vec<_> = (0..75)
+            .map(|n| json!([format!("field_{n}"), "int"]))
+            .collect();
+        let args = json!({"table":"orders"});
+        let reply = db_call("prod_db_describe_table", args.clone(), |_, _| async {
+            Ok(json!({"rows":rows}))
+        })
+        .await;
+        let payload: Value =
+            serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["rows"], json!(rows));
+        let reply = db_call("prod_db_describe_table", args, |_, _| async {
+            Ok(json!({"rows":[["x".repeat(RESPONSE_LIMIT), "int"]]}))
+        })
+        .await;
+        assert_eq!(reply["error"]["code"], -32603);
+    });
+}
+
+#[test]
 fn sqlpad_rejects_invalid_parameters_before_dispatch() {
     sqlpad_test_runtime().block_on(async {
         for (key, value) in [
@@ -208,9 +292,10 @@ fn sqlpad_rejects_invalid_parameters_before_dispatch() {
             ("schema", Value::Null),
             ("columns", json!([])),
             ("columns", json!(["*"])),
-            ("columns", json!(vec!["id"; 11])),
+            ("columns", json!(["id", "ID"])),
             ("limit", json!(0)),
-            ("limit", json!(51)),
+            ("limit", json!(-1)),
+            ("limit", json!(1.5)),
             ("limit", json!("1")),
             ("filter", json!({"column":"id","value":"1","operator":"="})),
             ("filter", json!({"column":"id","value":1})),
@@ -224,6 +309,26 @@ fn sqlpad_rejects_invalid_parameters_before_dispatch() {
             })
             .await;
             assert_eq!(reply["error"]["code"], -32602, "{key}");
+        }
+        for mut args in [
+            json!({"groupBy":[]}),
+            json!({"groupBy":["status","STATUS"]}),
+            json!({"groupBy":["orders.status"]}),
+            json!({"groupBy":["status"], "columns":["id"]}),
+            json!({"aggregates":[]}),
+            json!({"aggregates":[{"fn":"sum","alias":"total"}]}),
+            json!({"aggregates":[{"fn":"count","alias":"n"}],"columns":["id"]}),
+            json!({"aggregates":[{"fn":"count","column":"*","alias":"n"}]}),
+            json!({"aggregates":[{"fn":"median","column":"amount","alias":"m"}]}),
+            json!({"aggregates":[{"fn":"count"}]}),
+            json!({"aggregates":[{"fn":"count","alias":"order count"}]}),
+            json!({"groupBy":(0..10).map(|n| format!("field_{n}")).collect::<Vec<_>>(), "aggregates":[{"fn":"count","alias":"n"}]}),
+        ] {
+            args["table"] = json!("orders");
+            let reply = db_call("prod_db_query_readonly", args.clone(), |_, _| async {
+                panic!("无效分组或聚合不得进入审批")
+            }).await;
+            assert_eq!(reply["error"]["code"], -32602, "{args}");
         }
         assert!(!valid_args(
             "prod_db_query_readonly",
@@ -268,6 +373,7 @@ fn sqlpad_callback_errors_expose_only_fixed_categories() {
             "DB_NO_CONNECTION",
             "DB_UNKNOWN",
             "DB_RESPONSE_LIMIT",
+            "DB_INCOMPLETE",
             "DB_FORMAT",
             "AUTH_REQUIRED: 请重新登录生产 SQLPad",
             "DB_UNKNOWN: private detail",
@@ -336,7 +442,7 @@ fn dispatch_timeout_is_bounded() {
         .unwrap()
         .block_on(async {
             let began = tokio::time::Instant::now();
-            let reply = protocol::rpc(CALL.as_bytes(), &|_, _| std::future::pending()).await;
+            let reply = protocol::rpc(CALL.as_bytes(), 500, &|_, _| std::future::pending()).await;
             let body = reply.into_body().collect().await.unwrap().to_bytes();
             assert_eq!(
                 serde_json::from_slice::<Value>(&body).unwrap()["result"]["isError"],

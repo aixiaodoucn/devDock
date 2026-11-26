@@ -163,17 +163,7 @@ async fn dispatch(app: AppHandle, tool: &str, args: Value) -> Result<Value> {
         if !prepared.auto_approve {
             crate::db_approval::approve(&app, &prepared.connection, &prepared.preview).await?;
         }
-        // 先落盘实际 SQL，调用中断时保留状态未知的记录，不自动重试。
-        let history = app.state::<crate::sqlpad::history::History>();
-        let dir = crate::sqlpad::history::directory(&app).map_err(|_| "DB_HISTORY_START")?;
-        let id = history
-            .start(&dir, tool, &prepared.connection, &prepared.preview)
-            .map_err(|_| "DB_HISTORY_START")?;
-        let result = db.execute(prepared).await;
-        history
-            .finish(&dir, &id, &result)
-            .map_err(|_| "DB_HISTORY_FINISH")?;
-        return result;
+        return crate::sqlpad::history::execute_recorded(&app, tool, prepared, None).await;
     }
     let cfg = tasks::load(&app).map_err(|_| "无法读取工作台映射".to_owned())?;
     let repos = cfg
@@ -284,9 +274,40 @@ fn scan_targets(all_allowed: bool, args: &Value) -> Result<scm::prodlog::ScanTar
 }
 
 #[tauri::command]
-pub(crate) fn mcp_tool_catalog(window: WebviewWindow) -> Result<Vec<log_mcp::CatalogEntry>> {
+pub(crate) fn mcp_tool_catalog(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<Vec<log_mcp::CatalogEntry>> {
     ensure_backend_window(&window)?;
-    Ok(log_mcp::tool_catalog())
+    Ok(log_mcp::tool_catalog(
+        Preferences::load(&tasks::data_dir(&app)?)?.match_limit,
+    ))
+}
+
+#[tauri::command]
+pub fn log_mcp_match_limit(app: AppHandle, window: WebviewWindow) -> Result<usize> {
+    ensure_backend_window(&window)?;
+    Ok(Preferences::load(&tasks::data_dir(&app)?)?.match_limit)
+}
+
+#[tauri::command]
+pub async fn log_mcp_set_match_limit(
+    app: AppHandle,
+    window: WebviewWindow,
+    limit: usize,
+) -> Result<usize> {
+    ensure_backend_window(&window)?;
+    let runtime = app.state::<Runtime>();
+    let access = runtime.0.lock().await;
+    let dir = tasks::data_dir(&app)?;
+    let mut prefs = Preferences::load(&dir)?;
+    prefs.match_limit = limit;
+    prefs.save(&dir)?;
+    // 持久化成功后才更新运行中的服务；已开始的查询沿用请求开始时的上限。
+    if let Some(server) = &access.server {
+        server.set_match_limit(limit);
+    }
+    Ok(limit)
 }
 
 #[tauri::command]
@@ -394,6 +415,7 @@ pub async fn log_mcp_enable(app: AppHandle, window: WebviewWindow) -> Result<Sta
         .ok()
         .flatten()
         .ok_or_else(|| "无法启动本机日志 MCP 服务".to_owned())?;
+        server.set_match_limit(prefs.match_limit);
         guard.publish(server, &SystemStore)?;
         guard.scan_all = prefs.scan_all;
         guard.set_raw(subject.is_some() && prefs.raw_subject == subject)?;

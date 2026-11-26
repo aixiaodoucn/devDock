@@ -40,6 +40,10 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     repositories[0].testBranch = 'changed';
     expect(payload.repositories[0].testBranch).toBe('testing');
   });
+  it('SQLPad 重新执行只向桌面端传递原记录 ID', async () => {
+    await api.sqlpadRerunExecution('record-id');
+    expect(invoke).toHaveBeenCalledWith('sqlpad_rerun_execution', { id: 'record-id' });
+  });
   it('日志 MCP 状态、启停和令牌使用独立桌面命令', async () => {
     for (const [request, command] of [
       [api.mcpToolCatalog, 'mcp_tool_catalog'],
@@ -52,6 +56,13 @@ describe('后端 Git 与 SCM 桌面接口', () => {
       await request();
       expect(invoke).toHaveBeenLastCalledWith(command, undefined);
     }
+  });
+  it('匹配行数上限通过桌面命令读取并保存', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(500).mockResolvedValueOnce(42);
+    await expect(api.logMcpMatchLimit()).resolves.toBe(500);
+    expect(invoke).toHaveBeenLastCalledWith('log_mcp_match_limit', undefined);
+    await expect(api.logMcpSetMatchLimit(42)).resolves.toBe(42);
+    expect(invoke).toHaveBeenLastCalledWith('log_mcp_set_match_limit', { limit: 42 });
   });
   it('原文授权按布尔参数写入并返回后端确认值', async () => {
     for (const enabled of [true, false]) {

@@ -7,6 +7,8 @@ import SqlpadConnection from './SqlpadConnection.vue';
 vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => true, invoke: vi.fn() }));
 const offline = {
   connected: false,
+  remembered: false,
+  warning: null,
   baseUrl: 'https://fixture.invalid',
   connections: [],
   selectedId: null,
@@ -69,6 +71,7 @@ it('只向独立登录命令发送一次凭据，失败时清空表单并隐藏�
     baseUrl: offline.baseUrl,
     email,
     password,
+    remember: false,
   });
   expect(root.textContent).toContain('登录失败');
   expect(root.textContent).not.toContain(password);
@@ -112,6 +115,36 @@ it('切换候选连接需要重新确认数据库权限，保存后采用后端�
   expect(root.textContent).not.toContain('连接 two');
   expect(root.textContent).toContain('会话已失效');
   expect(root.textContent).toContain('主窗口逐次确认');
+});
+
+it.each([
+  { remembered: true, warning: null, label: '已记住登录' },
+  { remembered: false, warning: '无法记住登录，会话仅保存在内存中。', label: '仅本次会话' },
+])('勾选记住登录后展示实际保存状态 $label', async ({ remembered, warning, label }) => {
+  vi.mocked(invoke)
+    .mockResolvedValueOnce(offline)
+    .mockResolvedValueOnce({ ...online, remembered, warning });
+  await mount();
+  const checkbox = root.querySelector<HTMLInputElement>('form input[type=checkbox]')!;
+  expect(checkbox.checked).toBe(false);
+  checkbox.click();
+  fill('email', 'fixture@example.invalid');
+  fill('password', 'test-only');
+  submit();
+  await settle();
+  expect(invoke).toHaveBeenLastCalledWith('sqlpad_login', {
+    baseUrl: offline.baseUrl,
+    email: 'fixture@example.invalid',
+    password: 'test-only',
+    remember: true,
+  });
+  expect(root.querySelector('.connection-summary')?.textContent).toContain(label);
+  if (warning) expect(root.textContent).toContain(warning);
+  vi.mocked(invoke).mockResolvedValueOnce(offline);
+  root.querySelector<HTMLButtonElement>('.actions button:last-child')!.click();
+  await settle();
+  expect(root.querySelector<HTMLInputElement>('form input[type=checkbox]')?.checked).toBe(false);
+  if (warning) expect(root.textContent).not.toContain(warning);
 });
 
 it('免审批默认关闭，仅主动操作时向后端授权当前连接', async () => {
