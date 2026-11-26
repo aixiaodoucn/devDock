@@ -1,4 +1,5 @@
-//! SQLPad 3.x 独立会话，数据库工具只在主窗口逐次授权后执行。
+//! SQLPad 3.x 独立会话，默认逐次审批，可由主窗口为当前只读连接临时授权。
+pub(crate) mod history;
 mod query;
 use crate::{config::Result, ensure_backend_window};
 pub(crate) use query::valid_query_args;
@@ -13,7 +14,7 @@ const AUTH_REQUIRED: &str = "AUTH_REQUIRED: 请重新登录生产 SQLPad";
 const INVALID_RESPONSE: &str = "SQLPad 响应格式不兼容";
 const BODY_LIMIT: usize = 512 * 1024;
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
 pub(crate) struct Connection {
     #[serde(rename(deserialize = "_id"))]
     id: String,
@@ -28,6 +29,7 @@ pub(crate) struct Status {
     base_url: String,
     connections: Vec<Connection>,
     selected_id: Option<String>,
+    auto_approve: bool,
 }
 
 struct Session {
@@ -101,6 +103,24 @@ async fn json_response(mut response: Response) -> Result<Value> {
 }
 
 impl Session {
+    fn select(&mut self, id: Option<String>) {
+        self.generation = uuid::Uuid::new_v4();
+        self.status.selected_id = id;
+        self.status.auto_approve = false;
+    }
+
+    fn set_auto_approve(&mut self, id: &str, enabled: bool) -> Result<()> {
+        if self.status.selected_id.as_deref() != Some(id) {
+            return Err("请选择当前账号可见的连接".into());
+        }
+        // 切换授权即作废已准备但尚未发送的请求，防止旧授权被重新使用。
+        if self.status.auto_approve != enabled {
+            self.generation = uuid::Uuid::new_v4();
+            self.status.auto_approve = enabled;
+        }
+        Ok(())
+    }
+
     async fn refresh(&mut self) -> Result<()> {
         let response = self
             .client
@@ -124,7 +144,13 @@ impl Session {
         {
             return Err(INVALID_RESPONSE.into());
         }
-        self.status.selected_id = self.status.selected_id.take().filter(|id| ids.contains(id));
+        if let Some(id) = &self.status.selected_id {
+            let old = self.status.connections.iter().find(|item| &item.id == id);
+            let current = connections.iter().find(|item| &item.id == id);
+            if current.is_none() || old != current {
+                self.select(None);
+            }
+        }
         self.status.connections = connections;
         Ok(())
     }
@@ -222,8 +248,21 @@ pub(crate) async fn sqlpad_select_connection(
     {
         return Err("请选择当前账号可见的连接".into());
     }
-    session.generation = uuid::Uuid::new_v4();
-    session.status.selected_id = Some(connection_id);
+    session.select(Some(connection_id));
+    Ok(session.status.clone())
+}
+
+#[tauri::command]
+pub(crate) async fn sqlpad_set_auto_approve(
+    window: WebviewWindow,
+    runtime: State<'_, Runtime>,
+    connection_id: String,
+    enabled: bool,
+) -> Result<Status> {
+    ensure_backend_window(&window)?;
+    let mut slot = runtime.0.lock().await;
+    let session = slot.as_mut().ok_or(AUTH_REQUIRED)?;
+    session.set_auto_approve(&connection_id, enabled)?;
     Ok(session.status.clone())
 }
 

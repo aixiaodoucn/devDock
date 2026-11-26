@@ -7,6 +7,7 @@ const STALE: &str = "DB_STALE";
 pub(crate) struct Prepared {
     pub(crate) connection: String,
     pub(crate) preview: String,
+    pub(crate) auto_approve: bool,
     generation: uuid::Uuid,
     connection_id: String,
     driver: String,
@@ -214,6 +215,7 @@ impl Runtime {
                 connection.name
             ),
             preview,
+            auto_approve: s.status.auto_approve,
             generation: s.generation,
             connection_id: connection.id.clone(),
             driver: connection.driver.clone(),
@@ -308,7 +310,22 @@ mod tests {
             let args = json!({"table":"demo","columns":["label"]});
             let tool = "prod_db_query_readonly";
             let stale = db.prepare(tool, &args).await.unwrap();
-            db.0.lock().await.as_mut().unwrap().generation = uuid::Uuid::new_v4();
+            assert!(!stale.auto_approve);
+            {
+                let mut slot = db.0.lock().await;
+                let session = slot.as_mut().unwrap();
+                assert!(session.set_auto_approve("different", true).is_err());
+                session.set_auto_approve("fixture", true).unwrap();
+            }
+            let granted = db.prepare(tool, &args).await.unwrap();
+            assert!(granted.auto_approve);
+            db.0.lock()
+                .await
+                .as_mut()
+                .unwrap()
+                .select(Some("fixture".into()));
+            assert!(!db.prepare(tool, &args).await.unwrap().auto_approve);
+            assert_eq!(db.execute(granted).await.unwrap_err(), STALE);
             assert_eq!(db.execute(stale).await.unwrap_err(), STALE);
             let result = db
                 .execute(db.prepare(tool, &args).await.unwrap())

@@ -25,6 +25,7 @@ use tokio::{
 
 #[path = "log_mcp/protocol.rs"]
 mod protocol;
+pub(crate) use protocol::sqlpad_error;
 pub(crate) use protocol::{tool_catalog, CatalogEntry};
 #[cfg(test)]
 #[path = "log_mcp/tests.rs"]

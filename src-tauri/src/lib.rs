@@ -976,6 +976,7 @@ pub fn run() {
         .manage(scm::LogRuntime::default())
         .manage(db_approval::Runtime::default())
         .manage(sqlpad::Runtime::default())
+        .manage(sqlpad::history::History::default())
         .manage(log_access::Runtime::default())
         .manage(tasks::Runtime::default())
         .manage(StartupLogs::default())
@@ -1043,9 +1044,11 @@ pub fn run() {
             log_access::log_mcp_token,
             db_approval::sqlpad_pending_approval,
             db_approval::sqlpad_decide_approval,
+            sqlpad::history::sqlpad_execution_history,
             sqlpad::sqlpad_status,
             sqlpad::sqlpad_login,
             sqlpad::sqlpad_select_connection,
+            sqlpad::sqlpad_set_auto_approve,
             sqlpad::sqlpad_logout,
             log_scm_status,
             log_scm_login,

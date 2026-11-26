@@ -13,6 +13,7 @@ vi.mock('../api', () => ({
     scmStatus: vi.fn(),
     scmLogin: vi.fn(),
     scmLogout: vi.fn(),
+    sqlpadExecutionHistory: vi.fn(),
     sqlpadStatus: vi
       .fn()
       .mockResolvedValue({ connected: false, baseUrl: '', connections: [], selectedId: null }),
@@ -100,9 +101,9 @@ function version(manager: 'nvm' | 'fnm', dir: string): NodeVersion {
     ...(manager === 'fnm' ? { fnmDir: dir } : {}),
   };
 }
+beforeEach(() => vi.clearAllMocks());
 describe('SettingsPage 公共 Node.js 环境', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
     vi.mocked(api.nodeVersions).mockResolvedValue([]);
     vi.mocked(api.choosePath).mockResolvedValue(null);
   });
@@ -431,6 +432,57 @@ describe('SettingsPage 公共 Node.js 环境', () => {
   });
 });
 
+it('打开执行记录才加载 SQL 和结果，刷新可区分失败与空记录', async () => {
+  const base = {
+    id: 'one',
+    startedAt: 1700000000000,
+    tool: 'prod_db_query_readonly',
+    connection: '只读连接',
+    sql: 'SELECT label FROM demo',
+  };
+  vi.mocked(api.sqlpadExecutionHistory)
+    .mockResolvedValueOnce([
+      {
+        ...base,
+        result: { columns: ['label'], rows: [{ label: '<script>sample</script>' }] },
+        error: null,
+      },
+      { ...base, id: 'two', result: null, error: '查询超时' },
+    ])
+    .mockRejectedValueOnce(new Error('private endpoint'))
+    .mockResolvedValueOnce([]);
+  const panel = mount();
+  try {
+    [...panel.root.querySelectorAll('nav button')]
+      .find((button) => button.textContent?.trim() === 'MCP 服务')!
+      .dispatchEvent(new Event('click'));
+    await flush();
+    expect(api.sqlpadExecutionHistory).not.toHaveBeenCalled();
+    panel.root.querySelector<HTMLButtonElement>('#mcp-history-tab')!.click();
+    await flush();
+    const history = panel.root.querySelector<HTMLElement>('#mcp-history-panel')!;
+    for (const text of [
+      base.tool,
+      base.connection,
+      base.sql,
+      '<script>sample</script>',
+      '查询超时',
+    ])
+      expect(history.textContent).toContain(text);
+    expect(history.querySelector('script')).toBeNull();
+    history.querySelector('button')!.click();
+    await flush();
+    expect(history.querySelector('[role=alert]')?.textContent).toContain('读取执行记录失败');
+    expect(history.textContent).not.toContain('private endpoint');
+    history.querySelector('button')!.click();
+    await flush();
+    expect(history.textContent).toContain('暂无执行记录');
+    expect(history.textContent).not.toContain(base.sql);
+  } finally {
+    panel.dispose();
+  }
+});
+
 it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令牌并刷新 MCP', async () => {
   const disconnected = {
     connected: false,
@@ -467,7 +519,11 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
     menu[3].click();
     await flush();
     const tabs = [...panel.root.querySelectorAll('[role="tab"]')];
-    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['连接与权限', '工具目录']);
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual([
+      '连接与权限',
+      '工具目录',
+      '执行记录',
+    ]);
     expect(tabs[0].getAttribute('aria-selected')).toBe('true');
     expect(api.mcpToolCatalog).not.toHaveBeenCalled();
     expect(api.logMcpToken).not.toHaveBeenCalled();

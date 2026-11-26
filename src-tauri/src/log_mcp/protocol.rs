@@ -38,7 +38,7 @@ pub(crate) fn tool_catalog() -> Vec<CatalogEntry> {
             title,
             description: if is_sqlpad(name) {
                 format!(
-                    "生产环境 · SQLPad。使用桌面端选择的连接，每次调用均需桌面审批。{description}"
+                    "生产环境 · SQLPad。使用桌面端选择的连接，默认逐次桌面审批；桌面用户可为当前连接开启免审批。{description}"
                 )
             } else {
                 format!(
@@ -295,7 +295,7 @@ where
     }
 }
 
-fn sqlpad_error(message: &str) -> &'static str {
+pub(crate) fn sqlpad_error(message: &str) -> &'static str {
     match message {
         "AUTH_REQUIRED: 请重新登录生产 SQLPad" => {
             "AUTH_REQUIRED：请在桌面端重新登录生产 SQLPad"
@@ -308,6 +308,8 @@ fn sqlpad_error(message: &str) -> &'static str {
         | "SQLPad 审批尚未初始化"
         | "DevDock 主窗口不存在"
         | "无法通知 SQLPad 审批窗口" => "桌面审批不可用，未执行查询",
+        "DB_HISTORY_START" => "无法保存本机执行记录，未执行查询",
+        "DB_HISTORY_FINISH" => "无法保存本机执行结果，请勿自动重试",
         "DB_INVALID" => "DB_INVALID：参数不符合只读查询规则",
         "DB_DRIVER" => "DB_DRIVER：当前连接的驱动不受支持",
         "DB_STALE" => "DB_STALE：会话或连接已变更，请重新确认连接",

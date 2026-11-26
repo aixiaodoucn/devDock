@@ -126,6 +126,15 @@ export interface McpCatalogTool {
   };
 }
 
+export interface SqlpadExecutionRecord {
+  id: string;
+  startedAt: number;
+  tool: string;
+  connection: string;
+  sql: string;
+  result: unknown;
+  error: string | null;
+}
 export interface SqlpadPendingApproval {
   requestId: string;
   connection: string;
@@ -138,6 +147,7 @@ export interface SqlpadStatus {
   baseUrl: string;
   connections: { id: string; name: string; driver: string }[];
   selectedId: string | null;
+  autoApprove: boolean;
 }
 
 export interface LogMcpStatus {

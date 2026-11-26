@@ -114,6 +114,25 @@ it('切换候选连接需要重新确认数据库权限，保存后采用后端�
   expect(root.textContent).toContain('主窗口逐次确认');
 });
 
+it('免审批默认关闭，仅主动操作时向后端授权当前连接', async () => {
+  const selected = { ...online, selectedId: 'one', autoApprove: false };
+  vi.mocked(invoke).mockResolvedValueOnce(selected);
+  await mount();
+  const toggle = root.querySelector<HTMLInputElement>('[aria-label="当前连接免审批"]')!;
+  expect(toggle.checked).toBe(false);
+  expect(invoke).toHaveBeenCalledTimes(1);
+  for (const enabled of [true, false]) {
+    vi.mocked(invoke).mockResolvedValueOnce({ ...selected, autoApprove: enabled });
+    toggle.click();
+    await settle();
+    expect(invoke).toHaveBeenLastCalledWith('sqlpad_set_auto_approve', {
+      connectionId: 'one',
+      enabled,
+    });
+    expect(toggle.checked).toBe(enabled);
+  }
+});
+
 it('使用本次凭据独立登录，刷新发现会话失效后移除连接信息', async () => {
   vi.mocked(invoke)
     .mockResolvedValueOnce(offline)

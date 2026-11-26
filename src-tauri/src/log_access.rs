@@ -160,8 +160,20 @@ async fn dispatch(app: AppHandle, tool: &str, args: Value) -> Result<Value> {
     if matches!(tool, "prod_db_describe_table" | "prod_db_query_readonly") {
         let db = app.state::<crate::sqlpad::Runtime>();
         let prepared = db.prepare(tool, &args).await?;
-        crate::db_approval::approve(&app, &prepared.connection, &prepared.preview).await?;
-        return db.execute(prepared).await;
+        if !prepared.auto_approve {
+            crate::db_approval::approve(&app, &prepared.connection, &prepared.preview).await?;
+        }
+        // 先落盘实际 SQL，调用中断时保留状态未知的记录，不自动重试。
+        let history = app.state::<crate::sqlpad::history::History>();
+        let dir = crate::sqlpad::history::directory(&app).map_err(|_| "DB_HISTORY_START")?;
+        let id = history
+            .start(&dir, tool, &prepared.connection, &prepared.preview)
+            .map_err(|_| "DB_HISTORY_START")?;
+        let result = db.execute(prepared).await;
+        history
+            .finish(&dir, &id, &result)
+            .map_err(|_| "DB_HISTORY_FINISH")?;
+        return result;
     }
     let cfg = tasks::load(&app).map_err(|_| "无法读取工作台映射".to_owned())?;
     let repos = cfg

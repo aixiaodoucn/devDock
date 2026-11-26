@@ -18,6 +18,7 @@ import ScmLogOptions from './ScmLogOptions.vue';
 import ScmConnection from './ScmConnection.vue';
 import LogMcpConnection from './LogMcpConnection.vue';
 import SqlpadConnection from './SqlpadConnection.vue';
+import SqlpadExecutionHistory from './SqlpadExecutionHistory.vue';
 import McpToolCatalog from './McpToolCatalog.vue';
 import PathInput from './PathInput.vue';
 import AiToolsEditor from './AiToolsEditor.vue';
@@ -54,19 +55,17 @@ function updateLogService(enabled: boolean) {
 const MCP_TABS = [
   { id: 'connections', label: '连接与权限' },
   { id: 'catalog', label: '工具目录' },
+  { id: 'history', label: '执行记录' },
 ] as const;
 const mcpTab = ref<(typeof MCP_TABS)[number]['id']>(MCP_TABS[0].id);
 function navigateMcpTabs(event: KeyboardEvent) {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault();
+  const current = MCP_TABS.findIndex((tab) => tab.id === mcpTab.value);
+  const adjacent =
+    (current + (event.key === 'ArrowLeft' ? -1 : 1) + MCP_TABS.length) % MCP_TABS.length;
   mcpTab.value =
-    event.key === 'Home'
-      ? MCP_TABS[0].id
-      : event.key === 'End'
-        ? MCP_TABS[MCP_TABS.length - 1].id
-        : mcpTab.value === 'catalog'
-          ? 'connections'
-          : 'catalog';
+    MCP_TABS[event.key === 'Home' ? 0 : event.key === 'End' ? MCP_TABS.length - 1 : adjacent].id;
   (event.currentTarget as HTMLElement)
     .querySelector<HTMLButtonElement>(`#mcp-${mcpTab.value}-tab`)
     ?.focus();
@@ -513,6 +512,14 @@ watch(
                 {{ tab.label }}
               </button>
             </div>
+            <section
+              role="tabpanel"
+              id="mcp-history-panel"
+              aria-labelledby="mcp-history-tab"
+              :hidden="mcpTab !== 'history'"
+            >
+              <SqlpadExecutionHistory v-if="mcpTab === 'history'" />
+            </section>
             <section
               role="tabpanel"
               id="mcp-catalog-panel"

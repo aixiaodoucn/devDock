@@ -73,6 +73,15 @@ function selectConnection() {
     '未能确认所选连接，会话可能已失效。请刷新状态。',
   );
 }
+function toggleApproval(event: Event) {
+  const connection = selected.value;
+  if (!connection || connection.id !== candidate.value) return;
+  const enabled = (event.target as HTMLInputElement).checked;
+  void update(
+    () => api.sqlpadSetAutoApprove(connection.id, enabled),
+    '未能更新免审批设置，请刷新状态。',
+  );
+}
 onMounted(refresh);
 </script>
 
@@ -88,7 +97,7 @@ onMounted(refresh);
     />
     <p class="hint">
       仅支持 MySQL / PostgreSQL
-      只读连接。表结构与数据查询均须在主窗口逐次确认，结果将返回给发起请求的 AI 客户端。
+      只读连接。表结构与数据查询默认在主窗口逐次确认，结果将返回给发起请求的 AI 客户端。
     </p>
     <p v-if="message" role="alert" class="error">{{ message }}</p>
     <p v-if="!status" role="status">{{ busy ? '正在确认 SQLPad 状态…' : 'SQLPad 状态未知' }}</p>
@@ -120,6 +129,16 @@ onMounted(refresh);
           choice.name
         }}」在数据库端仅有只读权限。</label
       >
+      <label v-if="selected && candidate === selected.id" class="confirm">
+        <input
+          type="checkbox"
+          aria-label="当前连接免审批"
+          :checked="status.autoApprove"
+          :disabled="busy"
+          @change="toggleApproval"
+        />
+        允许 MCP 查询「{{ selected.name }}」时免审批。仅本次连接有效，切换连接或退出登录后关闭。
+      </label>
       <div class="actions">
         <button
           v-if="status.connections.length"

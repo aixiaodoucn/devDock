@@ -22,6 +22,7 @@ import type {
   BackendGitOperation,
   PomBlockChoice,
   LogMcpStatus,
+  SqlpadExecutionRecord,
   SqlpadPendingApproval,
   SqlpadStatus,
   McpCatalogTool,
@@ -130,6 +131,9 @@ export const api = {
   mcpToolCatalog() {
     return native<McpCatalogTool[]>('mcp_tool_catalog');
   },
+  sqlpadExecutionHistory() {
+    return native<SqlpadExecutionRecord[]>('sqlpad_execution_history');
+  },
   sqlpadPendingApproval() {
     return native<SqlpadPendingApproval | null>('sqlpad_pending_approval');
   },
@@ -141,6 +145,9 @@ export const api = {
   },
   sqlpadLogin(baseUrl: string, email: string, password: string) {
     return native<SqlpadStatus>('sqlpad_login', { baseUrl, email, password });
+  },
+  sqlpadSetAutoApprove(connectionId: string, enabled: boolean) {
+    return native<SqlpadStatus>('sqlpad_set_auto_approve', { connectionId, enabled });
   },
   sqlpadSelectConnection(connectionId: string) {
     return native<SqlpadStatus>('sqlpad_select_connection', { connectionId });
