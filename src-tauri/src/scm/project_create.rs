@@ -19,7 +19,7 @@ pub struct CreateOptions {
     default_user: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateInput {
     name: String,
@@ -292,18 +292,6 @@ impl Runtime {
     pub(crate) async fn ensure_binding(&self, binding: &SessionBinding) -> Result<()> {
         let state = self.state.lock().await;
         binding.check(state.session.as_ref().ok_or(SESSION_EXPIRED)?)
-    }
-
-    pub(crate) async fn approved_create(
-        &self,
-        binding: &SessionBinding,
-        input: CreateInput,
-    ) -> Result<String> {
-        self.project_form_session(async |session| {
-            binding.check(session)?;
-            session.create_project(&input, None).await
-        })
-        .await
     }
 
     pub(super) async fn project_form_session<T>(

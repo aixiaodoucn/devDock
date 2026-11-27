@@ -123,6 +123,27 @@ fn catalog_matches_tools_list_and_documents_each_parameter() {
         assert_eq!(entry["source"], source);
         assert!(tool["description"].as_str().unwrap().contains(label));
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        if matches!(
+            name,
+            "scm_create_project" | "scm_update_project" | "scm_remove_project_module"
+        ) {
+            assert!(tool["description"]
+                .as_str()
+                .unwrap()
+                .contains("客户端授权后直接"));
+        }
+        if name == "scm_update_project" {
+            let schema = &tool["inputSchema"];
+            assert_eq!(schema["required"], json!(["projectId", "revision"]));
+            assert_eq!(schema["anyOf"].as_array().unwrap().len(), 3);
+            let fields = &schema["properties"];
+            assert!(fields.get("input").is_none());
+            for key in ["addModuleIds", "removeModuleIds"] {
+                assert_eq!(fields[key]["uniqueItems"], true);
+                assert_eq!(fields[key]["items"]["pattern"], "^[0-9]{1,20}$");
+            }
+            assert!(fields["changes"]["properties"].get("modules").is_none());
+        }
         if name == "prod_db_query_readonly" {
             let properties = &tool["inputSchema"]["properties"];
             assert_eq!(properties["limit"]["minimum"], 1);
@@ -560,7 +581,7 @@ fn project_tools_route_to_the_selected_channel_and_allow_time_for_approval() {
             ("scm_project_options",json!({}),"scm-project","project",25),
             ("scm_project_options",json!({"projectId":"1"}),"scm-project","project",25),
             ("scm_create_project",json!({"input":input}),"scm-project","project",150),
-            ("scm_update_project",json!({"projectId":"1","authors":["u"],"revision":"a".repeat(64),"input":input}),"scm-project","project",150),
+            ("scm_update_project",json!({"projectId":"1","changes":{"details":""},"revision":"a".repeat(64)}),"scm-project","project",150),
             ("scm_remove_project_module",json!({"projectId":"1","moduleId":"2","revision":"a".repeat(64)}),"scm-project","project",150),
             ("backend_git_prepare",json!({"projectName":"项目","operation":"merge","repositoryIds":["one"],"push":true,"keepTestPom":true}),"backend-git","local",150),
             ("backend_git_execute",json!({"projectName":"项目","planId":"p"}),"backend-git","local",150),
@@ -604,6 +625,62 @@ fn project_write_errors_only_report_known_outcomes() {
 }
 
 #[test]
+fn update_reports_partial_and_unknown_results_without_leaking_upstream_errors() {
+    let args = json!({"projectId":"1","addModuleIds":["7"],"removeModuleIds":["8","9"],"revision":"a".repeat(64)});
+    sqlpad_test_runtime().block_on(async {
+        for (error, label) in [
+            ("PartialUpdate: private", "部分变更已生效"),
+            ("PartialUpdate:1", "已关联模块 7；已解除模块 8"),
+            ("UnknownOutcome: private", "写入结果未知"),
+        ] {
+            let reply = db_call("scm_update_project", args.clone(), |_, _| async {
+                Err(error.into())
+            })
+            .await;
+            assert_eq!(reply["result"]["isError"], true);
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(
+                text.contains(label) && text.contains("勿自动重试") && !text.contains("private")
+            );
+        }
+    });
+}
+
+#[test]
+fn project_update_accepts_only_explicit_deltas() {
+    let valid = |delta: Value| {
+        let mut args = json!({"projectId":"1", "revision":"a".repeat(64)});
+        args.as_object_mut()
+            .unwrap()
+            .extend(delta.as_object().unwrap().clone());
+        valid_args("scm_update_project", &args)
+    };
+    for delta in [
+        json!({"changes":{"name":"新名","details":"","projectType":"1","branchSuffix":"","user":"a","authors":["a","b"]}}),
+        json!({"addModuleIds":["7"]}),
+        json!({"removeModuleIds":["8"]}),
+        json!({"changes":{"details":"说明"},"addModuleIds":["7"],"removeModuleIds":["8"]}),
+    ] {
+        assert!(valid(delta.clone()), "{delta}");
+    }
+    for delta in [
+        json!({}),
+        json!({"changes":{}}),
+        json!({"changes":{"name":null}}),
+        json!({"changes":{"user":"a","authors":["b"]}}),
+        json!({"changes":{"modules":["7"]}}),
+        json!({"addModuleIds":[]}),
+        json!({"removeModuleIds":["8","8"]}),
+        json!({"addModuleIds":["7"],"removeModuleIds":["7"]}),
+        json!({"addModuleIds":["bad"]}),
+        json!({"addModuleIds":["7"],"revision":"short"}),
+        json!({"input":{},"authors":["a"]}),
+    ] {
+        assert!(!valid(delta.clone()), "{delta}");
+    }
+}
+
+#[test]
 fn project_tools_reject_invalid_forms_and_git_scope() {
     let input = json!({"name":"项目","branchSuffix":"","projectType":"t","user":"u","details":"","modules":[]});
     for (key, value) in [
@@ -628,16 +705,6 @@ fn project_tools_reject_invalid_forms_and_git_scope() {
     for id in [json!(null), json!("../target"), json!("1".repeat(21))] {
         assert!(!valid_args("scm_project_options", &json!({"projectId":id})));
         assert!(!valid_args("scm_project_modules", &json!({"projectId":id})));
-    }
-    for (key, value) in [
-        ("revision", json!("short")),
-        ("authors", json!([])),
-        ("authors", json!(["other"])),
-    ] {
-        let mut args =
-            json!({"projectId":"1","authors":["u"],"revision":"a".repeat(64),"input":input});
-        args[key] = value;
-        assert!(!valid_args("scm_update_project", &args));
     }
     for args in [
         json!({"operation":"merge"}),

@@ -25,7 +25,7 @@ import type {
   SqlpadExecutionDetail,
   SqlpadExecutionSummary,
   SqlpadPendingApproval,
-  ScmPendingApproval,
+  BackendGitPendingApproval,
   SqlpadStatus,
   McpCatalogTool,
   McpClient,
@@ -157,10 +157,10 @@ export const api = {
   sqlpadRerunExecution(id: string) {
     return native<void>('sqlpad_rerun_execution', { id });
   },
-  listScmProjectApprovals() {
-    return native<ScmPendingApproval[]>('list_scm_project_approvals');
+  listBackendGitApprovals() {
+    return native<BackendGitPendingApproval[]>('list_scm_project_approvals');
   },
-  resolveScmProjectApproval(requestId: string, approved: boolean) {
+  resolveBackendGitApproval(requestId: string, approved: boolean) {
     return native<void>('resolve_scm_project_approval', { requestId, approved });
   },
   sqlpadPendingApproval() {

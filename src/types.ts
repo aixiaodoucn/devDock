@@ -140,9 +140,9 @@ export interface SqlpadExecutionDetail {
   result: unknown;
   error: string | null;
 }
-export interface ScmPendingApproval {
+export interface BackendGitPendingApproval {
   requestId: string;
-  tool: string;
+  tool: 'backend_git_prepare' | 'backend_git_execute';
   site: string;
   account: string;
   arguments: Record<string, unknown>;

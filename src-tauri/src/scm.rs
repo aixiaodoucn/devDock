@@ -189,7 +189,15 @@ fn new_session(page: LoginPage, base: Url, username: String) -> Result<Session> 
         .timeout(Duration::from_secs(25))
         .connect_timeout(Duration::from_secs(10))
         .redirect(Policy::custom(move |attempt| {
-            if allowed_redirect(&origin, attempt.url(), attempt.previous().len()) {
+            // 307/308 会原样重放 POST。项目修改和解除关联不能因跳转再次提交。
+            let replay = matches!(attempt.status().as_u16(), 307 | 308)
+                && attempt.previous().last().is_some_and(|url| {
+                    matches!(
+                        url.path(),
+                        "/kpi/project/modifySmt" | "/kpi/project/deleteMode"
+                    )
+                });
+            if !replay && allowed_redirect(&origin, attempt.url(), attempt.previous().len()) {
                 attempt.follow()
             } else {
                 attempt.error("SCM redirect rejected")

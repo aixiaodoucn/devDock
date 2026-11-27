@@ -1,4 +1,4 @@
-//! 项目 SCM 和工作台 Git 写操作逐次审批，只向主窗口发送待审批详情。
+//! 工作台 Git 预检和执行逐次审批，只向主窗口发送待审批详情。
 use crate::{config::Result, ensure_backend_window};
 use serde::Serialize;
 use std::{

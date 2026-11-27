@@ -1,4 +1,6 @@
 use super::*;
+#[path = "project_patch.rs"]
+mod project_patch;
 #[path = "project_remove.rs"]
 mod project_remove;
 use regex::Regex;
@@ -196,9 +198,13 @@ impl EditForm {
         {
             return Err("InvalidInput: 只能添加尚未关联且不重复的模块".into());
         }
-        let mut param = self.original;
+        Ok(self.modify_param(input, authors, input.branch_suffix.trim()))
+    }
+
+    fn modify_param(&self, input: &CreateInput, authors: &[String], branch: &str) -> Value {
+        let mut param = self.original.clone();
         param["name"] = json!(input.name);
-        param["name_en"] = json!(input.branch_suffix.trim());
+        param["name_en"] = json!(branch);
         param["description"] = json!(input.details);
         param["author"] = json!(authors);
         param["git_pids"] = if input.modules.is_empty() {
@@ -207,20 +213,17 @@ impl EditForm {
             json!(input.modules)
         };
         param["project_type"] = json!(input.project_type);
-        Ok(param)
+        param
     }
 }
 
 impl Session {
-    async fn edit_form(&self, id: &str) -> Result<EditForm> {
+    async fn edit_page(&self, id: &str) -> Result<(String, EditForm)> {
         if !numeric_id(id) {
             return Err("InvalidInput: 项目 ID 无效".into());
         }
-        let mut form = parse_edit(
-            &self.get("/kpi/project/modify", &[("id", id)]).await?,
-            id,
-            &self.username,
-        )?;
+        let html = self.get("/kpi/project/modify", &[("id", id)]).await?;
+        let mut form = parse_edit(&html, id, &self.username)?;
         // 编辑权限只由修改页决定。创建页的负责人控件补齐候选，不覆盖编辑专属选项。
         match self.create_form().await {
             Ok(create) => form.data.options.extend_users(create.options),
@@ -228,7 +231,10 @@ impl Session {
             Err(e) if e.starts_with("Parse:") || e == "Network: SCM 返回 HTTP 403" => (),
             Err(e) => return Err(e),
         }
-        Ok(form)
+        Ok((html, form))
+    }
+    async fn edit_form(&self, id: &str) -> Result<EditForm> {
+        Ok(self.edit_page(id).await?.1)
     }
     async fn update_project(
         &self,
@@ -253,22 +259,6 @@ impl Runtime {
     pub async fn edit_options(&self, id: String) -> Result<EditOptions> {
         self.project_form_session(async |s| Ok(s.edit_form(&id).await?.data))
             .await
-    }
-    pub(crate) async fn approved_update(
-        &self,
-        binding: &SessionBinding,
-        id: String,
-        input: CreateInput,
-        authors: Vec<String>,
-        revision: String,
-    ) -> Result<()> {
-        self.project_form_session(async |session| {
-            binding.check(session)?;
-            session
-                .update_project(&id, &input, &authors, &revision)
-                .await
-        })
-        .await
     }
     pub async fn update(
         &self,

@@ -15,15 +15,25 @@ Dev Dock 桌面端提供可选的本机 HTTP MCP 服务。它不调用模型、�
 | `scm_project_modules` | 按 `projectId` 只读查询模块名称、SCM Git ID 和实际分支，不返回仓库地址或负责人。 |
 | `scm_project_options` | 不传项目 ID 时读取创建表单选项；传 `projectId` 时读取可编辑字段、负责人、已关联模块及 `revision`。 |
 | `scm_create_project` | 使用选项中的实际值创建项目。 |
-| `scm_update_project` | 按 `projectId`、`revision` 更新字段与负责人；`input.modules` 仅包含待追加的模块。项目变化后先重新读取选项。 |
+| `scm_update_project` | 按 `projectId` 和最新 `revision` 增量修改：`changes` 改字段，`addModuleIds` 添加关联，`removeModuleIds` 解除关联。可组合，未指定的内容保持原样。 |
 | `scm_remove_project_module` | 使用 `projectId`、`moduleId`、`revision` 解除一个已有模块的关联，不删除 SCM 项目、本地目录或 Git 仓库。 |
 | `backend_git_prepare` | 按 DevDock 本机后端项目名准备批量 Git 操作。预检可能 fetch，因此先确认仓库范围。 |
 | `backend_git_execute` | 指定同一 `projectName` 和预检返回的 `planId`，在主窗口核对仓库、分支和是否推送后执行。 |
 | `backend_git_state` | 按 `projectName` 和 `planId` 查看任务进度。若因合并冲突暂停，到后端工作台处理。 |
 
+**修改 SCM 项目：** 先用 `scm_project_options` 读取目标项目的版本和候选 ID，再调用一次 `scm_update_project`。例如，把模块 `8` 换成 `7`，不改项目其他内容：
+
+```json
+{"projectId":"123","revision":"<读取到的 revision>","addModuleIds":["7"],"removeModuleIds":["8"]}
+```
+
+只增或只删时，省略另一组，不传空数组。只改字段时，例如 `"changes":{"name":"新名称","details":""}`，会重命名并清空说明。可修改 `name`、`details`、`branchSuffix`、`projectType`、`user` 和 `authors`；单独传 `user` 会将该账号设为主负责人，保留其他负责人；传 `authors` 表示完整负责人列表，首项为主负责人。模块变更不是整个关联清单，不可在两组里传同一 ID。
+
+替换不是事务：先添加，后解除，并回读核对。成功返回 `projectId`、`status: "updated"` 和最终 `revision`。版本冲突、部分成功或结果未知时，请重新读取项目状态，不要重复提交原请求。旧的 MCP 更新参数 `input` 和顶层 `authors` 不再接受，升级后请重连以刷新工具定义；桌面表单不受影响。在受信任的客户端中，可按需仅授权项目查询和 `scm_update_project`，无需为替换额外授权独立解除工具；更新权限覆盖该账号可修改的项目与字段，是否提示由客户端决定。
+
 例如：“把后端项目「订单服务」中 SCM 项目 `123` 涉及的仓库切换到开发分支，不推送。”客户端先以 `{"projectName":"订单服务","operation":"switch-dev","scmProjectId":"123"}` 请求预检，再用计划 ID 请求执行。**项目名指本机 DevDock 后端项目，SCM 项目 ID 指远端需求项目**，不是仓库路径或分支名。本机名称缺失或重名时不会猜测目标。其他批量操作包含切到测试或 master 分支、合并到测试分支、推送开发分支及拉取当前分支。
 
-项目写入、Git 预检和执行均由主窗口逐次确认，不继承 SQLPad 免审批设置。拒绝或审批过期不执行。若写入已发出但未收到明确结果，请先回 SCM 或查看批次状态核对，不要直接重试。
+创建项目、更新项目和解除模块关联会使用当前项目 SCM 登录会话直接执行。是否在调用前提示确认，由 Claude Code 等客户端的工具权限设置决定。Git 预检和执行仍需在 DevDock 主窗口逐次确认。若写入已发出但未收到明确结果，请先回 SCM 或查看批次状态核对，不要直接重试。
 
 ## 本机凭据与升级
 

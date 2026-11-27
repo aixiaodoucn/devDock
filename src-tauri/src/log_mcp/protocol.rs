@@ -180,16 +180,39 @@ pub(crate) fn tool_catalog(match_limit: usize) -> Vec<CatalogEntry> {
     );
     let text = |description: &str, min, max| json!({"type":"string","minLength":min,"maxLength":max,"description":description});
     let choices = |description: &str, min| json!({"type":"array","minItems":min,"maxItems":CHOICE_LIMIT,"uniqueItems":true,"items":text("候选项的值。",1,FIELD_LIMIT),"description":description});
-    let input = json!({"type":"object","description":"用户确认的完整项目表单。","required":INPUT_FIELDS,"additionalProperties":false,"properties":{
+    let input = json!({"type":"object","description":"完整项目表单。","required":INPUT_FIELDS,"additionalProperties":false,"properties":{
         "name":text("项目名称。",1,FIELD_LIMIT),"branchSuffix":{"type":"string","maxLength":FIELD_LIMIT,"pattern":"^[A-Za-z0-9_.]*$","description":"分支后缀，可留空。"},
         "projectType":text("项目类型候选值。",1,FIELD_LIMIT),"user":text("负责人账号。",1,FIELD_LIMIT),"details":text("项目说明，可留空。",0,DETAILS_LIMIT),"modules":choices("本次新增关联的模块候选值，可为空数组。",0)
     }});
-    let create = entry(CREATE, "创建 SCM 项目", "先读取创建候选项，向用户核对表单，桌面用户逐次确认后创建。结果未知时请先核对项目列表，勿自动重试。", &["input"], json!({"input":input}), "使用已核对的表单创建项目，提交前由我确认。");
-    let update = entry(UPDATE, "修改 SCM 项目", "先读取目标项目的编辑表单，向用户核对变更，桌面用户逐次确认后更新。版本冲突时重新读取并核对。结果未知时勿自动重试。", &["projectId","input","authors","revision"], json!({"projectId":id,"input":input,"authors":choices("更新后的完整负责人列表，须包含 input.user。",1),"revision":{"type":"string","pattern":"^[0-9a-f]{64}$","description":"从该项目编辑表单原样返回的版本。"}}), "更新指定项目的负责人和说明，提交前由我确认。");
-    let revision = update.tool.input_schema["properties"]["revision"].clone();
+    let create = entry(
+        CREATE,
+        "创建 SCM 项目",
+        "先读取创建候选项，客户端授权后直接创建项目。结果未知时请先核对项目列表，勿自动重试。",
+        &["input"],
+        json!({"input":input}),
+        "使用已核对的表单创建项目。",
+    );
+    let revision = json!({"type":"string","pattern":"^[0-9a-f]{64}$","description":"从目标项目最新编辑表单原样返回的版本。"});
     let mut module_id = id.clone();
-    module_id["description"] = json!("该项目中要解除关联的数字模块 ID。");
-    let remove = entry(REMOVE, "解除项目模块关联", "从目标项目的编辑表单核对已有模块与 revision。桌面用户逐次确认后仅解除该项目与模块的关联，不删除项目、模块或 Git 仓库。结果未知时先核对关联，勿自动重试。", &["projectId","moduleId","revision"], json!({"projectId":id,"moduleId":module_id,"revision":revision}), "确认后解除指定项目与一个模块的关联，保留模块本身。");
+    module_id["description"] = json!("项目 SCM 的数字模块 ID。");
+    let module_ids = |description: &str| json!({"type":"array","minItems":1,"maxItems":CHOICE_LIMIT,"uniqueItems":true,"items":module_id,"description":description});
+    // 修改与创建共用字段约束，但修改没有必填表单字段，也不接受整组模块覆盖。
+    let mut fields = input["properties"].as_object().unwrap().clone();
+    fields.remove("modules");
+    fields.get_mut("user").unwrap()["description"] =
+        json!("主负责人账号；单独修改时置于首位并保留其他负责人。");
+    fields.insert(
+        "authors".into(),
+        choices(
+            "更新后的完整负责人列表，首项是主负责人；同时传 user 时两者须一致。",
+            1,
+        ),
+    );
+    let mut update = entry(UPDATE, "增量修改 SCM 项目", "先读取目标项目的编辑选项和版本。客户端授权后直接执行指定变更；未列出的字段和模块保持原状。一次调用可同时修改字段、添加和解除模块关联；先添加，后解除，不删除仓库。冲突时重新读取；部分成功或结果未知时勿自动重试。", &["projectId","revision"], json!({"projectId":id,"revision":revision,
+        "changes":{"type":"object","minProperties":1,"additionalProperties":false,"description":"仅提交要修改的字段；省略表示保留原值。","properties":fields},
+        "addModuleIds":module_ids("仅新增这些模块关联，不是完整模块列表。"),"removeModuleIds":module_ids("仅解除这些已有模块的关联，不可与新增列表重叠。")}), "将指定项目的旧模块关联替换为新模块，保留其他字段和关联。");
+    update.tool.input_schema["anyOf"] = json!([{"required":["changes"]},{"required":["addModuleIds"]},{"required":["removeModuleIds"]}]);
+    let remove = entry(REMOVE, "解除项目模块关联", "从目标项目的编辑表单核对已有模块与 revision。客户端授权后直接解除该项目与模块的关联，不删除项目、模块或 Git 仓库。结果未知时先核对关联，勿自动重试。", &["projectId","moduleId","revision"], json!({"projectId":id,"moduleId":module_id,"revision":revision}), "解除指定项目与一个模块的关联，保留模块本身。");
     let project = text(
         "后端工作台中已保存的项目名称，必须显式指定。",
         1,
@@ -286,6 +309,82 @@ fn valid_git_args(name: &str, args: &Value) -> bool {
         && (op != "push-dev" || args["push"] == true)
 }
 
+fn valid_project_delta(map: &serde_json::Map<String, Value>) -> bool {
+    if map.len() <= 2 {
+        return false;
+    }
+    let valid = map.iter().all(|(key, value)| match key.as_str() {
+        "projectId" | "revision" => true,
+        "addModuleIds" | "removeModuleIds" => {
+            valid_choices(value, false)
+                && value.as_array().is_some_and(|ids| ids.iter().all(valid_id))
+        }
+        "changes" => value.as_object().is_some_and(|fields| {
+            !fields.is_empty()
+                && fields.iter().all(|(key, v)| match key.as_str() {
+                    "name" | "user" | "projectType" => bounded_text(v, FIELD_LIMIT, false),
+                    "branchSuffix" => valid_branch_suffix(v),
+                    "details" => bounded_text(v, DETAILS_LIMIT, true),
+                    "authors" => {
+                        valid_choices(v, false)
+                            && fields.get("user").is_none_or(|user| v.get(0) == Some(user))
+                    }
+                    _ => false,
+                })
+        }),
+        _ => false,
+    });
+    valid
+        && !map
+            .get("addModuleIds")
+            .and_then(Value::as_array)
+            .is_some_and(|adds| {
+                map.get("removeModuleIds")
+                    .and_then(Value::as_array)
+                    .is_some_and(|removes| adds.iter().any(|id| removes.contains(id)))
+            })
+}
+
+// 仅列出请求内已经回读确认的步骤，不公开 SCM 的原始响应。
+fn partial_update_message(args: &Value, error: &str) -> String {
+    let mut steps = Vec::new();
+    if let Some(ids) = error
+        .strip_prefix("PartialUpdate:")
+        .and_then(|n| n.parse::<usize>().ok())
+        .and_then(|n| args["removeModuleIds"].as_array()?.get(..n))
+    {
+        let join_ids = |ids: &[Value]| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("、")
+        };
+        if args.get("changes").is_some() {
+            steps.push("指定字段已核对".to_owned());
+        }
+        if let Some(added) = args["addModuleIds"].as_array() {
+            steps.push(format!("已关联模块 {}", join_ids(added)));
+        }
+        if !ids.is_empty() {
+            steps.push(format!("已解除模块 {}", join_ids(ids)));
+        }
+    }
+    let mut text = "项目 SCM｜部分变更已生效".to_owned();
+    if !steps.is_empty() {
+        text.push_str(&format!("（{}）", steps.join("；")));
+    }
+    text.push_str("；剩余操作未全部确认，请重新读取项目字段和关联，勿自动重试");
+    text
+}
+
+fn valid_branch_suffix(value: &Value) -> bool {
+    value.as_str().is_some_and(|s| {
+        s.len() <= FIELD_LIMIT
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.".contains(&b))
+    })
+}
+
 fn valid_project_args(name: &str, args: &Value) -> bool {
     let Some(map) = args.as_object() else {
         return false;
@@ -306,18 +405,7 @@ fn valid_project_args(name: &str, args: &Value) -> bool {
                 && valid_revision
         }
         CREATE if map.len() == 1 => (),
-        UPDATE
-            if map.len() == 4
-                && project_id_valid
-                && valid_choices(&args["authors"], false)
-                && args["authors"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&args["input"]["user"])
-                && valid_revision =>
-        {
-            ()
-        }
+        UPDATE => return project_id_valid && valid_revision && valid_project_delta(map),
         _ => return false,
     }
     let input = &args["input"];
@@ -327,11 +415,7 @@ fn valid_project_args(name: &str, args: &Value) -> bool {
         && ["name", "projectType", "user"]
             .iter()
             .all(|key| bounded_text(&input[*key], FIELD_LIMIT, false))
-        && input["branchSuffix"].as_str().is_some_and(|s| {
-            s.len() <= FIELD_LIMIT
-                && s.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_.".contains(&b))
-        })
+        && valid_branch_suffix(&input["branchSuffix"])
         && bounded_text(&input["details"], DETAILS_LIMIT, true)
         && valid_choices(&input["modules"], true)
 }
@@ -503,6 +587,9 @@ where
                 Ok(Err(e)) if is_sqlpad(name) => {
                     (format!("生产环境 · SQLPad｜{}", sqlpad_error(&e)), true)
                 }
+                Ok(Err(e)) if name == UPDATE && e.starts_with("PartialUpdate:") => {
+                    (partial_update_message(&params["arguments"], &e), true)
+                }
                 Ok(Err(e))
                     if matches!(
                         name,
@@ -545,6 +632,15 @@ where
                         }
                         "Conflict: 项目已被修改，请重新打开表单核对"
                         | "Conflict: 项目已变化，请重新读取编辑选项" => {
+                            "项目版本冲突，请重新读取表单并核对变更"
+                        }
+                        _ if name == UPDATE && e.starts_with("UnknownOutcome:") => {
+                            "写入结果未知，请重新读取项目字段和关联，勿自动重试"
+                        }
+                        _ if name == UPDATE && e.starts_with("InvalidInput:") => {
+                            "变更与项目当前候选项或关联不符，请重新读取表单并核对"
+                        }
+                        _ if name == UPDATE && e.starts_with("Conflict:") => {
                             "项目版本冲突，请重新读取表单并核对变更"
                         }
                         _ if name == MODULES => "读取模块失败，请检查项目 SCM 登录和访问权限",

@@ -2,7 +2,7 @@ use super::*;
 use scraper::Element;
 
 // 按原站 deleteMode 的行级参数构造请求，不接受客户端传入的 mode 或 URL。
-fn unlink_payload(
+pub(super) fn unlink_payload(
     html: &str,
     project: &str,
     module: &str,
@@ -71,29 +71,8 @@ fn unlink_payload(
 }
 
 impl Runtime {
-    pub(crate) async fn approved_remove_module(
-        &self,
-        binding: &SessionBinding,
-        project_id: String,
-        module_id: String,
-        revision: String,
-    ) -> Result<()> {
-        self.remove_module_with_binding(Some(binding), project_id, module_id, revision)
-            .await
-            .map(|_| ())
-    }
     pub async fn remove_module(
         &self,
-        project_id: String,
-        module_id: String,
-        revision: String,
-    ) -> Result<String> {
-        self.remove_module_with_binding(None, project_id, module_id, revision)
-            .await
-    }
-    async fn remove_module_with_binding(
-        &self,
-        binding: Option<&SessionBinding>,
         project_id: String,
         module_id: String,
         revision: String,
@@ -102,9 +81,6 @@ impl Runtime {
             return Err("InvalidInput: 项目和模块 ID 必须是数字".into());
         }
         self.project_form_session(async |session| {
-            if let Some(binding) = binding {
-                binding.check(session)?;
-            }
             let html = session
                 .get("/kpi/project/modify", &[("id", &project_id)])
                 .await?;

@@ -3,7 +3,7 @@ import { createApp, h, nextTick } from 'vue';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import SqlpadApproval from './SqlpadApproval.vue';
-import ScmProjectApproval from './ScmProjectApproval.vue';
+import BackendGitApproval from './BackendGitApproval.vue';
 
 const main = vi.hoisted(() => ({ label: 'main', listen: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => true, invoke: vi.fn() }));
@@ -15,20 +15,17 @@ const request = () => ({
   requestId: 'first',
   site: 'https://scm.example',
   account: 'operator',
-  tool: 'scm_update_project',
+  tool: 'backend_git_prepare',
   expiresAt: Date.now() + 5000,
   arguments: {
     projectId: 'p-01',
-    authors: ['author1', 'author2'],
-    revision: 'base-revision',
-    input: {
-      name: '<project>',
-      user: 'owner',
-      details: '说明正文',
-      projectType: 'type1',
-      branchSuffix: 'branch1',
-      modules: ['module1', 'module2'],
-    },
+    projectName: '<project>',
+    scmProjectId: 'scm-01',
+    operation: 'switch-dev',
+    push: false,
+    repositories: [
+      { repository: { name: 'repo-one', developmentBranch: 'dev' }, targetBranch: 'dev' },
+    ],
   },
 });
 const root = document.createElement('div');
@@ -40,7 +37,7 @@ async function settle() {
 }
 async function mount() {
   document.body.append(root);
-  app = createApp(ScmProjectApproval);
+  app = createApp(BackendGitApproval);
   app.mount(root);
   await settle();
 }
@@ -60,27 +57,23 @@ afterEach(() => {
   vi.useRealTimers();
 });
 it.each([true, false])(
-  '完整展示原始写入，只有显式点击才决定且不重复提交 approved=%s',
+  '完整展示 Git 预检信息，只有显式点击才决定且不重复提交 approved=%s',
   async (approved) => {
     await mount();
     expect(main.listen).toHaveBeenCalledWith(event, expect.any(Function));
     expect(invoke).toHaveBeenCalledExactlyOnceWith(list, undefined);
     const text = root.textContent;
     for (const value of [
-      '修改 SCM 项目',
+      '准备 Git 计划',
       'https://scm.example',
       'operator',
       'p-01',
       '<project>',
-      'owner',
-      'module1',
-      'module2',
-      'author1',
-      'author2',
-      'branch1',
-      'type1',
-      '说明正文',
-      'base-revision',
+      'scm-01',
+      'switch-dev',
+      '否',
+      'repo-one',
+      'dev',
     ])
       expect(text).toContain(value);
     expect(root.querySelector('project')).toBeNull();
@@ -164,21 +157,14 @@ it('非主窗口不订阅不读取，更不会处理 SQLPad 审批', async () =>
   expect(invoke).not.toHaveBeenCalled();
 });
 
-it('解除关联明确显示项目、模块和不删除的边界', async () => {
-  vi.mocked(invoke).mockResolvedValue([
-    {
-      ...request(),
-      tool: 'scm_remove_project_module',
-      arguments: { projectId: 'project-a', moduleId: 'module-b', revision: 'version-c' },
-    },
-  ]);
+it('仅显示后端 Git 请求', async () => {
+  vi.mocked(invoke).mockResolvedValue([{ ...request(), tool: 'scm_update_project' }]);
   await mount();
-  expect(root.textContent).toMatch(
-    /解除项目模块关联.*不删除项目或仓库.*目标项目 ID.*project-a.*目标模块 ID.*module-b.*version-c/s,
-  );
+  expect(root.querySelector('dialog')).toBeNull();
+  expect(invoke).toHaveBeenCalledOnce();
 });
 
-it('同时到达的 SQLPad 与 SCM 请求使用独立审批通道', async () => {
+it('同时到达的 SQLPad 与后端 Git 请求使用独立审批通道', async () => {
   const sql = {
     requestId: 'sql',
     connection: 'db',
@@ -187,13 +173,15 @@ it('同时到达的 SQLPad 与 SCM 请求使用独立审批通道', async () => 
   };
   vi.mocked(invoke).mockResolvedValueOnce([request()]).mockResolvedValueOnce(sql);
   document.body.append(root);
-  app = createApp({ render: () => h('main', [h(ScmProjectApproval), h(SqlpadApproval)]) });
+  app = createApp({ render: () => h('main', [h(BackendGitApproval), h(SqlpadApproval)]) });
   app.mount(root);
   await settle();
   expect(root.querySelectorAll('dialog')).toHaveLength(2);
   vi.mocked(invoke).mockClear().mockResolvedValueOnce(undefined).mockResolvedValueOnce([]);
   root
-    .querySelector<HTMLButtonElement>('dialog[aria-labelledby="scm-approval-title"] button')!
+    .querySelector<HTMLButtonElement>(
+      'dialog[aria-labelledby="backend-git-approval-title"] button',
+    )!
     .click();
   await settle();
   expect(vi.mocked(invoke).mock.calls).toEqual([

@@ -183,8 +183,7 @@ fn field<'a>(args: &'a Value, name: &str) -> Result<&'a str> {
         .ok_or_else(|| "工具参数不完整".into())
 }
 
-async fn project_call(app: &AppHandle, tool: &str, args: Value) -> Result<Value> {
-    let runtime = app.state::<scm::Runtime>();
+async fn project_call(runtime: &scm::Runtime, tool: &str, args: Value) -> Result<Value> {
     if tool == "scm_project_modules" {
         let id = field(&args, "projectId")?;
         // MCP 仅输出关联清单，不向客户端传递仓库地址或编辑表单。
@@ -207,14 +206,11 @@ async fn project_call(app: &AppHandle, tool: &str, args: Value) -> Result<Value>
         }
         .map_err(|_| "无法编码项目选项".into());
     }
-    let binding = runtime.session_binding().await?;
-    crate::scm_approval::approve(app, tool, &binding.site, &binding.account, &args).await?;
     if tool == "scm_remove_project_module" {
         let project_id = field(&args, "projectId")?.to_owned();
         let module_id = field(&args, "moduleId")?.to_owned();
         runtime
-            .approved_remove_module(
-                &binding,
+            .remove_module(
                 project_id.clone(),
                 module_id.clone(),
                 field(&args, "revision")?.into(),
@@ -222,27 +218,17 @@ async fn project_call(app: &AppHandle, tool: &str, args: Value) -> Result<Value>
             .await?;
         return Ok(json!({"projectId":project_id,"moduleId":module_id}));
     }
-    let input = serde_json::from_value(args["input"].clone()).map_err(|_| "项目参数无效")?;
-    let id = match tool {
-        "scm_create_project" => runtime.approved_create(&binding, input).await?,
-        "scm_update_project" => {
-            let id = field(&args, "projectId")?.to_owned();
-            let authors =
-                serde_json::from_value(args["authors"].clone()).map_err(|_| "负责人参数无效")?;
-            runtime
-                .approved_update(
-                    &binding,
-                    id.clone(),
-                    input,
-                    authors,
-                    field(&args, "revision")?.into(),
-                )
-                .await?;
-            id
+    match tool {
+        "scm_create_project" => {
+            let input = serde_json::from_value(args["input"].clone()).map_err(|_| "项目参数无效")?;
+            Ok(json!({"projectId": runtime.create(input, None).await?}))
         }
-        _ => return Err("未知项目工具".into()),
-    };
-    Ok(json!({"projectId":id}))
+        "scm_update_project" => {
+            let patch = serde_json::from_value(args).map_err(|_| "InvalidInput: 项目参数无效")?;
+            runtime.patch_project(patch).await
+        }
+        _ => Err("未知项目工具".into()),
+    }
 }
 
 async fn while_service_active(
@@ -280,7 +266,11 @@ async fn dispatch(
             | "scm_update_project"
             | "scm_remove_project_module"
     ) {
-        return while_service_active(lease, project_call(&app, tool, args)).await;
+        return while_service_active(
+            lease,
+            project_call(&app.state::<scm::Runtime>(), tool, args),
+        )
+        .await;
     }
     if matches!(
         tool,
