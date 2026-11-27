@@ -168,9 +168,10 @@ onBeforeUnmount(() => {
             type="password"
             autocomplete="current-password"
         /></label>
-        <label class="remember"
-          ><input v-model="remember" type="checkbox" />记住登录（本机私有存储）</label
-        >
+        <label class="remember">
+          <input v-model="remember" type="checkbox" />
+          <span>记住登录 <small>仅保存在本机</small></span>
+        </label>
         <div class="connection-actions">
           <button class="button small primary" type="submit">
             {{ pending ? '处理中…' : '登录' }}
