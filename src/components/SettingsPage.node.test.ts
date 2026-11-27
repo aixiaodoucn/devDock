@@ -699,13 +699,13 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
       '项目 SCM 登录',
       '日志 SCM 登录',
       '生产 SQLPad 数据库',
-      '日志 MCP',
+      '本机 MCP 服务',
     ]);
     expect(login.querySelector('input[value="all"]')).toBeTruthy();
     expect(
       login.querySelector('input[type="checkbox"][aria-label="允许返回日志原文"]'),
     ).toBeTruthy();
-    expect(panel.root.querySelector('[aria-label="日志 MCP"] .query-options')).toBeNull();
+    expect(panel.root.querySelector('[aria-label="本机 MCP 服务"] .query-options')).toBeNull();
     expect(panel.root.querySelector('[aria-label="生产 SQLPad 数据库"] form')).toBeTruthy();
     expect(api.sqlpadStatus).toHaveBeenCalledOnce();
     expect(api.logScmStatus).toHaveBeenCalled();

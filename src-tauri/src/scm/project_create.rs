@@ -195,7 +195,9 @@ impl Session {
         let param = self.create_form().await?.payload(input)?.to_string();
         // 旧版响应可能没有 pid。只匹配本次提交后唯一新增的同负责人、同名项目。
         let before = self.matching_projects(input).await?;
-        let body = self.submit_form("/kpi/project/addSmt", param, "创建").await?;
+        let body = self
+            .submit_form("/kpi/project/addSmt", param, "创建")
+            .await?;
         let id = created_id(&body)?;
         if !id.is_empty() {
             return Ok(id);
@@ -210,8 +212,65 @@ impl Session {
     }
 }
 
+// Jar 区分每次登录；指纹检测同一 Jar 中的会话轮换，两者均不会进入审批事件。
+#[derive(Clone)]
+pub(crate) struct SessionBinding {
+    pub site: String,
+    pub account: String,
+    jar: std::sync::Weak<Jar>,
+    fingerprint: Option<[u8; 32]>,
+}
+impl SessionBinding {
+    fn fingerprint(session: &Session) -> Option<[u8; 32]> {
+        use sha2::{Digest, Sha256};
+        session
+            .cookie()
+            .map(|cookie| Sha256::digest(cookie.as_bytes()).into())
+    }
+    pub(super) fn check(&self, session: &Session) -> Result<()> {
+        if self.site == session.base.as_str()
+            && self.account == session.username
+            && self.jar.ptr_eq(&Arc::downgrade(&session.jar))
+            && self.fingerprint == Self::fingerprint(session)
+        {
+            Ok(())
+        } else {
+            Err("项目 SCM 会话已变更，请重新发起审批".into())
+        }
+    }
+}
+
 impl Runtime {
-    async fn project_form_session<T>(
+    pub(crate) async fn session_binding(&self) -> Result<SessionBinding> {
+        let mut state = self.state.lock().await;
+        self.restore(&mut state).await?;
+        let session = state.session.as_ref().ok_or(SESSION_EXPIRED)?;
+        Ok(SessionBinding {
+            site: session.base.to_string(),
+            account: session.username.clone(),
+            jar: Arc::downgrade(&session.jar),
+            fingerprint: SessionBinding::fingerprint(session),
+        })
+    }
+
+    pub(crate) async fn ensure_binding(&self, binding: &SessionBinding) -> Result<()> {
+        let state = self.state.lock().await;
+        binding.check(state.session.as_ref().ok_or(SESSION_EXPIRED)?)
+    }
+
+    pub(crate) async fn approved_create(
+        &self,
+        binding: &SessionBinding,
+        input: CreateInput,
+    ) -> Result<String> {
+        self.project_form_session(async |session| {
+            binding.check(session)?;
+            session.create_project(&input).await
+        })
+        .await
+    }
+
+    pub(super) async fn project_form_session<T>(
         &self,
         f: impl AsyncFnOnce(&Session) -> Result<T>,
     ) -> Result<T> {
@@ -243,6 +302,31 @@ impl Runtime {
 mod tests {
     use super::*;
     const FORM: &str = r#"<select id='user' multiple><option value='a'>甲</option><option value='b'>乙</option></select><select id='mode' multiple><option value='9'>模块</option></select><select id='project_type'><option value='1'>修复</option></select><select id='level'><option value='D'>D</option><option selected value='C'>C</option></select><select id='test-level'><option value='2'>正常</option></select>"#;
+    #[test]
+    fn approval_is_bound_to_login_instance_not_just_account_and_site() {
+        let session = || {
+            new_session(
+                LoginPage::Projects,
+                validate_base("https://example.invalid").unwrap(),
+                "user".into(),
+            )
+            .unwrap()
+        };
+        let first = session();
+        let binding = SessionBinding {
+            site: first.base.to_string(),
+            account: first.username.clone(),
+            jar: Arc::downgrade(&first.jar),
+            fingerprint: SessionBinding::fingerprint(&first),
+        };
+        assert!(binding.check(&first).is_ok());
+        assert!(binding.check(&session()).is_err());
+        first
+            .jar
+            .add_cookie_str("PHPSESSID=rotated; Path=/; Secure", &first.base);
+        assert!(binding.check(&first).is_err());
+    }
+
     #[test]
     fn builds_same_payload_as_the_scm_page() {
         let form = parse_form(FORM, "b").unwrap();

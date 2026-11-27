@@ -3,6 +3,17 @@ import { computed, onMounted, ref } from 'vue';
 import { api } from '../api';
 import type { McpCatalogTool } from '../types';
 
+const SOURCE_LABELS: Record<string, string> = {
+  scm: 'SCM 日志',
+  sqlpad: 'SQLPad 数据库',
+  'scm-project': '项目 SCM',
+  'backend-git': '后端项目 Git',
+};
+const ENVIRONMENT_LABELS: Record<string, string> = {
+  production: '生产环境',
+  project: '项目站点',
+  local: '本机',
+};
 const tools = ref<McpCatalogTool[]>([]);
 const loading = ref(true);
 const failed = ref(false);
@@ -106,20 +117,26 @@ onMounted(() => {
     <p v-else-if="!tools.length">暂无工具</p>
     <section v-for="[source, entries] in groups" :key="source" class="group">
       <h3>
-        {{ source === 'scm' ? 'SCM 日志' : source === 'sqlpad' ? 'SQLPad 数据库' : source }}
+        {{ SOURCE_LABELS[source] ?? source }}
         <span>{{ entries.length }} 个工具</span>
       </h3>
       <details v-for="tool in entries" :key="tool.name">
         <summary>
           <strong>{{ tool.title }}</strong> <code>{{ tool.name }}</code>
           <span class="environment">{{
-            tool.environment === 'production' ? '生产环境' : tool.environment
+            ENVIRONMENT_LABELS[tool.environment] ?? tool.environment
           }}</span>
         </summary>
         <div class="detail">
           <p>{{ tool.description }}</p>
           <p v-if="source === 'scm'">
             当前日志策略：全文件扫描默认范围 · {{ scanScope }}；返回日志原文 · {{ rawPolicy }}。
+          </p>
+          <p v-else-if="source === 'scm-project'">
+            使用「项目 SCM 登录」账号；创建、修改项目和解除模块关联需在主窗口逐次批准。
+          </p>
+          <p v-else-if="source === 'backend-git'">
+            准备和执行 Git 计划需分别审批。批准前请核对项目、仓库、分支及是否推送。
           </p>
           <h4>参数</h4>
           <dl v-if="Object.keys(tool.inputSchema.properties).length">
@@ -128,6 +145,12 @@ onMounted(() => {
                 <code>{{ key }}</code> <span>{{ param.type }}</span>
                 <b>{{ tool.inputSchema.required.includes(key) ? '必填' : '可选' }}</b>
               </dt>
+              <dd v-if="param.properties">
+                <details>
+                  <summary>对象字段</summary>
+                  <pre>{{ JSON.stringify(param, null, 2) }}</pre>
+                </details>
+              </dd>
               <dd v-if="param.description">{{ param.description }}</dd>
               <dd v-if="param.default !== undefined">
                 默认值 <code>{{ JSON.stringify(param.default) }}</code>
@@ -254,6 +277,10 @@ summary code,
 code {
   font-size: 12px;
   color: var(--accent-text);
+}
+.detail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .detail {
   display: grid;

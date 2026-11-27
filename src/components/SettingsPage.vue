@@ -545,7 +545,7 @@ watch(
           </template>
           <section v-else class="panel">
             <h2>MCP 服务</h2>
-            <p>请在 Dev Dock 桌面主窗口配置生产日志 SCM、SQLPad 连接和 MCP 客户端。</p>
+            <p>请在 Dev Dock 桌面主窗口配置项目 SCM、生产日志 SCM、SQLPad 连接和 MCP 客户端。</p>
           </section>
         </div>
         <section

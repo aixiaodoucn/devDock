@@ -370,12 +370,12 @@ it('切换工作台后丢弃晚到的创建选项', async () => {
     panel.close();
   }
 });
-it('工作台只读取项目 SCM 状态，不显示登录卡片或加载日志 MCP', async () => {
+it('工作台只读取项目 SCM 状态，不显示登录卡片或加载本机 MCP 服务', async () => {
   const panel = await mount();
   try {
     expect(api.scmStatus).toHaveBeenCalledOnce();
     expect(panel.root.querySelector('[aria-label="项目 SCM 登录"]')).toBeNull();
-    expect(panel.root.querySelector('[aria-label="日志 MCP"]')).toBeNull();
+    expect(panel.root.querySelector('[aria-label="本机 MCP 服务"]')).toBeNull();
     expect(api.logMcpStatus).not.toHaveBeenCalled();
   } finally {
     panel.close();

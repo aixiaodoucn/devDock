@@ -19,6 +19,7 @@ pub struct Access {
     raw_grant: Option<std::sync::Arc<()>>,
     active_subject: Option<String>,
     server: Option<log_mcp::LogMcpServer>,
+    service_lease: Option<tokio::sync::watch::Sender<()>>,
     cleanup_pending: bool,
     exiting: bool,
 }
@@ -80,6 +81,7 @@ impl Access {
     async fn stop(&mut self, store: &impl Store) -> Result<()> {
         self.raw_grant = None;
         self.active_subject = None;
+        self.service_lease.take();
         if let Some(server) = self.server.take() {
             server.shutdown().await;
         }
@@ -181,7 +183,99 @@ fn field<'a>(args: &'a Value, name: &str) -> Result<&'a str> {
         .ok_or_else(|| "工具参数不完整".into())
 }
 
-async fn dispatch(app: AppHandle, tool: &str, args: Value) -> Result<Value> {
+async fn project_call(app: &AppHandle, tool: &str, args: Value) -> Result<Value> {
+    let runtime = app.state::<scm::Runtime>();
+    if tool == "scm_project_options" {
+        return match args.get("projectId") {
+            Some(id) => serde_json::to_value(
+                runtime
+                    .edit_options(id.as_str().ok_or("项目 ID 无效")?.into())
+                    .await?,
+            ),
+            None => serde_json::to_value(runtime.create_options().await?),
+        }
+        .map_err(|_| "无法编码项目选项".into());
+    }
+    let binding = runtime.session_binding().await?;
+    crate::scm_approval::approve(app, tool, &binding.site, &binding.account, &args).await?;
+    if tool == "scm_remove_project_module" {
+        let project_id = field(&args, "projectId")?.to_owned();
+        let module_id = field(&args, "moduleId")?.to_owned();
+        runtime
+            .approved_remove_module(
+                &binding,
+                project_id.clone(),
+                module_id.clone(),
+                field(&args, "revision")?.into(),
+            )
+            .await?;
+        return Ok(json!({"projectId":project_id,"moduleId":module_id}));
+    }
+    let input = serde_json::from_value(args["input"].clone()).map_err(|_| "项目参数无效")?;
+    let id = match tool {
+        "scm_create_project" => runtime.approved_create(&binding, input).await?,
+        "scm_update_project" => {
+            let id = field(&args, "projectId")?.to_owned();
+            let authors =
+                serde_json::from_value(args["authors"].clone()).map_err(|_| "负责人参数无效")?;
+            runtime
+                .approved_update(
+                    &binding,
+                    id.clone(),
+                    input,
+                    authors,
+                    field(&args, "revision")?.into(),
+                )
+                .await?;
+            id
+        }
+        _ => return Err("未知项目工具".into()),
+    };
+    Ok(json!({"projectId":id}))
+}
+
+async fn while_service_active(
+    mut lease: tokio::sync::watch::Receiver<()>,
+    task: impl std::future::Future<Output = Result<Value>>,
+) -> Result<Value> {
+    // 每个监听实例拥有独立生命周期；停用后旧连接和未决审批不能继承下次启动的授权。
+    use std::{
+        future::{poll_fn, Future},
+        pin::pin,
+        task::Poll,
+    };
+    let mut stopped = pin!(lease.changed());
+    let mut task = pin!(task);
+    poll_fn(|cx| {
+        if stopped.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Err("MCP 服务已停用；已提交的写入请先核对结果".into()));
+        }
+        task.as_mut().poll(cx)
+    })
+    .await
+}
+
+async fn dispatch(
+    app: AppHandle,
+    lease: tokio::sync::watch::Receiver<()>,
+    tool: &str,
+    args: Value,
+) -> Result<Value> {
+    if matches!(
+        tool,
+        "scm_project_options"
+            | "scm_create_project"
+            | "scm_update_project"
+            | "scm_remove_project_module"
+    ) {
+        return while_service_active(lease, project_call(&app, tool, args)).await;
+    }
+    if matches!(
+        tool,
+        "backend_git_prepare" | "backend_git_execute" | "backend_git_state"
+    ) {
+        return while_service_active(lease, crate::project_git::dispatch(&app, tool, &args)).await;
+    }
     if matches!(tool, "prod_db_describe_table" | "prod_db_query_readonly") {
         let db = app.state::<crate::sqlpad::Runtime>();
         let prepared = db.prepare(tool, &args).await?;
@@ -428,7 +522,7 @@ async fn enable_locked(app: &AppHandle, guard: &mut Access, restoring: bool) -> 
         return Err("工作台正在退出".into());
     }
     if guard.server.is_none() {
-        // 两种数据源共享本机传输，不共享登录。SQLPad 已选连接时不要求日志站点在线。
+        // 三种数据源共享传输但不共享会话。保留日志授权判定，仅在其他来源均不可用时检查项目 SCM。
         let runtime = app.state::<Runtime>();
         install_exit_hook(app, &runtime)?;
         let db = app.state::<crate::sqlpad::Runtime>();
@@ -450,13 +544,21 @@ async fn enable_locked(app: &AppHandle, guard: &mut Access, restoring: bool) -> 
                 .filter(|s| s.connected)
                 .and_then(|s| Some(preferences::subject(&s.base_url?, &s.username?)))
         };
-        if subject.is_none() && !sql_ready {
-            return Err("请先登录日志 SCM，或登录 SQLPad 并选定只读连接".into());
+        if subject.is_none()
+            && !sql_ready
+            && !app
+                .state::<scm::Runtime>()
+                .status()
+                .await
+                .is_ok_and(|s| s.connected)
+        {
+            return Err("请先登录项目 SCM、日志 SCM，或登录 SQLPad 并选定只读连接".into());
         }
         let prefs = Preferences::load(&tasks::data_dir(&app)?)?;
         let handle = app.clone();
+        let (service, lease) = tokio::sync::watch::channel(());
         let server = log_mcp::start_log_mcp(true, 0, move |name, args| {
-            dispatch(handle.clone(), name, args)
+            dispatch(handle.clone(), lease.clone(), name, args)
         })
         .await
         .ok()
@@ -464,6 +566,7 @@ async fn enable_locked(app: &AppHandle, guard: &mut Access, restoring: bool) -> 
         .ok_or_else(|| "无法启动本机日志 MCP 服务".to_owned())?;
         server.set_match_limit(prefs.match_limit);
         guard.publish(server, &LocalStore)?;
+        guard.service_lease = Some(service);
         guard.scan_all = prefs.scan_all;
         guard.set_raw(subject.is_some() && prefs.raw_subject == subject)?;
         guard.active_subject = subject;
@@ -503,6 +606,41 @@ pub async fn log_mcp_disable(app: AppHandle, window: WebviewWindow) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_service_cannot_dispatch_even_after_restart() {
+        tauri::async_runtime::block_on(async {
+            let (old, lease) = tokio::sync::watch::channel(());
+            drop(old);
+            let (_active, new_lease) = tokio::sync::watch::channel(());
+            assert!(
+                while_service_active(lease, async { panic!("停用服务不能执行") })
+                    .await
+                    .is_err()
+            );
+            assert!(while_service_active(new_lease, async { Ok(Value::Null) })
+                .await
+                .is_ok());
+        });
+    }
+
+    #[test]
+    fn stopping_service_discards_in_flight_approval() {
+        tauri::async_runtime::block_on(async {
+            let (service, lease) = tokio::sync::watch::channel(());
+            let (entered, waiting) = tokio::sync::oneshot::channel();
+            let (reply, decision) = tokio::sync::oneshot::channel::<()>();
+            let call = tokio::spawn(while_service_active(lease, async move {
+                entered.send(()).unwrap();
+                decision.await.unwrap();
+                Ok(Value::Null)
+            }));
+            waiting.await.unwrap();
+            drop(service);
+            assert!(call.await.unwrap().is_err());
+            assert!(reply.send(()).is_err());
+        });
+    }
 
     #[test]
     fn raw_preference_is_account_scoped_and_does_not_start_service() {

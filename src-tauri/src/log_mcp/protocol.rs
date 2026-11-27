@@ -7,6 +7,42 @@ const SCAN: &str = "scan_prod_logs";
 const DESCRIBE: &str = "prod_db_describe_table";
 const QUERY: &str = "prod_db_query_readonly";
 
+const OPTIONS: &str = "scm_project_options";
+const CREATE: &str = "scm_create_project";
+const UPDATE: &str = "scm_update_project";
+const REMOVE: &str = "scm_remove_project_module";
+const GIT_PREPARE: &str = "backend_git_prepare";
+const GIT_EXECUTE: &str = "backend_git_execute";
+const GIT_STATE: &str = "backend_git_state";
+const GIT_OPERATIONS: [&str; 6] = [
+    "switch-dev",
+    "switch-test",
+    "switch-master",
+    "merge",
+    "push-dev",
+    "pull-current",
+];
+const INPUT_FIELDS: [&str; 6] = [
+    "name",
+    "branchSuffix",
+    "projectType",
+    "user",
+    "details",
+    "modules",
+];
+const FIELD_LIMIT: usize = 256;
+const DETAILS_LIMIT: usize = 4096;
+const CHOICE_LIMIT: usize = 128;
+
+fn channel(name: &str) -> (&'static str, &'static str) {
+    match name {
+        OPTIONS | CREATE | UPDATE | REMOVE => ("scm-project", "project"),
+        GIT_PREPARE | GIT_EXECUTE | GIT_STATE => ("backend-git", "local"),
+        DESCRIBE | QUERY => ("sqlpad", "production"),
+        _ => ("scm", "production"),
+    }
+}
+
 fn is_sqlpad(name: &str) -> bool {
     matches!(name, DESCRIBE | QUERY)
 }
@@ -36,7 +72,11 @@ pub(crate) fn tool_catalog(match_limit: usize) -> Vec<CatalogEntry> {
         tool: Tool {
             name,
             title,
-            description: if is_sqlpad(name) {
+            description: if matches!(name, OPTIONS | CREATE | UPDATE | REMOVE) {
+                format!("项目 SCM。使用偏好设置中登录的项目 SCM 站点。{description}")
+            } else if matches!(name, GIT_PREPARE | GIT_EXECUTE | GIT_STATE) {
+                format!("后端项目 Git。仅针对显式指定的工作台项目。{description}")
+            } else if is_sqlpad(name) {
                 format!(
                     "生产环境 · SQLPad。使用桌面端选择的连接，默认逐次桌面审批；桌面用户可为当前连接开启免审批。{description}"
                 )
@@ -47,8 +87,8 @@ pub(crate) fn tool_catalog(match_limit: usize) -> Vec<CatalogEntry> {
             },
             input_schema: json!({"type":"object", "required":required, "properties":properties, "additionalProperties":false}),
         },
-        source: if is_sqlpad(name) { "sqlpad" } else { "scm" },
-        environment: "production",
+        source: channel(name).0,
+        environment: channel(name).1,
         example,
     };
     let resolve = entry(
@@ -127,10 +167,172 @@ pub(crate) fn tool_catalog(match_limit: usize) -> Vec<CatalogEntry> {
     query.tool.input_schema["if"] = json!({"required":["columns","aggregates"]});
     query.tool.input_schema["then"] = json!({"required":["groupBy"]});
     query.tool.input_schema["not"] = json!({"required":["filter","filters"]});
-    vec![resolve, search, scan, describe, query]
+    let id = json!({"type":"string","pattern":"^[0-9]{1,20}$","description":"目标项目 SCM 的数字项目 ID。"});
+    let options = entry(OPTIONS, "读取项目表单", "只读。省略 projectId 获取创建候选项，指定 projectId 获取该项目的编辑表单、负责人及 revision。", &[], json!({"projectId":id}), "读取目标项目的编辑选项和版本。");
+    let text = |description: &str, min, max| json!({"type":"string","minLength":min,"maxLength":max,"description":description});
+    let choices = |description: &str, min| json!({"type":"array","minItems":min,"maxItems":CHOICE_LIMIT,"uniqueItems":true,"items":text("候选项的值。",1,FIELD_LIMIT),"description":description});
+    let input = json!({"type":"object","description":"用户确认的完整项目表单。","required":INPUT_FIELDS,"additionalProperties":false,"properties":{
+        "name":text("项目名称。",1,FIELD_LIMIT),"branchSuffix":{"type":"string","maxLength":FIELD_LIMIT,"pattern":"^[A-Za-z0-9_.]*$","description":"分支后缀，可留空。"},
+        "projectType":text("项目类型候选值。",1,FIELD_LIMIT),"user":text("负责人账号。",1,FIELD_LIMIT),"details":text("项目说明，可留空。",0,DETAILS_LIMIT),"modules":choices("本次新增关联的模块候选值，可为空数组。",0)
+    }});
+    let create = entry(CREATE, "创建 SCM 项目", "先读取创建候选项，向用户核对表单，桌面用户逐次确认后创建。结果未知时请先核对项目列表，勿自动重试。", &["input"], json!({"input":input}), "使用已核对的表单创建项目，提交前由我确认。");
+    let update = entry(UPDATE, "修改 SCM 项目", "先读取目标项目的编辑表单，向用户核对变更，桌面用户逐次确认后更新。版本冲突时重新读取并核对。结果未知时勿自动重试。", &["projectId","input","authors","revision"], json!({"projectId":id,"input":input,"authors":choices("更新后的完整负责人列表，须包含 input.user。",1),"revision":{"type":"string","pattern":"^[0-9a-f]{64}$","description":"从该项目编辑表单原样返回的版本。"}}), "更新指定项目的负责人和说明，提交前由我确认。");
+    let revision = update.tool.input_schema["properties"]["revision"].clone();
+    let mut module_id = id.clone();
+    module_id["description"] = json!("该项目中要解除关联的数字模块 ID。");
+    let remove = entry(REMOVE, "解除项目模块关联", "从目标项目的编辑表单核对已有模块与 revision。桌面用户逐次确认后仅解除该项目与模块的关联，不删除项目、模块或 Git 仓库。结果未知时先核对关联，勿自动重试。", &["projectId","moduleId","revision"], json!({"projectId":id,"moduleId":module_id,"revision":revision}), "确认后解除指定项目与一个模块的关联，保留模块本身。");
+    let project = text(
+        "后端工作台中已保存的项目名称，必须显式指定。",
+        1,
+        FIELD_LIMIT,
+    );
+    let plan =
+        json!({"projectName":project,"planId":text("该项目准备操作返回的计划 ID。",1,FIELD_LIMIT)});
+    let mut prepare = entry(
+        GIT_PREPARE,
+        "准备项目 Git 计划",
+        "用户在桌面确认后准备指定操作，返回计划供核对，不等于执行授权。",
+        &["projectName", "operation"],
+        json!({"projectName":project,"operation":{"type":"string","enum":GIT_OPERATIONS,"description":"切换开发、测试或主分支，合并、推送开发分支或拉取当前分支。"},"scmProjectId":id,"repositoryIds":choices("仅处理所列的已配置仓库 ID。",1),"push":{"type":"boolean","description":"是否推送；仅合并或推送开发分支允许为 true。"},"keepTestPom":{"type":"boolean","description":"仅合并时允许保留测试分支 pom.xml。"}}),
+        "为指定后端项目准备 Git 计划并展示变更。",
+    );
+    prepare.tool.input_schema["properties"]["scmProjectId"]["description"] =
+        json!("仅 switch-dev 可指定；省略时使用项目保存的开发项目 ID。");
+    // 条件与派发白名单一致，避免客户端生成未显式授权的推送请求。
+    prepare.tool.input_schema["allOf"] = json!([
+        {"if":{"required":["scmProjectId"]},"then":{"properties":{"operation":{"const":"switch-dev"}}}},
+        {"if":{"properties":{"operation":{"const":"push-dev"}}},"then":{"required":["push"],"properties":{"push":{"const":true}}}},
+        {"if":{"required":["push"],"properties":{"push":{"const":true}}},"then":{"properties":{"operation":{"enum":["merge","push-dev"]}}}},
+        {"if":{"required":["keepTestPom"],"properties":{"keepTestPom":{"const":true}}},"then":{"properties":{"operation":{"const":"merge"}}}}
+    ]);
+    let execute = entry(
+        GIT_EXECUTE,
+        "执行项目 Git 计划",
+        "先核对目标项目和已准备计划，桌面用户再次确认后执行。调用超时后查计划状态，勿自动重试。",
+        &["projectName", "planId"],
+        plan.clone(),
+        "核对指定项目的计划，确认后执行。",
+    );
+    let state = entry(
+        GIT_STATE,
+        "读取项目 Git 状态",
+        "只读，按项目名称和计划 ID 查询状态。",
+        &["projectName", "planId"],
+        plan,
+        "查看指定项目的 Git 计划状态。",
+    );
+    vec![
+        resolve, search, scan, describe, query, options, create, update, remove, prepare, execute,
+        state,
+    ]
+}
+
+fn bounded_text(value: &Value, max: usize, allow_empty: bool) -> bool {
+    value
+        .as_str()
+        .is_some_and(|s| s.chars().count() <= max && (allow_empty || !s.trim().is_empty()))
+}
+
+fn valid_choices(value: &Value, allow_empty: bool) -> bool {
+    value.as_array().is_some_and(|items| {
+        let mut seen = std::collections::HashSet::new();
+        items.len() <= CHOICE_LIMIT
+            && (allow_empty || !items.is_empty())
+            && items
+                .iter()
+                .all(|v| bounded_text(v, FIELD_LIMIT, false) && seen.insert(v))
+    })
+}
+
+fn valid_id(value: &Value) -> bool {
+    value
+        .as_str()
+        .is_some_and(|s| (1..=20).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn valid_git_args(name: &str, args: &Value) -> bool {
+    let Some(map) = args.as_object() else {
+        return false;
+    };
+    if !bounded_text(&args["projectName"], FIELD_LIMIT, false) {
+        return false;
+    }
+    if name != GIT_PREPARE {
+        return map.len() == 2 && bounded_text(&args["planId"], FIELD_LIMIT, false);
+    }
+    let Some(op) = args["operation"].as_str() else {
+        return false;
+    };
+    GIT_OPERATIONS.contains(&op)
+        && map.iter().all(|(key, value)| match key.as_str() {
+            "projectName" | "operation" => true,
+            "repositoryIds" => valid_choices(value, false),
+            "scmProjectId" => op == "switch-dev" && valid_id(value),
+            "push" => value
+                .as_bool()
+                .is_some_and(|b| !b || matches!(op, "merge" | "push-dev")),
+            "keepTestPom" => value.as_bool().is_some_and(|b| !b || op == "merge"),
+            _ => false,
+        })
+        && (op != "push-dev" || args["push"] == true)
+}
+
+fn valid_project_args(name: &str, args: &Value) -> bool {
+    let Some(map) = args.as_object() else {
+        return false;
+    };
+    let project_id_valid = valid_id(&args["projectId"]);
+    let valid_revision = args["revision"].as_str().is_some_and(|s| {
+        s.len() == 64
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    });
+    match name {
+        OPTIONS => return map.is_empty() || (map.len() == 1 && project_id_valid),
+        REMOVE => {
+            return map.len() == 3
+                && project_id_valid
+                && valid_id(&args["moduleId"])
+                && valid_revision
+        }
+        CREATE if map.len() == 1 => (),
+        UPDATE
+            if map.len() == 4
+                && project_id_valid
+                && valid_choices(&args["authors"], false)
+                && args["authors"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&args["input"]["user"])
+                && valid_revision =>
+        {
+            ()
+        }
+        _ => return false,
+    }
+    let input = &args["input"];
+    input
+        .as_object()
+        .is_some_and(|m| m.len() == INPUT_FIELDS.len())
+        && ["name", "projectType", "user"]
+            .iter()
+            .all(|key| bounded_text(&input[*key], FIELD_LIMIT, false))
+        && input["branchSuffix"].as_str().is_some_and(|s| {
+            s.len() <= FIELD_LIMIT
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.".contains(&b))
+        })
+        && bounded_text(&input["details"], DETAILS_LIMIT, true)
+        && valid_choices(&input["modules"], true)
 }
 
 pub(super) fn valid_args(name: &str, args: &Value, match_limit: usize) -> bool {
+    if matches!(name, GIT_PREPARE | GIT_EXECUTE | GIT_STATE) {
+        return valid_git_args(name, args);
+    }
+    if matches!(name, OPTIONS | CREATE | UPDATE | REMOVE) {
+        return valid_project_args(name, args);
+    }
     if is_sqlpad(name) {
         // 协议和 SQL 生成使用同一套参数白名单。
         return crate::sqlpad::valid_query_args(name, args);
@@ -246,6 +448,13 @@ where
                 Some(SCAN) => SCAN,
                 Some(DESCRIBE) => DESCRIBE,
                 Some(QUERY) => QUERY,
+                Some(OPTIONS) => OPTIONS,
+                Some(CREATE) => CREATE,
+                Some(UPDATE) => UPDATE,
+                Some(REMOVE) => REMOVE,
+                Some(GIT_PREPARE) => GIT_PREPARE,
+                Some(GIT_EXECUTE) => GIT_EXECUTE,
+                Some(GIT_STATE) => GIT_STATE,
                 _ => return invalid(),
             };
             if !valid_args(name, &params["arguments"], match_limit) {
@@ -257,7 +466,9 @@ where
             }
             let (text, failed) = match tokio::time::timeout(
                 match name {
-                    SCAN => Duration::from_secs(150),
+                    SCAN | CREATE | UPDATE | REMOVE | GIT_PREPARE | GIT_EXECUTE => {
+                        Duration::from_secs(150)
+                    }
                     DESCRIBE | QUERY => Duration::from_secs(100),
                     _ => TOOL_TIMEOUT,
                 },
@@ -268,11 +479,9 @@ where
                 Ok(Ok(mut value)) => {
                     // 标记查询通道，不从域名推断部署环境，也不改变原有结果结构。
                     if let Some(result) = value.as_object_mut() {
-                        result.insert("environment".into(), json!("production"));
-                        result.insert(
-                            "source".into(),
-                            json!(if is_sqlpad(name) { "sqlpad" } else { "scm" }),
-                        );
+                        let (source, environment) = channel(name);
+                        result.insert("environment".into(), json!(environment));
+                        result.insert("source".into(), json!(source));
                     }
                     match encode(&value) {
                         Some(bytes) => (String::from_utf8(bytes).unwrap(), false),
@@ -282,6 +491,49 @@ where
                 // 回调可能携带凭据、路径或后端诊断，只返回固定分类。
                 Ok(Err(e)) if is_sqlpad(name) => {
                     (format!("生产环境 · SQLPad｜{}", sqlpad_error(&e)), true)
+                }
+                Ok(Err(e))
+                    if matches!(
+                        name,
+                        OPTIONS | CREATE | UPDATE | REMOVE | GIT_PREPARE | GIT_EXECUTE | GIT_STATE
+                    ) =>
+                {
+                    let label = if matches!(name, GIT_PREPARE | GIT_EXECUTE | GIT_STATE) {
+                        "后端项目 Git"
+                    } else {
+                        "项目 SCM"
+                    };
+                    let message = match e.as_str() {
+                        "用户已拒绝本次项目操作请求" => {
+                            "桌面用户已拒绝审批，未执行操作"
+                        }
+                        "项目操作审批已过期或取消" => "审批已过期或取消，未执行操作",
+                        "已有项目操作等待审批" => "已有请求等待审批，本次操作未执行",
+                        "项目操作审批状态不可用"
+                        | "项目操作审批尚未初始化"
+                        | "无法通知项目操作审批窗口"
+                        | "DevDock 主窗口不存在" => "桌面审批不可用，未执行操作",
+                        "项目 SCM 会话已变更，请重新发起审批" => {
+                            "项目 SCM 会话已变更，请重新核对并审批"
+                        }
+                        "SessionExpired: SCM 会话已过期，请重新登录" => {
+                            "请在桌面端重新登录项目 SCM"
+                        }
+                        "MCP 服务已停用；已提交的写入请先核对结果" => {
+                            "服务已停用，请核对已提交操作的结果，勿自动重试"
+                        }
+                        "InvalidInput: 目标模块不是该项目的唯一关联项" => {
+                            "请重新核对项目与模块关联"
+                        }
+                        "Conflict: 项目已被修改，请重新打开表单核对"
+                        | "Conflict: 项目已变化，请重新读取编辑选项" => {
+                            "项目版本冲突，请重新读取表单并核对变更"
+                        }
+                        _ if name == OPTIONS => "读取表单失败，请检查项目 SCM 登录和权限",
+                        _ if name == GIT_STATE => "无法读取计划状态，请核对项目与计划 ID",
+                        _ => "未确认操作成功，请在桌面端核对状态，勿自动重试",
+                    };
+                    (format!("{label}｜{message}"), true)
                 }
                 Ok(Err(e)) => {
                     let stage = if name == RESOLVE {
@@ -296,6 +548,15 @@ where
                 }
                 Err(_) if is_sqlpad(name) => (
                     "生产环境 · SQLPad｜调用超时，执行状态未知，请勿自动重试".into(),
+                    true,
+                ),
+                Err(_) if matches!(name, GIT_PREPARE | GIT_EXECUTE | GIT_STATE) => (
+                    "后端项目 Git｜调用超时，请核对项目和计划状态，勿自动重试".into(),
+                    true,
+                ),
+                Err(_) if name == OPTIONS => ("项目 SCM｜读取表单超时".into(), true),
+                Err(_) if matches!(name, CREATE | UPDATE | REMOVE) => (
+                    "项目 SCM｜调用超时，执行状态未知，请核对项目，勿自动重试".into(),
                     true,
                 ),
                 Err(_) => ("日志工具调用超时".into(), true),

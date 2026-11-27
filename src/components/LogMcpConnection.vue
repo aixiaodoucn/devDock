@@ -102,7 +102,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section v-if="desktop" class="log-mcp" aria-label="日志 MCP">
+  <section v-if="desktop" class="log-mcp" aria-label="本机 MCP 服务">
     <div class="section-heading">
       <h3>
         本机 MCP 服务
@@ -130,12 +130,14 @@ onBeforeUnmount(() => {
       </button>
     </div>
     <p class="hint">
-      启用后会记住状态，下次打开 Dev Dock 时如登录会话仍有效会自动恢复；手动停用后不再自动启动。
-      SCM 日志适用于所有已保存映射的后端仓库。SQLPad 使用独立连接，默认逐次审批，不受 SCM
-      日志原文开关控制。启用时，Dev Dock 将桥接凭据保存在本机，供 stdio 客户端读取。
+      启用后会记住状态，下次打开 Dev Dock 时如登录会话仍有效会自动恢复；手动停用后不再自动启动。 SCM
+      日志适用于所有已保存映射的后端仓库。项目工具使用「项目 SCM
+      登录」的账号；创建、修改项目、解除模块关联或执行 Git 操作前，需在主窗口逐次批准。SQLPad
+      使用独立连接和审批，不受 SCM 日志原文开关控制。启用时，Dev Dock 将桥接凭据保存在本机，供 stdio
+      客户端读取。
     </p>
     <h4>客户端注册</h4>
-    <p class="hint">注册后仍需启用上方日志服务，客户端才能访问日志。</p>
+    <p class="hint">注册后仍需启用本机 MCP 服务，客户端才能调用工具。</p>
     <dl aria-live="polite">
       <template v-for="(name, client) in CLIENT_NAMES" :key="client">
         <dt>{{ name }}</dt>
@@ -209,7 +211,7 @@ onBeforeUnmount(() => {
           </button>
         </dd>
       </dl>
-      <p v-if="!status?.enabled" class="hint">启用日志服务后可查看地址和访问令牌。</p>
+      <p v-if="!status?.enabled" class="hint">启用本机 MCP 服务后可查看地址和访问令牌。</p>
       <p class="hint">
         在 MCP 客户端的用户级本地配置中选择 HTTP 传输，填入本次服务地址，并将 Authorization
         请求头设为

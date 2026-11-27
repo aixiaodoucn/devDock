@@ -41,7 +41,7 @@ fn loopback_protocol_and_guards() {
             let result = &reply["result"][key];
             assert!(!result.is_null());
             if method == "tools/list" {
-                assert_eq!(result.as_array().unwrap().len(), 5);
+                assert_eq!(result.as_array().unwrap().len(), 12);
             } else if method == "tools/call" {
                 let payload: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
                 assert_eq!(payload["environment"], "production");
@@ -106,6 +106,13 @@ fn catalog_matches_tools_list_and_documents_each_parameter() {
         ("scan_prod_logs", "scm", "SCM"),
         ("prod_db_describe_table", "sqlpad", "SQLPad"),
         ("prod_db_query_readonly", "sqlpad", "SQLPad"),
+        ("scm_project_options", "scm-project", "项目 SCM"),
+        ("scm_create_project", "scm-project", "项目 SCM"),
+        ("scm_update_project", "scm-project", "项目 SCM"),
+        ("scm_remove_project_module", "scm-project", "项目 SCM"),
+        ("backend_git_prepare", "backend-git", "后端项目 Git"),
+        ("backend_git_execute", "backend-git", "后端项目 Git"),
+        ("backend_git_state", "backend-git", "后端项目 Git"),
     ];
     assert_eq!(entries.len(), expected.len());
     assert_eq!(tools.len(), entries.len());
@@ -113,10 +120,7 @@ fn catalog_matches_tools_list_and_documents_each_parameter() {
         assert_eq!(entry.as_object().unwrap().len(), 7);
         assert_eq!(entry["name"], name);
         assert_eq!(entry["source"], source);
-        assert!(tool["description"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("生产环境 · {label}")));
+        assert!(tool["description"].as_str().unwrap().contains(label));
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         if name == "prod_db_query_readonly" {
             let properties = &tool["inputSchema"]["properties"];
@@ -144,7 +148,14 @@ fn catalog_matches_tools_list_and_documents_each_parameter() {
             );
             assert_eq!(aggregate["additionalProperties"], false);
         }
-        assert_eq!(entry["environment"], "production");
+        assert_eq!(
+            entry["environment"],
+            match source {
+                "scm-project" => "project",
+                "backend-git" => "local",
+                _ => "production",
+            }
+        );
         assert!(!entry["title"].as_str().unwrap().is_empty());
         for key in ["name", "description", "inputSchema"] {
             assert_eq!(entry[key], tool[key]);
@@ -536,5 +547,117 @@ fn callback_errors_only_expose_known_categories() {
         ("Protocol: private detail", "日志工具调用失败"),
     ] {
         assert_eq!(protocol::public_error(error), expected);
+    }
+}
+
+#[test]
+fn project_tools_route_to_the_selected_channel_and_allow_time_for_approval() {
+    let input = json!({"name":"项目","branchSuffix":"","projectType":"t","user":"u","details":"","modules":[]});
+    sqlpad_test_runtime().block_on(async {
+        for (name, args, source, environment, timeout) in [
+            ("scm_project_options",json!({}),"scm-project","project",25),
+            ("scm_project_options",json!({"projectId":"1"}),"scm-project","project",25),
+            ("scm_create_project",json!({"input":input}),"scm-project","project",150),
+            ("scm_update_project",json!({"projectId":"1","authors":["u"],"revision":"a".repeat(64),"input":input}),"scm-project","project",150),
+            ("scm_remove_project_module",json!({"projectId":"1","moduleId":"2","revision":"a".repeat(64)}),"scm-project","project",150),
+            ("backend_git_prepare",json!({"projectName":"项目","operation":"merge","repositoryIds":["one"],"push":true,"keepTestPom":true}),"backend-git","local",150),
+            ("backend_git_execute",json!({"projectName":"项目","planId":"p"}),"backend-git","local",150),
+            ("backend_git_state",json!({"projectName":"项目","planId":"p"}),"backend-git","local",25),
+        ] {
+            let reply = db_call(name,args.clone(),|tool,args| async move { Ok(json!({"tool":tool,"args":args})) }).await;
+            let result:Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(result,json!({"source":source,"environment":environment,"tool":name,"args":args}));
+            let began = tokio::time::Instant::now();
+            let reply = db_call(name,args.clone(),|_,_| std::future::pending()).await;
+            assert_eq!(began.elapsed(),Duration::from_secs(timeout));
+            assert_eq!(reply["result"]["isError"],true);
+            if timeout == 150 { assert!(reply["result"]["content"][0]["text"].as_str().unwrap().contains("勿自动重试")); }
+            let mut extra = args;
+            extra["approved"] = json!(true);
+            let reply = db_call(name,extra,|_,_| async {panic!("未知字段不得派发")}).await;
+            assert_eq!(reply["error"]["code"],-32602);
+        }
+    });
+}
+
+#[test]
+fn project_write_errors_only_report_known_outcomes() {
+    let args = json!({"projectId":"1","moduleId":"2","revision":"a".repeat(64)});
+    sqlpad_test_runtime().block_on(async {
+        for (error, expected) in [
+            ("用户已拒绝本次项目操作请求", "未执行操作"),
+            ("项目操作审批已过期或取消", "未执行操作"),
+            ("Conflict: 项目已变化，请重新读取编辑选项", "重新读取表单"),
+            ("SCM unknown private detail", "勿自动重试"),
+        ] {
+            let reply = db_call("scm_remove_project_module", args.clone(), |_, _| async {
+                Err(error.into())
+            })
+            .await;
+            assert_eq!(reply["result"]["isError"], true);
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains(expected) && !text.contains("private"));
+        }
+    });
+}
+
+#[test]
+fn project_tools_reject_invalid_forms_and_git_scope() {
+    let input = json!({"name":"项目","branchSuffix":"","projectType":"t","user":"u","details":"","modules":[]});
+    for (key, value) in [
+        ("name", json!(" ")),
+        ("details", json!("字".repeat(4097))),
+        ("branchSuffix", json!("/")),
+        ("modules", json!([7])),
+        ("modules", json!(["m", "m"])),
+        (
+            "modules",
+            json!((0..129).map(|i| i.to_string()).collect::<Vec<_>>()),
+        ),
+        ("author", json!("other")),
+    ] {
+        let mut changed = input.clone();
+        changed[key] = value;
+        assert!(
+            !valid_args("scm_create_project", &json!({"input":changed})),
+            "{key}"
+        );
+    }
+    for id in [json!(null), json!("../target"), json!("1".repeat(21))] {
+        assert!(!valid_args("scm_project_options", &json!({"projectId":id})));
+    }
+    for (key, value) in [
+        ("revision", json!("short")),
+        ("authors", json!([])),
+        ("authors", json!(["other"])),
+    ] {
+        let mut args =
+            json!({"projectId":"1","authors":["u"],"revision":"a".repeat(64),"input":input});
+        args[key] = value;
+        assert!(!valid_args("scm_update_project", &args));
+    }
+    for args in [
+        json!({"operation":"merge"}),
+        json!({"projectName":" ","operation":"merge"}),
+        json!({"projectName":"p","operation":"shell"}),
+        json!({"projectName":"p","operation":"merge","scmProjectId":"1"}),
+        json!({"projectName":"p","operation":"switch-test","keepTestPom":true}),
+        json!({"projectName":"p","operation":"push-dev"}),
+        json!({"projectName":"p","operation":"pull-current","push":true}),
+        json!({"projectName":"p","operation":"merge","repositoryIds":[]}),
+    ] {
+        assert!(!valid_args("backend_git_prepare", &args));
+    }
+    for (key, value) in [
+        ("moduleId", json!("../2")),
+        ("revision", json!("")),
+        ("mode", json!("other")),
+    ] {
+        let mut args = json!({"projectId":"1","moduleId":"2","revision":"a".repeat(64)});
+        args[key] = value;
+        assert!(!valid_args("scm_remove_project_module", &args));
+    }
+    for name in ["backend_git_execute", "backend_git_state"] {
+        assert!(!valid_args(name, &json!({"planId":"p"})));
     }
 }

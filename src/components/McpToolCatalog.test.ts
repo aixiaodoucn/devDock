@@ -82,6 +82,19 @@ it('本机停止监听也能按来源浏览工具、展开参数并复制后端�
   expect(copy).toHaveBeenLastCalledWith(tool.example);
 });
 
+it('项目 SCM 与 Git 有独立分组及授权提示，不显示日志策略', async () => {
+  calls.mcpToolCatalog.mockResolvedValue([
+    { ...tool, source: 'scm-project', environment: 'project' },
+    { ...tool, source: 'backend-git', environment: 'local' },
+  ]);
+  mount();
+  await settle();
+  const groups = root.querySelectorAll('.group');
+  expect(groups[0].textContent).toMatch(/项目 SCM.*项目站点.*主窗口逐次批准/s);
+  expect(groups[1].textContent).toMatch(/后端项目 Git.*本机.*分别审批/s);
+  expect(root.textContent).not.toContain('当前日志策略');
+});
+
 it('目录加载失败可重试，本机状态读取失败也能查看目录', async () => {
   calls.mcpToolCatalog.mockRejectedValueOnce(new Error('private detail'));
   calls.logMcpStatus.mockRejectedValueOnce(new Error('private detail'));

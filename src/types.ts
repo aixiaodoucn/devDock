@@ -117,6 +117,7 @@ export interface McpCatalogTool {
       {
         type: string;
         description?: string;
+        properties?: Record<string, unknown>;
         default?: unknown;
         minimum?: number;
         maximum?: number;
@@ -139,6 +140,15 @@ export interface SqlpadExecutionDetail {
   result: unknown;
   error: string | null;
 }
+export interface ScmPendingApproval {
+  requestId: string;
+  tool: string;
+  site: string;
+  account: string;
+  arguments: Record<string, unknown>;
+  expiresAt: number;
+}
+
 export interface SqlpadPendingApproval {
   requestId: string;
   connection: string;

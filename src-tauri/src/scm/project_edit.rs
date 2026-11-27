@@ -1,4 +1,6 @@
 use super::*;
+#[path = "project_remove.rs"]
+mod project_remove;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::sync::LazyLock;
@@ -229,6 +231,22 @@ impl Runtime {
         self.project_form_session(async |s| Ok(s.edit_form(&id).await?.data))
             .await
     }
+    pub(crate) async fn approved_update(
+        &self,
+        binding: &SessionBinding,
+        id: String,
+        input: CreateInput,
+        authors: Vec<String>,
+        revision: String,
+    ) -> Result<()> {
+        self.project_form_session(async |session| {
+            binding.check(session)?;
+            session
+                .update_project(&id, &input, &authors, &revision)
+                .await
+        })
+        .await
+    }
     pub async fn update(
         &self,
         id: String,
@@ -246,7 +264,7 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn page() -> String {
+    pub(super) fn page() -> String {
         let mut html = String::from(
             r##"<input type="hidden" id="pid" value="11"><input id="name" value="项目&amp;测试"><input id="name_en" value="v1"><textarea id="project_desc"> 说明 </textarea>
             <button id="smt">保存</button><select id="user" multiple><option value="a">甲</option><option value="b">乙</option></select>
@@ -338,7 +356,12 @@ mod tests {
         let read = || parse_edit(&html, "11", "b").unwrap();
         let data = read().data;
         assert_eq!(data.input.user, "legacy");
-        assert_eq!(read().payload(&data.input, &data.authors, &data.revision).unwrap()["author"], json!(["legacy", "b"]));
+        assert_eq!(
+            read()
+                .payload(&data.input, &data.authors, &data.revision)
+                .unwrap()["author"],
+            json!(["legacy", "b"])
+        );
     }
 
     #[test]

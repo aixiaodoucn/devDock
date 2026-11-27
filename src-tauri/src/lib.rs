@@ -16,7 +16,10 @@ mod manifest;
 mod mcp_clients;
 mod nvm;
 mod paths;
+#[path = "log_access/project_git.rs"]
+mod project_git;
 mod scm;
+mod scm_approval;
 mod sqlpad;
 mod system_tools;
 mod tasks;
@@ -1015,6 +1018,7 @@ pub fn run() {
         .manage(backend_git::Runtime::default())
         .manage(scm::Runtime::default())
         .manage(scm::LogRuntime::default())
+        .manage(scm_approval::Runtime::default())
         .manage(db_approval::Runtime::default())
         .manage(sqlpad::Runtime::default())
         .manage(sqlpad::history::History::default())
@@ -1100,6 +1104,8 @@ pub fn run() {
             log_access::log_mcp_enable,
             log_access::log_mcp_disable,
             log_access::log_mcp_token,
+            scm_approval::list_scm_project_approvals,
+            scm_approval::resolve_scm_project_approval,
             db_approval::sqlpad_pending_approval,
             db_approval::sqlpad_decide_approval,
             sqlpad::history::sqlpad_execution_history,

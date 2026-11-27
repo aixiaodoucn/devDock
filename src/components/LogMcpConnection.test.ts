@@ -79,6 +79,7 @@ afterEach(() => {
 it('授权说明可见；启停使用本次地址，隐藏时从 DOM 移除令牌', async () => {
   await mount();
   expect(root.textContent).toMatch(/所有已保存映射的后端仓库/);
+  expect(root.textContent).toMatch(/项目 SCM 登录.*主窗口逐次批准/);
   await click('启用');
   expect(root.textContent).toContain(running.endpoint);
   expect(root.innerHTML).not.toContain(token);
