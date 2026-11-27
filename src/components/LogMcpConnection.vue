@@ -104,30 +104,30 @@ onBeforeUnmount(() => {
 <template>
   <section v-if="desktop" class="log-mcp" aria-label="本机 MCP 服务">
     <div class="section-heading">
-      <h3>
-        本机 MCP 服务
-        <span class="service-badge" :class="{ online: status?.enabled }">{{
+      <h3>本机 MCP 服务</h3>
+      <div class="service-actions">
+        <span class="service-badge" role="status" :class="{ online: status?.enabled }">{{
           status ? (status.enabled ? '已启用' : '已停用') : pending ? '正在检查…' : '状态未知'
         }}</span>
-      </h3>
-      <button
-        v-if="status"
-        class="button small"
-        :class="status.enabled ? 'negative' : 'positive'"
-        type="button"
-        :disabled="pending"
-        @click="request(status.enabled ? 'disable' : 'enable')"
-      >
-        {{ status.enabled ? '停用' : '启用' }}
-      </button>
-      <button
-        class="button small"
-        type="button"
-        :disabled="pending || clientBusy.claude || clientBusy.codex"
-        @click="refresh"
-      >
-        刷新状态
-      </button>
+        <button
+          class="button small"
+          type="button"
+          :disabled="pending || clientBusy.claude || clientBusy.codex"
+          @click="refresh"
+        >
+          刷新状态
+        </button>
+        <button
+          v-if="status"
+          class="button small"
+          :class="status.enabled ? 'negative' : 'positive'"
+          type="button"
+          :disabled="pending"
+          @click="request(status.enabled ? 'disable' : 'enable')"
+        >
+          {{ status.enabled ? '停用' : '启用' }}
+        </button>
+      </div>
     </div>
     <p class="hint">
       启用后会记住状态，下次打开 Dev Dock 时如登录会话仍有效会自动恢复；手动停用后不再自动启动。 SCM
@@ -235,21 +235,23 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   background: var(--paper);
 }
-.log-mcp .section-heading {
+.log-mcp .section-heading,
+.service-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
-.log-mcp .section-heading {
-  justify-content: flex-start;
+.service-actions {
+  margin-inline-start: auto;
+  justify-content: flex-end;
 }
 .log-mcp h3 {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  margin: 0 auto 0 0;
+  margin: 0;
   font-size: 17px;
 }
 .log-mcp h4 {
