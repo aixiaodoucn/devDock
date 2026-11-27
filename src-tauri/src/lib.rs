@@ -379,6 +379,46 @@ async fn scm_projects(
     scm::projects(&app).await
 }
 #[tauri::command]
+async fn scm_create_project_options(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<scm::project_create::CreateOptions> {
+    ensure_backend_window(&window)?;
+    app.state::<scm::Runtime>().create_options().await
+}
+#[tauri::command]
+async fn scm_create_project(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    input: scm::project_create::CreateInput,
+) -> Result<String> {
+    ensure_backend_window(&window)?;
+    app.state::<scm::Runtime>().create(input).await
+}
+#[tauri::command]
+async fn scm_edit_project_options(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    project_id: String,
+) -> Result<scm::project_create::edit::EditOptions> {
+    ensure_backend_window(&window)?;
+    app.state::<scm::Runtime>().edit_options(project_id).await
+}
+#[tauri::command]
+async fn scm_update_project(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    project_id: String,
+    input: scm::project_create::CreateInput,
+    authors: Vec<String>,
+    revision: String,
+) -> Result<()> {
+    ensure_backend_window(&window)?;
+    app.state::<scm::Runtime>()
+        .update(project_id, input, authors, revision)
+        .await
+}
+#[tauri::command]
 async fn scm_project_modules(
     app: AppHandle,
     window: tauri::WebviewWindow,
@@ -1081,6 +1121,10 @@ pub fn run() {
             scm_login,
             scm_logout,
             scm_projects,
+            scm_create_project_options,
+            scm_create_project,
+            scm_edit_project_options,
+            scm_update_project,
             scm_project_modules,
             check_environment,
             request_accessibility_permission,

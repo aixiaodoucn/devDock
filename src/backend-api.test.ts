@@ -19,6 +19,63 @@ const repository: BackendRepository = {
 
 describe('后端 Git 与 SCM 桌面接口', () => {
   beforeEach(() => vi.resetAllMocks());
+  it('创建 SCM 项目通过桌面命令加载选项并传递表单快照', async () => {
+    await api.scmCreateProjectOptions();
+    expect(invoke).toHaveBeenLastCalledWith('scm_create_project_options', undefined);
+    const input = reactive({
+      name: '支付',
+      branchSuffix: 'pay',
+      user: 'dev',
+      projectType: 'feature',
+      details: '',
+      modules: ['42'],
+    });
+    vi.mocked(invoke).mockResolvedValueOnce('123');
+    await expect(api.scmCreateProject(input)).resolves.toBe('123');
+    input.modules.push('99');
+    expect(invoke).toHaveBeenLastCalledWith('scm_create_project', {
+      input: { ...input, modules: ['42'] },
+    });
+  });
+  it('通过项目 ID 加载 SCM 编辑选项', async () => {
+    const result = {
+      options: { users: [], modules: [], types: [], defaultUser: 'dev' },
+      input: {
+        name: '支付',
+        branchSuffix: 'pay',
+        projectType: 'feature',
+        user: 'dev',
+        details: '',
+        modules: ['42'],
+      },
+      existingModules: ['42'],
+      authors: ['dev', 'reviewer'],
+      revision: 'rev-1',
+    };
+    vi.mocked(invoke).mockResolvedValueOnce(result);
+    await expect(api.scmEditProjectOptions('123')).resolves.toBe(result);
+    expect(invoke).toHaveBeenLastCalledWith('scm_edit_project_options', { projectId: '123' });
+  });
+  it('更新 SCM 项目时发送表单和作者快照，并保留原始版本', async () => {
+    const input = reactive({
+      name: '支付',
+      branchSuffix: 'pay',
+      projectType: 'feature',
+      user: 'dev',
+      details: '',
+      modules: ['42'],
+    });
+    const authors = reactive(['dev', 'reviewer']);
+    await api.scmUpdateProject('123', input, authors, 'rev-1');
+    input.modules.push('99');
+    authors.pop();
+    expect(invoke).toHaveBeenLastCalledWith('scm_update_project', {
+      projectId: '123',
+      input: { ...input, modules: ['42'] },
+      authors: ['dev', 'reviewer'],
+      revision: 'rev-1',
+    });
+  });
   it('扫描使用显式父目录，预检发送仓库快照且默认不推送', async () => {
     vi.mocked(invoke).mockResolvedValue([]);
     await api.scanBackendChildren('/example/backend');

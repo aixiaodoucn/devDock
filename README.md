@@ -236,7 +236,9 @@ uni-app、Node.js 项目标题旁以主题色标识显示当前 Git 分支，进
 
 有效会话在进程内复用，已记住的 Cookie 未变化时不重复读写本机私有存储；恢复后的会话也使用相同去重规则。Cookie 变化才更新一次，存储失败保留当前内存登录并提示，不随每次查询自动重试保存；登录失败不再先删除旧凭据。
 
-SCM 适配目前使用普通表单登录与 HTML 读取：`/kpi/loginSmt`、`/kpi/project/list`、`/kpi/project/project?show_type=2&id=...`、`/kpi/gitmode/list`。仅接受 HTTPS 根地址，重定向不得离开同一站点；登录页返回 200 也会识别为会话失效。没有假设 OAuth、refresh-token 或任意测试分支合并接口。页面结构不匹配会明确报错，不返回猜测分支。SCM 认证与本机 Git 的 SSH／凭据认证分别处理。
+登录后，「SCM 项目与仓库」右侧提供「创建 SCM 项目」和「修改 SCM 项目」。先填写开发 SCM 项目 ID，再点「修改 SCM 项目」即可编辑该项目；保存后刷新列表并重新加载模块。日期和级别沿用 SCM 原值。
+
+SCM 适配使用普通表单登录、项目表单提交与 HTML 读取。相关路径包括：`/kpi/loginSmt`、`/kpi/project/list`、`/kpi/project/project?show_type=2&id=...`、`/kpi/gitmode/list`。仅接受 HTTPS 根地址，重定向不得离开同一站点；登录页返回 200 也会识别为会话失效。没有假设 OAuth、refresh-token 或任意测试分支合并接口。页面结构不匹配会明确报错，不返回猜测分支。SCM 认证与本机 Git 的 SSH／凭据认证分别处理。
 
 ### 批量 Git 与冲突处理
 

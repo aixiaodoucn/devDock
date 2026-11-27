@@ -174,6 +174,31 @@ export interface ScmProject {
   name: string;
   status: string | null;
 }
+interface ScmOption {
+  value: string;
+  label: string;
+}
+export interface ScmCreateProjectOptions {
+  users: ScmOption[];
+  modules: ScmOption[];
+  types: ScmOption[];
+  defaultUser: string;
+}
+export interface ScmCreateProjectInput {
+  name: string;
+  branchSuffix: string;
+  projectType: string;
+  user: string;
+  details: string;
+  modules: string[];
+}
+export interface ScmEditProjectOptions {
+  options: ScmCreateProjectOptions;
+  input: ScmCreateProjectInput;
+  existingModules: string[];
+  authors: string[];
+  revision: string;
+}
 export interface ScmModule {
   gitId: string | null;
   moduleName: string;

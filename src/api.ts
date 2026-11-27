@@ -31,6 +31,9 @@ import type {
   McpClientStatus,
   ScmStatus,
   ScmProject,
+  ScmCreateProjectOptions,
+  ScmCreateProjectInput,
+  ScmEditProjectOptions,
   ScmModule,
 } from './types';
 import { defaultConfig, normalizeProjectPlatforms } from './types';
@@ -236,6 +239,30 @@ export const api = {
   },
   scmProjects() {
     return native<ScmProject[]>('scm_projects');
+  },
+  scmCreateProjectOptions() {
+    return native<ScmCreateProjectOptions>('scm_create_project_options');
+  },
+  scmCreateProject(input: ScmCreateProjectInput) {
+    return native<string>('scm_create_project', {
+      input: { ...input, modules: [...input.modules] },
+    });
+  },
+  scmEditProjectOptions(projectId: string) {
+    return native<ScmEditProjectOptions>('scm_edit_project_options', { projectId });
+  },
+  scmUpdateProject(
+    projectId: string,
+    input: ScmCreateProjectInput,
+    authors: string[],
+    revision: string,
+  ) {
+    return native<void>('scm_update_project', {
+      projectId,
+      input: { ...input, modules: [...input.modules] },
+      authors: [...authors],
+      revision,
+    });
   },
   scmProjectModules(projectId: string) {
     return native<ScmModule[]>('scm_project_modules', { projectId });

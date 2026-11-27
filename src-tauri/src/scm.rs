@@ -1,6 +1,7 @@
-//! SCM 的只读 HTML 协议适配；Cookie 和登录凭据始终留在 Rust 内。
+//! SCM 项目读取与创建协议适配；Cookie 和登录凭据始终留在 Rust 内。
 
 mod log_runtime;
+pub mod project_create;
 pub mod prodlog;
 pub use log_runtime::LogRuntime;
 

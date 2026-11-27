@@ -10,9 +10,13 @@ import type {
   PomBlockChoice,
   BackendRepositoryStatus,
   ScmModule,
+  ScmCreateProjectOptions,
+  ScmCreateProjectInput,
+  ScmEditProjectOptions,
   ScmProject,
   ScmStatus,
 } from '../types';
+import ScmCreateProjectForm from './ScmCreateProjectForm.vue';
 import ScmProjectInput from './ScmProjectInput.vue';
 const props = defineProps<{ project: Project; saving: boolean; busy: boolean }>();
 const emit = defineEmits<{
@@ -121,6 +125,15 @@ const connected = ref(false);
 const checkingProjectSession = ref(true);
 const sessionExpired = ref(false);
 const projects = ref<ScmProject[]>([]);
+const createOptions = ref<ScmCreateProjectOptions | null>(null);
+const editProject = ref<{ projectId: string; data: ScmEditProjectOptions; saving: boolean } | null>(
+  null,
+);
+const formOptions = computed(() => editProject.value?.data.options ?? createOptions.value);
+function closeProjectForm() {
+  createOptions.value = null;
+  editProject.value = null;
+}
 const development = ref<ScmModule[]>([]);
 const testing = ref<ScmModule[]>([]);
 const loadedDevelopmentId = ref('');
@@ -197,6 +210,7 @@ const locked = computed(
     props.saving ||
     props.busy ||
     !!activity.value ||
+    !!editProject.value?.saving ||
     clearingHistory.value ||
     repositoryLoading.value ||
     running.value ||
@@ -367,6 +381,7 @@ function valid(token: number) {
 function failure(reason: unknown) {
   const message = String(reason instanceof Error ? reason.message : reason);
   if (/sessionExpired|session.expired|会话.*过期|unauthorized|\b401\b/i.test(message)) {
+    closeProjectForm();
     connected.value = false;
     sessionExpired.value = true;
     error.value = 'SCM 会话已过期，请重新登录。';
@@ -582,6 +597,7 @@ watch(
       ++generation;
       ++stateSequence;
       ++historyProjectGeneration;
+      closeProjectForm();
       invalidateRepositoryRefresh();
       confirmingClearHistory.value = false;
       clearingHistory.value = false;
@@ -638,6 +654,7 @@ watch(
   () => sourceId(draft.value.scmDevelopmentProjectId),
   () => {
     ++generation;
+    editProject.value = null;
     invalidateRepositoryRefresh();
     activity.value = '';
     loadedDevelopmentId.value = '';
@@ -688,12 +705,84 @@ function connectionChanged(status: ScmStatus) {
   loadedDevelopmentId.value = '';
   loadedTestId.value = undefined;
   projects.value = [];
+  closeProjectForm();
+}
+async function refreshProjects(token: number) {
+  const result = await api.scmProjects();
+  if (valid(token)) projects.value = result;
 }
 function loadProjects() {
-  void perform('加载 SCM 项目', async (token) => {
-    const result = await api.scmProjects();
-    if (valid(token)) projects.value = result;
+  void perform('加载 SCM 项目', refreshProjects);
+}
+function openCreateProject() {
+  if (!connected.value || formOptions.value) return;
+  void perform('加载创建项目选项', async (token) => {
+    const options = await api.scmCreateProjectOptions();
+    if (valid(token)) createOptions.value = options;
   });
+}
+async function refreshSavedProjectList(token: number) {
+  try {
+    await refreshProjects(token);
+  } catch (reason) {
+    if (valid(token)) {
+      failure(reason);
+      emit('notice', `刷新 SCM 项目列表失败：${error.value}`, true);
+    }
+  }
+}
+function openEditProject() {
+  if (!connected.value || formOptions.value) return;
+  void perform('加载修改项目选项', async (token) => {
+    const projectId = scmProjectId(draft.value.scmDevelopmentProjectId);
+    const data = await api.scmEditProjectOptions(projectId);
+    if (valid(token)) editProject.value = { projectId, data, saving: false };
+  });
+}
+async function updateProject(input: ScmCreateProjectInput, authors: string[]) {
+  const target = editProject.value;
+  if (!desktop || locked.value || !connected.value || !target) return;
+  // 用打开的表单绑定提交锁；测试来源或仓库配置变更不会解锁正在保存的项目。
+  target.saving = true;
+  error.value = '';
+  const current = () => !disposed && editProject.value === target;
+  try {
+    await api.scmUpdateProject(target.projectId, input, authors, target.data.revision);
+    if (!current()) return;
+    emit('notice', `已修改 SCM 项目 ${target.projectId}`);
+    await refreshSavedProjectList(generation);
+  } catch (reason) {
+    if (current()) failure(reason);
+    return;
+  } finally {
+    target.saving = false;
+  }
+  if (current()) {
+    closeProjectForm();
+    await loadModules();
+  }
+}
+async function createProject(input: ScmCreateProjectInput) {
+  if (!connected.value || !createOptions.value) return;
+  const token = generation;
+  let projectId = '';
+  await perform('创建 SCM 项目', async () => {
+    const id = (await api.scmCreateProject(input)).trim();
+    if (!valid(token)) return;
+    createOptions.value = null;
+    projectId = id;
+    const message = id
+      ? `已创建 SCM 项目 ${id}`
+      : 'SCM 项目已创建，但未返回项目 ID，请从项目列表选择开发项目。';
+    emit('notice', message);
+    notice.value = message;
+    await refreshSavedProjectList(token);
+  });
+  // 切换开发项目会同步更新请求代次，待创建流程释放锁后再加载模块。
+  if (valid(token) && connected.value && projectId) {
+    draft.value.scmDevelopmentProjectId = projectId;
+    await loadModules();
+  }
 }
 function applyLoadedMapping(ids?: string[]) {
   const mapped = mapping.value.repositories;
@@ -906,6 +995,7 @@ onBeforeUnmount(() => {
     </p>
     <p v-else-if="notice" role="status">{{ notice }}</p>
     <p v-if="activity" role="status">{{ activity }}…</p>
+    <p v-else-if="editProject?.saving" role="status">正在保存 SCM 项目…</p>
     <p v-if="desktop && !connected && !checkingProjectSession" class="hint">
       {{ sessionExpired ? '项目 SCM 会话已过期' : '项目 SCM 尚未连接' }}，请前往「偏好设置 → MCP
       服务 → 连接与权限」中的「项目 SCM 登录」。
@@ -916,14 +1006,42 @@ onBeforeUnmount(() => {
           SCM 项目与仓库
           <span>关联 {{ visibleRepositories.length }} / 配置 {{ draft.subProjects.length }}</span>
         </h3>
-        <button
-          class="button small"
-          :disabled="!desktop || !connected || locked"
-          @click="loadProjects"
-        >
-          加载项目列表
-        </button>
+        <div class="toolbar">
+          <button
+            class="button small"
+            :disabled="!desktop || !connected || locked"
+            @click="loadProjects"
+          >
+            加载项目列表
+          </button>
+          <button
+            v-if="desktop && connected"
+            class="button small"
+            :disabled="locked || !!formOptions"
+            @click="openCreateProject"
+          >
+            创建 SCM 项目
+          </button>
+          <button
+            v-if="desktop && connected"
+            class="button small"
+            :disabled="locked || !!formOptions || !draft.scmDevelopmentProjectId.trim()"
+            @click="openEditProject"
+          >
+            修改 SCM 项目
+          </button>
+        </div>
       </div>
+      <ScmCreateProjectForm
+        v-if="connected && formOptions"
+        :options="formOptions"
+        :edit="editProject?.data"
+        :project-id="editProject?.projectId"
+        :disabled="locked"
+        @submit="createProject"
+        @update="updateProject"
+        @cancel="closeProjectForm"
+      />
       <fieldset :disabled="locked">
         <div class="scm-projects">
           <ScmProjectInput
