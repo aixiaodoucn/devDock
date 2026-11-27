@@ -1041,7 +1041,9 @@ onBeforeUnmount(() => {
     <p v-if="desktop && !connected && !checkingProjectSession" class="hint">
       {{ sessionExpired ? '项目 SCM 会话已过期' : '项目 SCM 尚未连接' }}，请前往「偏好设置 → MCP
       服务 → 连接与权限」中的「项目 SCM 登录」。
-      <button type="button" class="button small" @click="emit('openProjectScm')">去登录</button>
+      <button type="button" class="button small tone-change" @click="emit('openProjectScm')">
+        去登录
+      </button>
     </p>
     <section class="workbench-card" aria-label="SCM 项目与仓库">
       <div class="section-heading">
@@ -1051,7 +1053,7 @@ onBeforeUnmount(() => {
         </h3>
         <div class="toolbar">
           <button
-            class="button small"
+            class="button small tone-read"
             :disabled="!desktop || !connected || locked"
             @click="loadProjects"
           >
@@ -1059,7 +1061,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             v-if="desktop && connected"
-            class="button small"
+            class="button small tone-positive"
             :disabled="locked || !!formOptions"
             @click="openCreateProject"
           >
@@ -1067,7 +1069,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             v-if="desktop && connected"
-            class="button small"
+            class="button small tone-change"
             :disabled="locked || !!formOptions || !draft.scmDevelopmentProjectId.trim()"
             @click="openEditProject"
           >
@@ -1107,14 +1109,14 @@ onBeforeUnmount(() => {
       </fieldset>
       <div class="toolbar">
         <button
-          class="button small"
+          class="button small tone-read"
           :disabled="!desktop || !connected || locked"
           @click="loadModules"
         >
           加载模块
         </button>
         <button
-          class="button small"
+          class="button small tone-read"
           :disabled="!desktop || !developmentLoaded || locked"
           :title="!developmentLoaded ? '请先加载开发 SCM 模块。' : undefined"
           @click="refreshRepositories()"
@@ -1175,7 +1177,11 @@ onBeforeUnmount(() => {
             >
           </div>
           <div class="toolbar">
-            <button class="button small" :disabled="!desktop" @click="openPath(repo.path)">
+            <button
+              class="button small tone-read"
+              :disabled="!desktop"
+              @click="openPath(repo.path)"
+            >
               打开目录
             </button>
           </div>
@@ -1226,7 +1232,7 @@ onBeforeUnmount(() => {
               >SCM Git ID：<code data-scm-git-id>{{ module.gitId || '未提供' }}</code></span
             >
           </div>
-          <button class="button small" :disabled="locked" @click="emit('edit')">
+          <button class="button small tone-change" :disabled="locked" @click="emit('edit')">
             关联本地目录
           </button>
         </div>
@@ -1260,7 +1266,7 @@ onBeforeUnmount(() => {
       <p v-if="dirty" class="hint" data-scm-unsaved>SCM 配置有更改，请重新加载模块。</p>
       <div class="toolbar">
         <button
-          class="button small"
+          class="button small tone-read"
           :disabled="!!pullCurrentDisabledReason"
           :title="pullCurrentDisabledReason || '仅快进更新勾选仓库各自的当前分支，不切换、不推送。'"
           @click="prepare('pull-current')"
@@ -1268,21 +1274,21 @@ onBeforeUnmount(() => {
           拉取当前分支
         </button>
         <button
-          class="button small"
+          class="button small tone-change"
           :disabled="!!switchDisabledReason"
           :title="switchDisabledReason || '获取远端并预检，确认计划后切换开发分支。'"
           @click="prepare('switch')"
         >
           切换开发分支</button
         ><button
-          class="button small"
+          class="button small tone-caution"
           :disabled="!!pushDevDisabledReason"
           :title="pushDevDisabledReason || '获取远端并预检，确认计划后推送开发分支到远程。'"
           @click="prepare('push-dev')"
         >
           推送开发分支到远程</button
         ><button
-          class="button small"
+          class="button small tone-change"
           :disabled="!!switchTestDisabledReason"
           :title="
             switchTestDisabledReason ||
@@ -1292,7 +1298,7 @@ onBeforeUnmount(() => {
         >
           切换到测试分支</button
         ><button
-          class="button small"
+          class="button small tone-change"
           :disabled="!!switchMasterDisabledReason"
           :title="
             switchMasterDisabledReason ||
@@ -1302,7 +1308,7 @@ onBeforeUnmount(() => {
         >
           切换master分支</button
         ><button
-          class="button small"
+          class="button small tone-caution"
           :disabled="!!mergeDisabledReason"
           :title="mergeDisabledReason || '获取远端并预检，确认计划后合并到测试分支。'"
           @click="prepare('merge')"
@@ -1401,11 +1407,11 @@ onBeforeUnmount(() => {
           </select>
         </label>
         <div class="toolbar">
-          <button class="button small" :disabled="locked" @click="refreshHistory()">
+          <button class="button small tone-read" :disabled="locked" @click="refreshHistory()">
             刷新记录
           </button>
           <button
-            class="button small"
+            class="button small tone-stop"
             :disabled="locked"
             :aria-expanded="confirmingClearHistory"
             @click="confirmingClearHistory = true"
@@ -1442,7 +1448,7 @@ onBeforeUnmount(() => {
         <div class="section-heading">
           <h4>执行结果 · {{ operationLabels[operation.status] }}</h4>
           <button
-            class="button small"
+            class="button small tone-stop"
             v-if="operation.status === 'running'"
             :disabled="!!activity"
             @click="cancel"
@@ -1451,7 +1457,7 @@ onBeforeUnmount(() => {
           </button>
           <button
             v-if="canContinue"
-            class="button small"
+            class="button small tone-positive"
             :disabled="locked || dirty"
             title="只重新预检未执行的仓库，确认计划后执行"
             @click="prepareRemaining"
@@ -1550,7 +1556,7 @@ onBeforeUnmount(() => {
                 }}
               </p>
               <button
-                class="button small"
+                class="button small tone-caution"
                 :disabled="locked || operation.status !== 'paused' || !selectedPomChoices(item)"
                 @click="applyPomChoices(item)"
               >
@@ -1584,7 +1590,7 @@ onBeforeUnmount(() => {
                     <pre tabindex="0">{{ item.pomConflict.testContent }}</pre>
                   </details>
                   <button
-                    class="button small"
+                    class="button small tone-caution"
                     :disabled="locked"
                     @click="resolvePomConflict(item.repoId, 'test')"
                   >
@@ -1598,7 +1604,7 @@ onBeforeUnmount(() => {
                     <pre tabindex="0">{{ item.pomConflict.developmentContent }}</pre>
                   </details>
                   <button
-                    class="button small"
+                    class="button small tone-caution"
                     :disabled="locked"
                     @click="resolvePomConflict(item.repoId, 'development')"
                   >
@@ -1618,29 +1624,31 @@ onBeforeUnmount(() => {
               />已手工提交并确认工作树干净</label
             >
             <div class="toolbar">
-              <button class="button small" @click="openPath(item.worktreePath)">打开工作树</button>
+              <button class="button small tone-read" @click="openPath(item.worktreePath)">
+                打开工作树
+              </button>
               <button
-                class="button small"
+                class="button small tone-read"
                 :disabled="locked"
                 @click="openWorktreeInIde(item.repoId, 'IDEA')"
               >
                 在 IDEA 中打开
               </button>
               <button
-                class="button small"
+                class="button small tone-read"
                 :disabled="locked"
                 @click="openWorktreeInIde(item.repoId, 'WebStorm')"
               >
                 在 WebStorm 中打开工作树
               </button>
               <button
-                class="button small"
+                class="button small tone-positive"
                 :disabled="locked || !cleanConfirmed[`${operation.planId}:${item.repoId}`]"
                 @click="resolveWorktree(item.repoId, 'complete')"
               >
                 已手工解决，完成处理</button
               ><button
-                class="button small"
+                class="button small tone-stop"
                 :disabled="locked"
                 @click="resolveWorktree(item.repoId, 'abort')"
               >
@@ -1658,6 +1666,33 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 同类操作共用色调；禁用按钮沿用工作台的中性样式。 */
+.tone-read {
+  --action-ink: #245989;
+}
+.tone-positive {
+  --action-ink: var(--success-text);
+}
+.tone-change {
+  --action-ink: #654a8c;
+}
+.tone-caution {
+  --action-ink: #875312;
+}
+.tone-stop {
+  --action-ink: var(--danger);
+}
+.backend-workbench
+  .button:is(.tone-read, .tone-positive, .tone-change, .tone-caution, .tone-stop):enabled {
+  color: var(--action-ink);
+  background: color-mix(in srgb, var(--action-ink) 8%, var(--paper));
+  border-color: color-mix(in srgb, var(--action-ink) 34%, var(--paper));
+}
+.backend-workbench
+  .button:is(.tone-read, .tone-positive, .tone-change, .tone-caution, .tone-stop):enabled:hover {
+  background: color-mix(in srgb, var(--action-ink) 15%, var(--paper));
+  border-color: var(--action-ink);
+}
 .pom-conflict {
   margin-block: 10px;
 }
