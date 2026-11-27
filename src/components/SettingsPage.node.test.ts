@@ -684,7 +684,7 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
   const panel = mount();
   try {
     await flush();
-    expect(panel.root.querySelector('[aria-label="日志 SCM 登录"]')).toBeNull();
+    expect(panel.root.querySelector('[aria-label="日志 SCM 登录"]')).not.toBeNull();
     const menu = [...panel.root.querySelectorAll<HTMLButtonElement>('nav button')];
     expect(menu.map((item) => item.textContent?.trim())).toEqual([
       '开发工具',
@@ -693,9 +693,7 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
       'MCP 服务',
       '外观主题',
     ]);
-    expect(menu[0].getAttribute('aria-current')).toBe('page');
-    menu[3].click();
-    await flush();
+    expect(menu[3].getAttribute('aria-current')).toBe('page');
     const tabs = [...panel.root.querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent?.trim())).toEqual([
       '连接与权限',

@@ -31,6 +31,7 @@ const props = defineProps<{
   saving: boolean;
   busy: boolean;
   projectCount: number;
+  initialSection?: 'tools' | 'commands' | 'mcp';
   focusProjectScm?: boolean;
 }>();
 const emit = defineEmits<{
@@ -72,9 +73,7 @@ const SETTINGS_SECTIONS = [
   { id: 'mcp', label: 'MCP 服务', icon: Plug },
   { id: 'appearance', label: '外观主题', icon: Palette },
 ] as const;
-const activeSection = ref<(typeof SETTINGS_SECTIONS)[number]['id']>(
-  props.focusProjectScm ? 'mcp' : 'tools',
-);
+const activeSection = ref<(typeof SETTINGS_SECTIONS)[number]['id']>(props.initialSection ?? 'mcp');
 const projectScm = ref<InstanceType<typeof ScmConnection>>();
 onMounted(() => {
   // 聚焦卡片会同时将其滚动到可视区域。

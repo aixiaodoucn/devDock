@@ -77,9 +77,10 @@ const sidebar = useSidebarResize();
 const config = ref<AppConfig>(defaultConfig());
 const selectedId = ref('');
 const page = ref<'project' | 'settings' | 'help' | 'history'>('project');
-const focusProjectScm = ref(false);
-function openSettings(projectScm = false) {
-  focusProjectScm.value = projectScm;
+type SettingsTarget = 'mcp' | 'tools' | 'commands' | 'project-scm';
+const settingsTarget = ref<SettingsTarget>('mcp');
+function openSettings(target: SettingsTarget = 'mcp') {
+  settingsTarget.value = target;
   page.value = 'settings';
 }
 const search = ref('');
@@ -775,7 +776,8 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
       </div>
       <SettingsPage
         v-else-if="page === 'settings'"
-        :focus-project-scm="focusProjectScm"
+        :initial-section="settingsTarget === 'project-scm' ? 'mcp' : settingsTarget"
+        :focus-project-scm="settingsTarget === 'project-scm'"
         :settings="config.settings"
         :tools="tools"
         :detecting="detecting"
@@ -841,7 +843,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         <div class="welcome-footer">
           <span class="local-dot"></span>源码留在本机，工具各司其职。<button
             class="text-button"
-            @click="openSettings()"
+            @click="openSettings('tools')"
           >
             配置开发工具 <ArrowUpRight :size="14" />
           </button>
@@ -909,7 +911,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
           :busy="busy || submitting || saving"
           @select="selectProjectAiTool"
           @launch="openProjectTerminal"
-          @configure="openSettings()"
+          @configure="openSettings('commands')"
         />
         <nav v-if="project.platforms.length" class="tabs platform-tabs" aria-label="项目平台">
           <button
@@ -1083,7 +1085,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         </template>
         <BackendWorkbench
           v-else-if="project.type === 'backend'"
-          @open-project-scm="openSettings(true)"
+          @open-project-scm="openSettings('project-scm')"
           :key="project.id"
           :project="project"
           :saving="saving"
@@ -1277,7 +1279,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
       @close="showEnvironment = false"
       @settings="
         showEnvironment = false;
-        openSettings();
+        openSettings('tools');
       "
       @edit="
         showEnvironment = false;
