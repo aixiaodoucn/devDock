@@ -525,10 +525,13 @@ label {
 }
 .module-list,
 .module-tags {
-  max-height: 11rem;
-  overflow: auto;
   margin-top: 6px;
   padding: 4px;
+}
+.module-list,
+.authors .module-tags {
+  max-height: 11rem;
+  overflow: auto;
 }
 .module-list {
   display: grid;
