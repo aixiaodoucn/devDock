@@ -12,6 +12,7 @@ Dev Dock 桌面端提供可选的本机 HTTP MCP 服务。它不调用模型、�
 
 | 工具 | 用途 |
 | --- | --- |
+| `scm_project_modules` | 按 `projectId` 只读查询模块名称、SCM Git ID 和实际分支，不返回仓库地址或负责人。 |
 | `scm_project_options` | 不传项目 ID 时读取创建表单选项；传 `projectId` 时读取可编辑字段、负责人、已关联模块及 `revision`。 |
 | `scm_create_project` | 使用选项中的实际值创建项目。 |
 | `scm_update_project` | 按 `projectId`、`revision` 更新字段与负责人；`input.modules` 仅包含待追加的模块。项目变化后先重新读取选项。 |

@@ -8,6 +8,7 @@ const DESCRIBE: &str = "prod_db_describe_table";
 const QUERY: &str = "prod_db_query_readonly";
 
 const OPTIONS: &str = "scm_project_options";
+const MODULES: &str = "scm_project_modules";
 const CREATE: &str = "scm_create_project";
 const UPDATE: &str = "scm_update_project";
 const REMOVE: &str = "scm_remove_project_module";
@@ -36,7 +37,7 @@ const CHOICE_LIMIT: usize = 128;
 
 fn channel(name: &str) -> (&'static str, &'static str) {
     match name {
-        OPTIONS | CREATE | UPDATE | REMOVE => ("scm-project", "project"),
+        OPTIONS | MODULES | CREATE | UPDATE | REMOVE => ("scm-project", "project"),
         GIT_PREPARE | GIT_EXECUTE | GIT_STATE => ("backend-git", "local"),
         DESCRIBE | QUERY => ("sqlpad", "production"),
         _ => ("scm", "production"),
@@ -72,7 +73,7 @@ pub(crate) fn tool_catalog(match_limit: usize) -> Vec<CatalogEntry> {
         tool: Tool {
             name,
             title,
-            description: if matches!(name, OPTIONS | CREATE | UPDATE | REMOVE) {
+            description: if matches!(name, OPTIONS | MODULES | CREATE | UPDATE | REMOVE) {
                 format!("项目 SCM。使用偏好设置中登录的项目 SCM 站点。{description}")
             } else if matches!(name, GIT_PREPARE | GIT_EXECUTE | GIT_STATE) {
                 format!("后端项目 Git。仅针对显式指定的工作台项目。{description}")
@@ -169,6 +170,14 @@ pub(crate) fn tool_catalog(match_limit: usize) -> Vec<CatalogEntry> {
     query.tool.input_schema["not"] = json!({"required":["filter","filters"]});
     let id = json!({"type":"string","pattern":"^[0-9]{1,20}$","description":"目标项目 SCM 的数字项目 ID。"});
     let options = entry(OPTIONS, "读取项目表单", "只读。省略 projectId 获取创建候选项，指定 projectId 获取该项目的编辑表单、负责人及 revision。", &[], json!({"projectId":id}), "读取目标项目的编辑选项和版本。");
+    let modules = entry(
+        MODULES,
+        "查询项目模块与分支",
+        "只读。按项目 ID 列出关联模块的名称、SCM Git ID 和实际分支，不读取编辑表单或操作 Git。",
+        &["projectId"],
+        json!({"projectId":id}),
+        "查询指定 SCM 项目有哪些模块及各自分支。",
+    );
     let text = |description: &str, min, max| json!({"type":"string","minLength":min,"maxLength":max,"description":description});
     let choices = |description: &str, min| json!({"type":"array","minItems":min,"maxItems":CHOICE_LIMIT,"uniqueItems":true,"items":text("候选项的值。",1,FIELD_LIMIT),"description":description});
     let input = json!({"type":"object","description":"用户确认的完整项目表单。","required":INPUT_FIELDS,"additionalProperties":false,"properties":{
@@ -222,8 +231,8 @@ pub(crate) fn tool_catalog(match_limit: usize) -> Vec<CatalogEntry> {
         "查看指定项目的 Git 计划状态。",
     );
     vec![
-        resolve, search, scan, describe, query, options, create, update, remove, prepare, execute,
-        state,
+        resolve, search, scan, describe, query, options, modules, create, update, remove, prepare,
+        execute, state,
     ]
 }
 
@@ -288,6 +297,7 @@ fn valid_project_args(name: &str, args: &Value) -> bool {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     });
     match name {
+        MODULES => return map.len() == 1 && project_id_valid,
         OPTIONS => return map.is_empty() || (map.len() == 1 && project_id_valid),
         REMOVE => {
             return map.len() == 3
@@ -330,7 +340,7 @@ pub(super) fn valid_args(name: &str, args: &Value, match_limit: usize) -> bool {
     if matches!(name, GIT_PREPARE | GIT_EXECUTE | GIT_STATE) {
         return valid_git_args(name, args);
     }
-    if matches!(name, OPTIONS | CREATE | UPDATE | REMOVE) {
+    if matches!(name, OPTIONS | MODULES | CREATE | UPDATE | REMOVE) {
         return valid_project_args(name, args);
     }
     if is_sqlpad(name) {
@@ -449,6 +459,7 @@ where
                 Some(DESCRIBE) => DESCRIBE,
                 Some(QUERY) => QUERY,
                 Some(OPTIONS) => OPTIONS,
+                Some(MODULES) => MODULES,
                 Some(CREATE) => CREATE,
                 Some(UPDATE) => UPDATE,
                 Some(REMOVE) => REMOVE,
@@ -495,7 +506,14 @@ where
                 Ok(Err(e))
                     if matches!(
                         name,
-                        OPTIONS | CREATE | UPDATE | REMOVE | GIT_PREPARE | GIT_EXECUTE | GIT_STATE
+                        OPTIONS
+                            | MODULES
+                            | CREATE
+                            | UPDATE
+                            | REMOVE
+                            | GIT_PREPARE
+                            | GIT_EXECUTE
+                            | GIT_STATE
                     ) =>
                 {
                     let label = if matches!(name, GIT_PREPARE | GIT_EXECUTE | GIT_STATE) {
@@ -529,6 +547,7 @@ where
                         | "Conflict: 项目已变化，请重新读取编辑选项" => {
                             "项目版本冲突，请重新读取表单并核对变更"
                         }
+                        _ if name == MODULES => "读取模块失败，请检查项目 SCM 登录和访问权限",
                         _ if name == OPTIONS => "读取表单失败，请检查项目 SCM 登录和权限",
                         _ if name == GIT_STATE => "无法读取计划状态，请核对项目与计划 ID",
                         _ => "未确认操作成功，请在桌面端核对状态，勿自动重试",
@@ -554,6 +573,7 @@ where
                     "后端项目 Git｜调用超时，请核对项目和计划状态，勿自动重试".into(),
                     true,
                 ),
+                Err(_) if name == MODULES => ("项目 SCM｜读取模块超时".into(), true),
                 Err(_) if name == OPTIONS => ("项目 SCM｜读取表单超时".into(), true),
                 Err(_) if matches!(name, CREATE | UPDATE | REMOVE) => (
                     "项目 SCM｜调用超时，执行状态未知，请核对项目，勿自动重试".into(),

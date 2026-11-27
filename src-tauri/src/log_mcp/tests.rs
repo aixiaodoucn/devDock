@@ -41,7 +41,7 @@ fn loopback_protocol_and_guards() {
             let result = &reply["result"][key];
             assert!(!result.is_null());
             if method == "tools/list" {
-                assert_eq!(result.as_array().unwrap().len(), 12);
+                assert_eq!(result.as_array().unwrap().len(), 13);
             } else if method == "tools/call" {
                 let payload: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
                 assert_eq!(payload["environment"], "production");
@@ -107,6 +107,7 @@ fn catalog_matches_tools_list_and_documents_each_parameter() {
         ("prod_db_describe_table", "sqlpad", "SQLPad"),
         ("prod_db_query_readonly", "sqlpad", "SQLPad"),
         ("scm_project_options", "scm-project", "项目 SCM"),
+        ("scm_project_modules", "scm-project", "项目 SCM"),
         ("scm_create_project", "scm-project", "项目 SCM"),
         ("scm_update_project", "scm-project", "项目 SCM"),
         ("scm_remove_project_module", "scm-project", "项目 SCM"),
@@ -555,6 +556,7 @@ fn project_tools_route_to_the_selected_channel_and_allow_time_for_approval() {
     let input = json!({"name":"项目","branchSuffix":"","projectType":"t","user":"u","details":"","modules":[]});
     sqlpad_test_runtime().block_on(async {
         for (name, args, source, environment, timeout) in [
+            ("scm_project_modules",json!({"projectId":"1"}),"scm-project","project",25),
             ("scm_project_options",json!({}),"scm-project","project",25),
             ("scm_project_options",json!({"projectId":"1"}),"scm-project","project",25),
             ("scm_create_project",json!({"input":input}),"scm-project","project",150),
@@ -625,6 +627,7 @@ fn project_tools_reject_invalid_forms_and_git_scope() {
     }
     for id in [json!(null), json!("../target"), json!("1".repeat(21))] {
         assert!(!valid_args("scm_project_options", &json!({"projectId":id})));
+        assert!(!valid_args("scm_project_modules", &json!({"projectId":id})));
     }
     for (key, value) in [
         ("revision", json!("short")),

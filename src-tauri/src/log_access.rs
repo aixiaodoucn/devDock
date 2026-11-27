@@ -185,6 +185,17 @@ fn field<'a>(args: &'a Value, name: &str) -> Result<&'a str> {
 
 async fn project_call(app: &AppHandle, tool: &str, args: Value) -> Result<Value> {
     let runtime = app.state::<scm::Runtime>();
+    if tool == "scm_project_modules" {
+        let id = field(&args, "projectId")?;
+        // MCP 仅输出关联清单，不向客户端传递仓库地址或编辑表单。
+        let modules: Vec<_> = runtime
+            .project_modules(id.to_owned())
+            .await?
+            .into_iter()
+            .map(|m| json!({"moduleName":m.module_name,"gitId":m.git_id,"branch":m.branch}))
+            .collect();
+        return Ok(json!({"projectId":id,"modules":modules}));
+    }
     if tool == "scm_project_options" {
         return match args.get("projectId") {
             Some(id) => serde_json::to_value(
@@ -264,6 +275,7 @@ async fn dispatch(
     if matches!(
         tool,
         "scm_project_options"
+            | "scm_project_modules"
             | "scm_create_project"
             | "scm_update_project"
             | "scm_remove_project_module"
