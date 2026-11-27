@@ -112,10 +112,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="scm-connection" :class="{ 'source-login': scope === 'logs' }" :aria-label="title">
+  <section class="source-login" :aria-label="title">
     <SourceLoginHeader
-      v-if="scope === 'logs'"
-      title="日志 SCM 登录"
+      :title="title"
+      :environment="scope === 'logs' ? '生产环境' : '项目 SCM'"
       :connected="!!status?.connected && !expired"
       :state="
         expired
@@ -130,11 +130,8 @@ onBeforeUnmount(() => {
       "
       :disabled="!desktop || pending || disabled"
       @refresh="request('status')"
+      @logout="request('logout')"
     />
-    <div v-else class="connection-heading">
-      <strong>{{ title }}</strong
-      ><span>{{ status?.connected && !expired ? '已连接' : '未连接' }}</span>
-    </div>
     <p v-if="scope === 'logs'" class="hint">
       请填写生产 SCM 的 HTTPS 根地址。本通道只查生产日志，不连接测试跳板机，也不会使用项目 SCM
       的账号。
@@ -152,25 +149,6 @@ onBeforeUnmount(() => {
           <dd>{{ status.username || '未提供用户名' }}</dd>
         </div>
       </dl>
-      <div class="connection-actions">
-        <button
-          v-if="scope !== 'logs'"
-          class="button small"
-          type="button"
-          :disabled="!desktop || pending || disabled"
-          @click="request('status')"
-        >
-          刷新状态
-        </button>
-        <button
-          class="button small negative"
-          type="button"
-          :disabled="!desktop || pending || disabled"
-          @click="request('logout')"
-        >
-          退出登录
-        </button>
-      </div>
     </div>
     <p v-else-if="pending && !status" class="hint" role="status">正在检查登录状态…</p>
     <form v-else @submit.prevent="request('login')">
@@ -195,14 +173,7 @@ onBeforeUnmount(() => {
         >
         <div class="connection-actions">
           <button class="button small primary" type="submit">
-            {{ pending ? '处理中…' : '登录' }}</button
-          ><button
-            v-if="scope !== 'logs'"
-            class="button small"
-            type="button"
-            @click="request('status')"
-          >
-            刷新状态
+            {{ pending ? '处理中…' : '登录' }}
           </button>
         </div>
       </fieldset>
@@ -212,96 +183,3 @@ onBeforeUnmount(() => {
     <slot v-if="scope === 'logs'" name="options" :connected="!!status?.connected && !expired" />
   </section>
 </template>
-
-<style scoped>
-/* 独立日志登录使用共享卡片样式，工作台沿用原布局。 */
-.scm-connection:not(.source-login) {
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--paper);
-}
-.connection-heading,
-.connection-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.connection-heading {
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-.connection-heading span,
-.hint {
-  color: var(--muted);
-  font-size: 12px;
-}
-.connection-summary {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px 20px;
-}
-.connection-summary dl {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 24px;
-  min-width: 0;
-  margin: 0;
-  font-size: 12px;
-}
-.connection-summary dl > div {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-.connection-summary dt {
-  color: var(--muted);
-  flex-shrink: 0;
-}
-.connection-summary dd {
-  min-width: 0;
-  margin: 0;
-  color: var(--ink);
-  overflow-wrap: anywhere;
-}
-fieldset {
-  display: grid;
-  grid-template-columns: minmax(180px, 2fr) 1fr 1fr;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-label {
-  display: grid;
-  gap: 5px;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-input:not([type='checkbox']) {
-  min-width: 0;
-  width: 100%;
-}
-.remember {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  grid-column: 1 / -1;
-}
-.connection-actions {
-  grid-column: 1 / -1;
-  flex-wrap: wrap;
-}
-[role='alert'] {
-  color: var(--danger-text);
-  font-size: 12px;
-}
-@media (max-width: 700px) {
-  fieldset {
-    grid-template-columns: 1fr;
-  }
-}
-</style>

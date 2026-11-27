@@ -1,4 +1,4 @@
-/* 仅用于生产连接设置；后端项目工作台的 SCM 表单不受影响。 */
+/* 项目 SCM、日志 SCM 和 SQLPad 登录卡片共享布局。 */
 .source-login {
   display: grid;
   gap: 12px;

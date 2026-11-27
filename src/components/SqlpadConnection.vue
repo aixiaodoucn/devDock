@@ -96,6 +96,7 @@ onMounted(refresh);
       :disabled="busy"
       refresh-label="刷新 SQLPad 状态"
       @refresh="refresh"
+      @logout="update(api.sqlpadLogout, '退出状态未知，请刷新状态。')"
     />
     <p class="hint">
       仅支持 MySQL / PostgreSQL
@@ -172,23 +173,14 @@ onMounted(refresh);
           </label>
         </div>
       </div>
-      <div class="actions">
+      <div v-if="status.connections.length" class="actions">
         <button
-          v-if="status.connections.length"
           class="button primary"
           type="button"
           :disabled="busy || !confirmed || !choice || candidate === selected?.id"
           @click="selectConnection"
         >
           保存只读连接
-        </button>
-        <button
-          class="button negative"
-          type="button"
-          :disabled="busy"
-          @click="update(api.sqlpadLogout, '退出状态未知，请刷新状态。')"
-        >
-          退出 SQLPad
         </button>
       </div>
     </template>

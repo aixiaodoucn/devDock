@@ -46,7 +46,7 @@ it('恢复有效会话后仅显示地址、用户名及状态操作，不显示�
     expect(panel.root.querySelector('.connection-summary')?.textContent).toContain(status.baseUrl);
     expect(panel.root.querySelector('.connection-summary')?.textContent).toContain(status.username);
     expect(
-      [...panel.root.querySelectorAll('button')].map((button) => button.textContent?.trim()),
+      [...panel.root.querySelectorAll('header button')].map((button) => button.textContent?.trim()),
     ).toEqual(['刷新状态', '退出登录']);
     expect(api.scmLogin).not.toHaveBeenCalled();
   } finally {
@@ -111,7 +111,7 @@ it('本机私有存储失败的安全提示可见，刷新发现过期后清除�
       .find((button) => button.textContent?.trim() === '刷新状态')!
       .click();
     await flush();
-    expect(panel.root.textContent).toContain('未连接');
+    expect(panel.root.textContent).toContain('已过期');
     expect(panel.root.textContent).toContain('会话已过期');
     expect(panel.changed).toHaveBeenLastCalledWith(expect.objectContaining({ connected: false }));
     expect(panel.root.querySelector('.connection-summary')).toBeNull();

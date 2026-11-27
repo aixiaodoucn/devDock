@@ -110,7 +110,7 @@ it('切换候选连接需要重新确认数据库权限，保存后采用后端�
     '连接 two',
   );
   vi.mocked(invoke).mockResolvedValueOnce(offline);
-  root.querySelector<HTMLButtonElement>('.actions button:last-child')!.click();
+  root.querySelector<HTMLButtonElement>('header button.negative')!.click();
   await settle();
   expect(invoke).toHaveBeenLastCalledWith('sqlpad_logout', undefined);
   expect(root.textContent).not.toContain('连接 two');
@@ -150,7 +150,7 @@ it.each([
   if (remembered) expect(root.textContent).toContain('恢复选中的连接，免审批需重新开启');
   if (warning) expect(root.textContent).toContain(warning);
   vi.mocked(invoke).mockResolvedValueOnce(offline);
-  root.querySelector<HTMLButtonElement>('.actions button:last-child')!.click();
+  root.querySelector<HTMLButtonElement>('header button.negative')!.click();
   await settle();
   expect(root.querySelector<HTMLInputElement>('form input[type=checkbox]')?.checked).toBe(false);
   if (warning) expect(root.textContent).not.toContain(warning);
