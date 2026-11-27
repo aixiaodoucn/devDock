@@ -11,7 +11,7 @@ const props = withDefaults(
     disabled: false,
   },
 );
-const title = computed(() => (props.scope === 'logs' ? '日志 SCM 登录' : 'SCM 连接'));
+const title = computed(() => (props.scope === 'logs' ? '日志 SCM 登录' : '项目 SCM 登录'));
 const emit = defineEmits<{ connected: [status: ScmStatus]; change: [status: ScmStatus] }>();
 const baseUrl = ref('');
 const username = ref('');
@@ -136,8 +136,8 @@ onBeforeUnmount(() => {
       ><span>{{ status?.connected && !expired ? '已连接' : '未连接' }}</span>
     </div>
     <p v-if="scope === 'logs'" class="hint">
-      请填写生产 SCM 的 HTTPS
-      根地址。本通道只查生产日志，不连接测试跳板机，也不会使用后端工作台的账号。
+      请填写生产 SCM 的 HTTPS 根地址。本通道只查生产日志，不连接测试跳板机，也不会使用项目 SCM
+      的账号。
     </p>
     <p v-if="!desktop" class="hint">浏览器预览：SCM 登录需要桌面应用。</p>
     <p v-if="expired" role="alert">会话已过期，请重新登录。</p>

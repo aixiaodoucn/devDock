@@ -530,6 +530,7 @@ watch(
               :hidden="mcpTab !== 'connections'"
             >
               <div v-if="mcpTab === 'connections'" class="settings-log-tools">
+                <ScmConnection scope="project" />
                 <div class="connection-accounts" role="group" aria-label="生产数据源登录">
                   <ScmConnection scope="logs" @change="logSessionRevision++">
                     <template #options="{ connected }">

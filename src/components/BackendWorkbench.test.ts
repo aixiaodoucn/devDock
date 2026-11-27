@@ -121,10 +121,11 @@ function input(root: HTMLElement, selector: string, value: string) {
   field.value = value;
   field.dispatchEvent(new Event('input'));
 }
-it('工作台保留项目 SCM 连接且不加载日志 MCP', async () => {
+it('工作台只读取项目 SCM 状态，不显示登录卡片或加载日志 MCP', async () => {
   const panel = await mount();
   try {
-    expect(panel.root.querySelector('[aria-label="SCM 连接"]')).toBeTruthy();
+    expect(api.scmStatus).toHaveBeenCalledOnce();
+    expect(panel.root.querySelector('[aria-label="项目 SCM 登录"]')).toBeNull();
     expect(panel.root.querySelector('[aria-label="日志 MCP"]')).toBeNull();
     expect(api.logMcpStatus).not.toHaveBeenCalled();
   } finally {
@@ -1385,7 +1386,7 @@ it('映射字段只读且没有保存映射按钮，SCM 自动保存不导出凭
     expect(panel.root.querySelector('code[data-development]')?.textContent).toBe('develop');
     expect(panel.root.querySelector('code[data-test]')?.textContent).toBe('test');
     expect(panel.root.querySelector('[name="password"]')).toBeNull();
-    expect(panel.root.querySelector('.connection-summary')?.textContent).toContain('fixture-user');
+    expect(panel.root.textContent).not.toContain('fixture-user');
     vi.mocked(api.scmProjectModules).mockResolvedValue([
       { gitId: '42', moduleName: 'service', gitRemoteUrl: null, branch: 'feature/new' },
     ]);

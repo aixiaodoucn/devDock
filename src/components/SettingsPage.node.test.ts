@@ -652,6 +652,7 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
     remembered: false,
     message: null,
   };
+  vi.mocked(api.scmStatus).mockResolvedValue(disconnected);
   vi.mocked(api.logScmStatus).mockResolvedValue(disconnected);
   vi.mocked(api.logScmLogin).mockResolvedValue({
     ...disconnected,
@@ -695,6 +696,7 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
     expect(api.logMcpRawStatus).not.toHaveBeenCalled();
     const cards = panel.root.querySelectorAll('#mcp-connections-panel section[aria-label]');
     expect([...cards].map((card) => card.getAttribute('aria-label'))).toEqual([
+      '项目 SCM 登录',
       '日志 SCM 登录',
       '生产 SQLPad 数据库',
       '日志 MCP',
@@ -740,7 +742,7 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
       true,
     );
     expect(api.logScmLogout).toHaveBeenCalledOnce();
-    expect(api.scmStatus).not.toHaveBeenCalled();
+    expect(api.scmStatus).toHaveBeenCalledOnce();
     expect(api.scmLogin).not.toHaveBeenCalled();
     expect(api.scmLogout).not.toHaveBeenCalled();
   } finally {

@@ -13,7 +13,6 @@ import type {
   ScmProject,
   ScmStatus,
 } from '../types';
-import ScmConnection from './ScmConnection.vue';
 import ScmProjectInput from './ScmProjectInput.vue';
 const props = defineProps<{ project: Project; saving: boolean; busy: boolean }>();
 const emit = defineEmits<{
@@ -119,6 +118,7 @@ const push = ref(false);
 const pomChoices = ref<Record<string, PomBlockChoice['side']>>({});
 const cleanConfirmed = ref<Record<string, boolean>>({});
 const connected = ref(false);
+const checkingProjectSession = ref(true);
 const sessionExpired = ref(false);
 const projects = ref<ScmProject[]>([]);
 const development = ref<ScmModule[]>([]);
@@ -677,7 +677,7 @@ watch(
   { deep: true },
 );
 function connectionChanged(status: ScmStatus) {
-  // SCM 会话切换会停用日志服务，重新挂载以清除旧凭据并查询状态。
+  // 项目 SCM 会话由偏好设置维护，工作台只消费会话状态。
   ++generation;
   invalidateRepositoryRefresh();
   activity.value = '';
@@ -855,6 +855,17 @@ function openWorktreeInIde(repoId: string, ide: 'IDEA' | 'WebStorm') {
 }
 onMounted(() => {
   if (!desktop) return;
+  void api
+    .scmStatus()
+    .then((status) => {
+      if (!disposed) connectionChanged(status);
+    })
+    .catch(() => {
+      if (!disposed) error.value = '无法检查项目 SCM 登录状态，请在偏好设置中刷新状态。';
+    })
+    .finally(() => {
+      if (!disposed) checkingProjectSession.value = false;
+    });
   void refreshHistory();
   void listen<{ planId: string }>('backend-git-updated', (event) => {
     if (!disposed && event.payload.planId === operation.value?.planId)
@@ -895,11 +906,10 @@ onBeforeUnmount(() => {
     </p>
     <p v-else-if="notice" role="status">{{ notice }}</p>
     <p v-if="activity" role="status">{{ activity }}…</p>
-    <ScmConnection
-      :session-expired="sessionExpired"
-      :disabled="locked"
-      @change="connectionChanged"
-    />
+    <p v-if="desktop && !connected && !checkingProjectSession" class="hint">
+      {{ sessionExpired ? '项目 SCM 会话已过期' : '项目 SCM 尚未连接' }}，请前往「偏好设置 → MCP
+      服务 → 连接与权限」中的「项目 SCM 登录」。
+    </p>
     <section class="workbench-card" aria-label="SCM 项目与仓库">
       <div class="section-heading">
         <h3>
