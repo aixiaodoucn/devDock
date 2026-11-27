@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import type {
   ScmCreateProjectInput,
   ScmCreateProjectOptions,
@@ -36,6 +36,30 @@ const dialog = ref<HTMLDialogElement>();
 const confirmation = ref<HTMLDialogElement>();
 const pendingModule = ref('');
 const authorSearch = ref('');
+const authorPicker = ref<HTMLElement>();
+const authorSearchBox = ref<HTMLInputElement>();
+const authorTrigger = ref<HTMLButtonElement>();
+const authorsOpen = ref(false);
+function closeAuthors(restoreFocus = false) {
+  authorsOpen.value = false;
+  authorSearch.value = '';
+  if (restoreFocus) authorTrigger.value?.focus();
+}
+async function toggleAuthors() {
+  if (authorsOpen.value) return closeAuthors();
+  authorsOpen.value = true;
+  await nextTick();
+  authorSearchBox.value?.focus();
+}
+function addAuthor(value: string) {
+  if (!authors.value.includes(value)) authors.value.push(value);
+  closeAuthors(true);
+}
+function outsideAuthors(event: Event) {
+  if (authorsOpen.value && !authorPicker.value?.contains(event.target as Node)) closeAuthors();
+}
+onMounted(() => document.addEventListener('pointerdown', outsideAuthors));
+onBeforeUnmount(() => document.removeEventListener('pointerdown', outsideAuthors));
 // 原生模态层隔离背景交互，并由浏览器处理焦点循环和关闭时的焦点还原。
 onMounted(() => dialog.value?.showModal());
 onBeforeUnmount(() => {
@@ -64,7 +88,7 @@ watch(
     // 现有绑定单独展示，modules 只记录本次追加的模块。
     form.value = edit ? { ...edit.input, modules: [] } : createDefaults();
     authors.value = edit ? [...new Set(edit.authors)] : form.value.user ? [form.value.user] : [];
-    authorSearch.value = '';
+    closeAuthors();
     closeConfirmation();
     moduleSearch.value = '';
   },
@@ -150,28 +174,55 @@ function removeModule(value: string) {
                 </option>
               </select></label
             >
+            <label
+              >项目详情（可选）<input v-model="form.details" name="details" type="text"
+            /></label>
           </div>
-          <label>项目详情<textarea v-model="form.details" name="details" rows="2" /></label>
           <fieldset class="authors">
             <legend>负责人（可多选）</legend>
-            <label
-              >搜索负责人<input
-                type="search"
-                name="authorSearch"
-                v-model="authorSearch"
-                placeholder="按姓名或账号搜索"
-            /></label>
-            <div class="author-list" role="group" aria-label="候选负责人">
-              <label v-for="item in filteredAuthors" :key="item.value"
-                ><input
-                  type="checkbox"
-                  name="authors"
-                  v-model="authors"
-                  :value="item.value"
-                /><span>{{ item.label }}</span
-                ><small v-if="item.label !== item.value">{{ item.value }}</small></label
+            <div
+              ref="authorPicker"
+              class="author-picker"
+              @focusout="!authorPicker?.contains($event.relatedTarget as Node) && closeAuthors()"
+              @keydown.esc="
+                authorsOpen &&
+                ($event.stopPropagation(), $event.preventDefault(), closeAuthors(true))
+              "
+            >
+              <button
+                ref="authorTrigger"
+                type="button"
+                class="author-trigger"
+                :aria-expanded="authorsOpen"
+                aria-controls="scm-author-options"
+                @click="toggleAuthors"
               >
-              <span v-if="!filteredAuthors.length" role="status">没有匹配的负责人</span>
+                选择负责人<span aria-hidden="true">▾</span>
+              </button>
+              <div v-if="authorsOpen" id="scm-author-options" class="author-popover">
+                <input
+                  ref="authorSearchBox"
+                  v-model="authorSearch"
+                  name="authorSearch"
+                  type="search"
+                  aria-label="搜索负责人"
+                  placeholder="按姓名或账号搜索"
+                  @keydown.enter.prevent
+                />
+                <div class="author-list" role="group" aria-label="候选负责人">
+                  <button
+                    v-for="item in filteredAuthors"
+                    :key="item.value"
+                    type="button"
+                    :value="item.value"
+                    :disabled="authors.includes(item.value)"
+                    @click="addAuthor(item.value)"
+                  >
+                    {{ item.label }}<span v-if="authors.includes(item.value)"> · 已选</span>
+                  </button>
+                  <span v-if="!filteredAuthors.length" role="status">没有匹配的负责人</span>
+                </div>
+              </div>
             </div>
             <div class="module-tags" role="group" aria-label="已选负责人">
               <strong>已选 {{ authors.length }} 人</strong>
@@ -327,8 +378,7 @@ header {
   border-bottom: 1px solid var(--line);
 }
 .eyebrow,
-h2 small,
-.author-list small {
+h2 small {
   color: var(--muted);
   font: 11px var(--mono);
 }
@@ -351,38 +401,58 @@ footer p {
   color: var(--danger);
   overflow-wrap: anywhere;
 }
-textarea[name='details'] {
-  height: 3.5rem;
-  min-height: 0;
-  max-height: 8rem;
-}
 .authors {
-  margin-block: 14px;
+  margin-block: 12px;
+}
+.author-picker {
+  position: relative;
+}
+.author-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.author-popover {
+  position: absolute;
+  z-index: 2;
+  inset: calc(100% + 3px) 0 auto;
+  padding: 6px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--ink) 12%, transparent);
 }
 .author-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(13rem, 100%), 1fr));
   max-height: 9rem;
-  overflow: auto;
-  padding: 6px;
-  margin-top: 6px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  overflow-y: auto;
 }
-.author-list label,
+.author-list button {
+  text-align: start;
+  background: transparent;
+  border: 0;
+  color: var(--ink);
+  padding: 6px;
+  overflow-wrap: anywhere;
+}
+.author-list button:hover:not(:disabled),
+.author-list button:focus-visible {
+  background: var(--line);
+}
+.author-list button:disabled {
+  color: var(--muted);
+}
 .existing-modules li {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 3px;
-  overflow-wrap: anywhere;
-}
-.author-list input {
-  width: 1rem;
-  height: 1rem;
-  flex: none;
-}
-.author-list small {
   overflow-wrap: anywhere;
 }
 .authors .module-tags {

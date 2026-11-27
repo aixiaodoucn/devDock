@@ -156,9 +156,7 @@ it.each(['789', ''])('创建 SCM 项目后刷新列表并按返回 ID 处理开�
   try {
     click(panel.root, '创建 SCM 项目');
     await flush();
-    expect(panel.root.querySelector<HTMLInputElement>('[name=authors][value=dev]')?.checked).toBe(
-      true,
-    );
+    expect(panel.root.querySelector('[aria-label="移除负责人 dev"]')).not.toBeNull();
     input(panel.root, '[name=name]', '新服务');
     input(panel.root, '[name=branchSuffix]', 'payment');
     input(panel.root, '[name=details]', '支付需求');

@@ -65,11 +65,19 @@ function mount(edit = false, disabled = false) {
 it('创建弹框中按名称或账号搜索并多选负责人，提交全部账号', async () => {
   const { get, enter, save, submit, cancel } = mount();
   expect(get<HTMLDialogElement>('dialog').open).toBe(true);
-  expect(get<HTMLInputElement>('[value=dev]').checked).toBe(true);
+  expect(get('[aria-label="移除负责人 dev"]')).toBeTruthy();
+  expect(
+    get('input[name=details]')
+      .closest('label')
+      ?.previousElementSibling?.querySelector('[name=projectType]'),
+  ).toBeTruthy();
+  expect(get('[name=authorSearch]')).toBeNull();
+  get('.author-trigger').click();
+  await nextTick();
   await enter('name', '项目');
   for (const query of ['测', 'QA']) {
     await enter('authorSearch', query);
-    expect(get('[aria-label="候选负责人"]').querySelectorAll('input')).toHaveLength(1);
+    expect(get('[aria-label="候选负责人"]').querySelectorAll('button')).toHaveLength(1);
     expect(get('[value=qa]')).toBeTruthy();
   }
   get('[value=qa]').click();
@@ -83,13 +91,15 @@ it('编辑时保留历史账号，支持移除和重新选择，只提交新增�
   const { get, enter, save, update } = mount(true);
   for (const key of ['name', 'branchSuffix', 'details', 'projectType'] as const)
     expect(get<HTMLInputElement>(`[name=${key}]`).value).toBe(input[key]);
-  expect(get<HTMLInputElement>('[value=legacy]').checked).toBe(true);
-  await enter('authorSearch', '开发');
+  expect(get('[aria-label="移除负责人 legacy"]')).toBeTruthy();
   get('[aria-label="移除负责人 legacy"]').click();
   await nextTick();
   expect(get<HTMLButtonElement>('[type=submit]').disabled).toBe(true);
-  await enter('authorSearch', '');
+  get('.author-trigger').click();
+  await nextTick();
   get('[value=legacy]').click();
+  await nextTick();
+  get('.author-trigger').click();
   await nextTick();
   get('[value=dev]').click();
   const choices = get('[aria-label="选择模块"]');
