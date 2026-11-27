@@ -250,8 +250,9 @@ export const api = {
   scmCreateProjectOptions() {
     return native<ScmCreateProjectOptions>('scm_create_project_options');
   },
-  scmCreateProject(input: ScmCreateProjectInput) {
+  scmCreateProject(input: ScmCreateProjectInput, authors?: string[]) {
     return native<string>('scm_create_project', {
+      ...(authors === undefined ? {} : { authors: [...authors] }),
       input: { ...input, modules: [...input.modules] },
     });
   },
@@ -270,6 +271,9 @@ export const api = {
       authors: [...authors],
       revision,
     });
+  },
+  scmRemoveProjectModule(projectId: string, moduleId: string, revision: string) {
+    return native<string>('scm_remove_project_module', { projectId, moduleId, revision });
   },
   scmProjectModules(projectId: string) {
     return native<ScmModule[]>('scm_project_modules', { projectId });

@@ -394,9 +394,10 @@ async fn scm_create_project(
     app: AppHandle,
     window: tauri::WebviewWindow,
     input: scm::project_create::CreateInput,
+    authors: Option<Vec<String>>,
 ) -> Result<String> {
     ensure_backend_window(&window)?;
-    app.state::<scm::Runtime>().create(input).await
+    app.state::<scm::Runtime>().create(input, authors).await
 }
 #[tauri::command]
 async fn scm_edit_project_options(
@@ -419,6 +420,19 @@ async fn scm_update_project(
     ensure_backend_window(&window)?;
     app.state::<scm::Runtime>()
         .update(project_id, input, authors, revision)
+        .await
+}
+#[tauri::command]
+async fn scm_remove_project_module(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    project_id: String,
+    module_id: String,
+    revision: String,
+) -> Result<String> {
+    ensure_backend_window(&window)?;
+    app.state::<scm::Runtime>()
+        .remove_module(project_id, module_id, revision)
         .await
 }
 #[tauri::command]
@@ -1131,6 +1145,7 @@ pub fn run() {
             scm_create_project,
             scm_edit_project_options,
             scm_update_project,
+            scm_remove_project_module,
             scm_project_modules,
             check_environment,
             request_accessibility_permission,

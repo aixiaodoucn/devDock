@@ -1,77 +1,127 @@
 // @vitest-environment happy-dom
 import { createApp, h, nextTick } from 'vue';
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import ScmCreateProjectForm from './ScmCreateProjectForm.vue';
 
-it('回填编辑字段并保留候选之外的负责人，仅提交不重复的新增模块', async () => {
-  const options = {
-    users: [{ value: 'dev', label: '开发' }],
-    types: [{ value: 'feature', label: '需求' }],
-    modules: [
-      { value: '1', label: '支付' },
-      { value: '2', label: '仓库' },
-    ],
-    defaultUser: 'dev',
-  };
-  const input = {
-    name: '原项目',
-    branchSuffix: 'v1',
-    details: '说明',
-    projectType: 'feature',
-    user: 'legacy',
-    modules: [],
-  };
-  const edit = { options, input, authors: ['legacy'], revision: 'r', existingModules: ['1'] };
-  const update = vi.fn();
-  const submit = vi.fn();
+const options = {
+  users: [
+    { value: 'dev', label: '开发' },
+    { value: 'qa', label: '测试' },
+  ],
+  types: [{ value: 'feature', label: '需求' }],
+  modules: [
+    { value: '1', label: '支付' },
+    { value: '2', label: '仓库' },
+  ],
+  defaultUser: 'dev',
+};
+const input = {
+  name: '原项目',
+  branchSuffix: 'v1',
+  details: '说明',
+  projectType: 'feature',
+  user: 'legacy',
+  modules: [],
+};
+const editData = { options, input, authors: ['legacy'], revision: 'r', existingModules: ['1'] };
+let cleanup: () => void;
+afterEach(() => cleanup());
+function mount(edit = false, disabled = false) {
   const root = document.createElement('div');
+  document.body.append(root);
+  const submit = vi.fn(),
+    update = vi.fn(),
+    cancel = vi.fn(),
+    remove = vi.fn();
   const app = createApp({
     render: () =>
       h(ScmCreateProjectForm, {
         options,
-        edit,
+        disabled,
+        edit: edit ? editData : undefined,
         projectId: '42',
-        disabled: false,
-        onUpdate: update,
         onSubmit: submit,
+        onUpdate: update,
+        onCancel: cancel,
+        onRemoveModule: remove,
       }),
   });
   app.mount(root);
-  try {
-    const form = root.querySelector('form')!;
-    expect(form.getAttribute('aria-label')).toBe('修改 SCM 项目');
-    for (const key of ['name', 'branchSuffix', 'details', 'projectType'] as const) {
-      expect(form.querySelector<HTMLInputElement>(`[name=${key}]`)?.value).toBe(input[key]);
-    }
-    const authors = form.querySelector<HTMLSelectElement>('select[multiple]')!;
-    expect(Array.from(authors.selectedOptions, (option) => option.value)).toEqual(['legacy']);
-    authors.querySelector<HTMLOptionElement>('option[value=dev]')!.selected = true;
-    authors.dispatchEvent(new Event('change'));
-    const existing = form.querySelector('[aria-label="已有模块"]')!;
-    expect(existing.textContent).toContain('支付');
-    expect(existing.querySelector('button')).toBeNull();
-    const choices = form.querySelector('[aria-label="选择模块"]')!;
-    expect(choices.textContent).not.toContain('支付');
-    const add = choices.querySelector<HTMLButtonElement>('button')!;
-    add.click();
-    add.click();
-    await nextTick();
-    expect(form.querySelectorAll('[aria-label="已选模块"] button')).toHaveLength(1);
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
-    expect(update).toHaveBeenCalledTimes(1);
-    const [draft, selected] = update.mock.calls[0];
-    expect(draft).toMatchObject({ ...input, user: selected[0], modules: ['2'] });
-    expect([...selected].sort()).toEqual(['dev', 'legacy']);
-    expect(edit.authors).toEqual(['legacy']);
-    expect(edit.input.modules).toEqual([]);
-    expect(submit).not.toHaveBeenCalled();
-    for (const option of authors.options) option.selected = false;
-    authors.dispatchEvent(new Event('change'));
-    await nextTick();
-    expect(form.querySelector<HTMLButtonElement>('button[type=submit]')?.disabled).toBe(true);
-    form.dispatchEvent(new Event('submit', { cancelable: true }));
-    expect(update).toHaveBeenCalledTimes(1);
-  } finally {
+  cleanup = () => {
     app.unmount();
+    root.remove();
+  };
+  const get = <T extends HTMLElement = HTMLElement>(selector: string) =>
+    root.querySelector<T>(selector)!;
+  const enter = async (name: string, value: string) => {
+    const field = get<HTMLInputElement>(`[name=${name}]`);
+    field.value = value;
+    field.dispatchEvent(new Event('input'));
+    await nextTick();
+  };
+  const save = () => get('form').dispatchEvent(new Event('submit', { cancelable: true }));
+  return { root, get, enter, save, submit, update, remove, cancel };
+}
+it('创建弹框中按名称或账号搜索并多选负责人，提交全部账号', async () => {
+  const { get, enter, save, submit, cancel } = mount();
+  expect(get<HTMLDialogElement>('dialog').open).toBe(true);
+  expect(get<HTMLInputElement>('[value=dev]').checked).toBe(true);
+  await enter('name', '项目');
+  for (const query of ['测', 'QA']) {
+    await enter('authorSearch', query);
+    expect(get('[aria-label="候选负责人"]').querySelectorAll('input')).toHaveLength(1);
+    expect(get('[value=qa]')).toBeTruthy();
   }
+  get('[value=qa]').click();
+  await nextTick();
+  save();
+  expect(submit).toHaveBeenCalledWith(expect.objectContaining({ user: 'dev' }), ['dev', 'qa']);
+  get('dialog').dispatchEvent(new Event('cancel', { cancelable: true }));
+  expect(cancel).toHaveBeenCalledOnce();
+});
+it('编辑时保留历史账号，支持移除和重新选择，只提交新增模块', async () => {
+  const { get, enter, save, update } = mount(true);
+  for (const key of ['name', 'branchSuffix', 'details', 'projectType'] as const)
+    expect(get<HTMLInputElement>(`[name=${key}]`).value).toBe(input[key]);
+  expect(get<HTMLInputElement>('[value=legacy]').checked).toBe(true);
+  await enter('authorSearch', '开发');
+  get('[aria-label="移除负责人 legacy"]').click();
+  await nextTick();
+  expect(get<HTMLButtonElement>('[type=submit]').disabled).toBe(true);
+  await enter('authorSearch', '');
+  get('[value=legacy]').click();
+  await nextTick();
+  get('[value=dev]').click();
+  const choices = get('[aria-label="选择模块"]');
+  expect(choices.textContent).not.toContain('支付');
+  choices.querySelector('button')!.click();
+  choices.querySelector('button')!.click();
+  await nextTick();
+  save();
+  expect(update).toHaveBeenCalledExactlyOnceWith({ ...input, modules: ['2'] }, ['legacy', 'dev']);
+  expect(editData.authors).toEqual(['legacy']);
+});
+it('已有模块仅在二次确认后立即发出解除关联事件，取消保留草稿', async () => {
+  const { get, enter, remove, cancel, update } = mount(true);
+  await enter('name', '草稿');
+  const request = get('[aria-label="已有模块"] button');
+  request.click();
+  await nextTick();
+  const confirm = get<HTMLDialogElement>('[role=alertdialog]');
+  expect(confirm.open).toBe(true);
+  expect(confirm.textContent).toMatch(/立即解除.*不会删除.*仓库/s);
+  confirm.querySelector<HTMLButtonElement>('[data-action=cancel]')!.click();
+  expect(remove).not.toHaveBeenCalled();
+  expect(cancel).not.toHaveBeenCalled();
+  request.click();
+  await nextTick();
+  get('[role=alertdialog] [data-action=confirm]').click();
+  expect(remove).toHaveBeenCalledExactlyOnceWith('1');
+  expect(update).not.toHaveBeenCalled();
+  expect(get<HTMLInputElement>('[name=name]').value).toBe('草稿');
+});
+it('请求处理中按 Escape 不会关闭表单', () => {
+  const { get, cancel } = mount(true, true);
+  get('dialog').dispatchEvent(new Event('cancel', { cancelable: true }));
+  expect(cancel).not.toHaveBeenCalled();
 });

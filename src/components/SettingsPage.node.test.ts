@@ -39,7 +39,7 @@ async function flush() {
   await nextTick();
   await Promise.resolve();
 }
-function mount(settings: Settings = defaultConfig().settings) {
+function mount(settings: Settings = defaultConfig().settings, focusProjectScm = false) {
   const state = reactive({ settings, saving: false, busy: false });
   const detectTools = vi.fn();
   const save = vi.fn();
@@ -51,6 +51,7 @@ function mount(settings: Settings = defaultConfig().settings) {
     render: () =>
       h(SettingsPage, {
         ...state,
+        focusProjectScm,
         tools: { hbuilderxPath: '', terminals: [], jdks: [] },
         detecting: false,
         projectCount: 0,
@@ -644,6 +645,21 @@ it('校验并保存保留上限，删除和清空都需要再次确认', async (
   }
 });
 
+it('工作台登录入口打开连接与权限并将键盘焦点移到项目 SCM 卡片', async () => {
+  const panel = mount(defaultConfig().settings, true);
+  try {
+    await flush();
+    expect(panel.root.querySelector('nav [aria-current="page"]')?.textContent).toContain(
+      'MCP 服务',
+    );
+    expect(panel.root.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain(
+      '连接与权限',
+    );
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('项目 SCM 登录');
+  } finally {
+    panel.dispose();
+  }
+});
 it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令牌并刷新 MCP', async () => {
   const disconnected = {
     connected: false,

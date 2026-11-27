@@ -139,10 +139,7 @@ fn parse_edit(html: &str, id: &str, username: &str) -> Result<EditForm> {
         details: field(&doc, "project_desc")?,
         modules: Vec::new(),
     };
-    // 只对项目状态取摘要；无关页面内容变化不会使正在编辑的表单失效。
-    let snapshot = serde_json::to_vec(&(&original, &input, &authors, &existing_modules))
-        .map_err(|_| FORM_ERROR)?;
-    let revision = format!("{:x}", Sha256::digest(snapshot));
+    let revision = project_revision(&original, &input, &authors, &existing_modules)?;
     Ok(EditForm {
         data: EditOptions {
             options,
@@ -155,29 +152,47 @@ fn parse_edit(html: &str, id: &str, username: &str) -> Result<EditForm> {
     })
 }
 
+fn project_revision(
+    original: &Value,
+    input: &CreateInput,
+    authors: &[String],
+    existing_modules: &[String],
+) -> Result<String> {
+    // 只对项目状态取摘要；无关页面内容变化不会使正在编辑的表单失效。
+    let snapshot = serde_json::to_vec(&(original, input, authors, existing_modules))
+        .map_err(|_| FORM_ERROR)?;
+    Ok(format!("{:x}", Sha256::digest(snapshot)))
+}
+
+impl CreateOptions {
+    fn extend_users(&mut self, create: CreateOptions) {
+        let mut known: HashSet<String> = self.users.iter().map(|u| u.value.clone()).collect();
+        self.users.extend(
+            create
+                .users
+                .into_iter()
+                .filter(|u| known.insert(u.value.clone())),
+        );
+        if self.default_user.is_empty() {
+            self.default_user = create.default_user;
+        }
+    }
+}
+
 impl EditForm {
     fn payload(self, input: &CreateInput, authors: &[String], revision: &str) -> Result<Value> {
         if self.data.revision != revision {
             return Err("Conflict: 项目已被修改，请重新打开表单核对".into());
         }
         self.data.options.validate(input)?;
-        let unique = |items: &[String]| items.iter().collect::<HashSet<_>>().len() == items.len();
-        // 历史负责人即使已从候选中移除，也允许原样保留，但不能添加陌生账号。
-        let allowed = |u: &String| {
-            self.data.authors.contains(u) || self.data.options.users.iter().any(|c| &c.value == u)
-        };
-        if authors.is_empty()
-            || !unique(authors)
-            || !authors.contains(&input.user)
-            || !authors.iter().all(allowed)
-        {
-            return Err("InvalidInput: 负责人不在可选范围内或重复".into());
-        }
-        if !unique(&input.modules)
-            || input
-                .modules
-                .iter()
-                .any(|id| self.data.existing_modules.contains(id))
+        // 允许保留已经不在当前候选表中的历史负责人。
+        self.data
+            .options
+            .validate_authors(input, authors, &self.data.authors)?;
+        if input
+            .modules
+            .iter()
+            .any(|id| self.data.existing_modules.contains(id))
         {
             return Err("InvalidInput: 只能添加尚未关联且不重复的模块".into());
         }
@@ -201,11 +216,19 @@ impl Session {
         if !numeric_id(id) {
             return Err("InvalidInput: 项目 ID 无效".into());
         }
-        parse_edit(
+        let mut form = parse_edit(
             &self.get("/kpi/project/modify", &[("id", id)]).await?,
             id,
             &self.username,
-        )
+        )?;
+        // 编辑权限只由修改页决定。创建页的负责人控件补齐候选，不覆盖编辑专属选项。
+        match self.create_form().await {
+            Ok(create) => form.data.options.extend_users(create.options),
+            // 无创建权限时保留编辑权限；登录过期和网络故障不能伪装成完整结果。
+            Err(e) if e.starts_with("Parse:") || e == "Network: SCM 返回 HTTP 403" => (),
+            Err(e) => return Err(e),
+        }
+        Ok(form)
     }
     async fn update_project(
         &self,
@@ -349,6 +372,31 @@ mod tests {
         assert!(read()
             .payload(&input, &data.authors, &data.revision)
             .is_err());
+    }
+    #[test]
+    fn supplements_edit_choices_without_changing_project_state() {
+        let html = page().replace("'a,b'.split", "'legacy,b'.split");
+        let mut form = parse_edit(&html, "11", "new").unwrap();
+        let create = super::super::tests::FORM.replace("value='a'", "value='new'");
+        form.data
+            .options
+            .extend_users(parse_form(&create, "new").unwrap().options);
+        let users: Vec<_> = form
+            .data
+            .options
+            .users
+            .iter()
+            .map(|u| u.value.as_str())
+            .collect();
+        assert_eq!(users, ["a", "b", "new"]);
+        assert_eq!(form.data.options.default_user, "new");
+        assert_eq!(form.data.authors, ["legacy", "b"]);
+        let data = parse_edit(&html, "11", "new").unwrap().data;
+        let authors = ["legacy".into(), "new".into()];
+        assert_eq!(
+            form.payload(&data.input, &authors, &data.revision).unwrap()["author"],
+            json!(["legacy", "new"])
+        );
     }
     #[test]
     fn preserves_existing_author_missing_from_current_choices() {

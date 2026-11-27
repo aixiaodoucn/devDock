@@ -84,7 +84,29 @@ fn parse_form(html: &str, username: &str) -> Result<Form> {
     })
 }
 
+fn unique(values: &[String]) -> bool {
+    values.iter().collect::<HashSet<_>>().len() == values.len()
+}
+
 impl CreateOptions {
+    fn validate_authors(
+        &self,
+        input: &CreateInput,
+        authors: &[String],
+        existing: &[String],
+    ) -> Result<()> {
+        if !authors.contains(&input.user)
+            || !unique(authors)
+            || authors.iter().any(|u| {
+                u.trim().is_empty()
+                    || !(existing.contains(u) || self.users.iter().any(|c| c.value == *u))
+            })
+        {
+            return Err("InvalidInput: 负责人不在可选范围内或重复".into());
+        }
+        Ok(())
+    }
+
     fn validate(&self, input: &CreateInput) -> Result<()> {
         let has = |choices: &[Choice], v: &str| choices.iter().any(|c| c.value == v);
         if input.name.trim().is_empty()
@@ -99,6 +121,7 @@ impl CreateOptions {
             );
         }
         if !has(&self.types, &input.project_type)
+            || !unique(&input.modules)
             || input.modules.iter().any(|id| !has(&self.modules, id))
         {
             return Err("InvalidInput: SCM 选项已变更，请重新打开表单".into());
@@ -108,11 +131,9 @@ impl CreateOptions {
 }
 
 impl Form {
-    fn payload(&self, input: &CreateInput) -> Result<Value> {
+    fn payload(&self, input: &CreateInput, authors: &[String]) -> Result<Value> {
         self.options.validate(input)?;
-        if !self.options.users.iter().any(|u| u.value == input.user) {
-            return Err("InvalidInput: 负责人不在可选范围内".into());
-        }
+        self.options.validate_authors(input, authors, &[])?;
         // 原站将多选模块作为一组加入 mode，而负责人直接传数组。
         let mode = if input.modules.is_empty() {
             json!([])
@@ -120,7 +141,7 @@ impl Form {
             json!([input.modules])
         };
         Ok(
-            json!({"name":input.name.trim(),"name_en":input.branch_suffix.trim(),"author":[input.user],"description":input.details.trim(),"mode":mode,"project_type":input.project_type,"level":self.level,"test_level":self.test_level,"dev_start_time":"","dev_end_time":"","union_start_time":"","union_end_time":"","qa_start_time":"","qa_end_time":"","plan_release_time":""}),
+            json!({"name":input.name.trim(),"name_en":input.branch_suffix.trim(),"author":authors,"description":input.details.trim(),"mode":mode,"project_type":input.project_type,"level":self.level,"test_level":self.test_level,"dev_start_time":"","dev_end_time":"","union_start_time":"","union_end_time":"","qa_start_time":"","qa_end_time":"","plan_release_time":""}),
         )
     }
 }
@@ -151,6 +172,15 @@ fn created_id(body: &str) -> Result<String> {
         .or_else(|| res["pid"].as_u64().map(|n| n.to_string()))
         .unwrap_or_default();
     Ok(if numeric_id(&id) { id } else { String::new() })
+}
+
+// 旧版 SCM 未回传 pid 时，只认同一负责人、同名列表里唯一新增的 ID。
+fn newly_created_id(before: &HashSet<String>, after: &HashSet<String>) -> Option<String> {
+    let mut added = after.difference(before);
+    match (added.next(), added.next()) {
+        (Some(id), None) => Some(id.clone()),
+        _ => None,
+    }
 }
 
 impl Session {
@@ -191,8 +221,17 @@ impl Session {
             .map(|p| p.id)
             .collect())
     }
-    async fn create_project(&self, input: &CreateInput) -> Result<String> {
-        let param = self.create_form().await?.payload(input)?.to_string();
+    async fn create_project(
+        &self,
+        input: &CreateInput,
+        authors: Option<&[String]>,
+    ) -> Result<String> {
+        let authors = authors.unwrap_or_else(|| std::slice::from_ref(&input.user));
+        let param = self
+            .create_form()
+            .await?
+            .payload(input, authors)?
+            .to_string();
         // 旧版响应可能没有 pid。只匹配本次提交后唯一新增的同负责人、同名项目。
         let before = self.matching_projects(input).await?;
         let body = self
@@ -203,10 +242,7 @@ impl Session {
             return Ok(id);
         }
         if let Ok(after) = self.matching_projects(input).await {
-            let mut added = after.difference(&before);
-            if let (Some(id), None) = (added.next(), added.next()) {
-                return Ok(id.clone());
-            }
+            return Ok(newly_created_id(&before, &after).unwrap_or_default());
         }
         Ok(String::new())
     }
@@ -265,7 +301,7 @@ impl Runtime {
     ) -> Result<String> {
         self.project_form_session(async |session| {
             binding.check(session)?;
-            session.create_project(&input).await
+            session.create_project(&input, None).await
         })
         .await
     }
@@ -292,16 +328,18 @@ impl Runtime {
         self.project_form_session(async |session| Ok(session.create_form().await?.options))
             .await
     }
-    pub async fn create(&self, input: CreateInput) -> Result<String> {
-        self.project_form_session(async |session| session.create_project(&input).await)
-            .await
+    pub async fn create(&self, input: CreateInput, authors: Option<Vec<String>>) -> Result<String> {
+        self.project_form_session(async |session| {
+            session.create_project(&input, authors.as_deref()).await
+        })
+        .await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    const FORM: &str = r#"<select id='user' multiple><option value='a'>甲</option><option value='b'>乙</option></select><select id='mode' multiple><option value='9'>模块</option></select><select id='project_type'><option value='1'>修复</option></select><select id='level'><option value='D'>D</option><option selected value='C'>C</option></select><select id='test-level'><option value='2'>正常</option></select>"#;
+    pub(super) const FORM: &str = r#"<select id='user' multiple><option value='a'>甲</option><option value='b'>乙</option></select><select id='mode' multiple><option value='9'>模块</option></select><select id='project_type'><option value='1'>修复</option></select><select id='level'><option value='D'>D</option><option selected value='C'>C</option></select><select id='test-level'><option value='2'>正常</option></select>"#;
     #[test]
     fn approval_is_bound_to_login_instance_not_just_account_and_site() {
         let session = || {
@@ -339,16 +377,56 @@ mod tests {
             details: String::new(),
             modules: vec!["9".into()],
         };
-        let payload = form.payload(&input).unwrap();
+        let payload = form
+            .payload(&input, std::slice::from_ref(&input.user))
+            .unwrap();
         assert_eq!(payload["author"], json!(["b"]));
         assert_eq!(payload["mode"], json!([["9"]]));
         assert_eq!(payload["level"], "C");
         assert_eq!(payload["test_level"], "2");
         assert_eq!(payload["name"], "项目");
+        // 除主负责人外也需逐项校验，不能静默截断数组或接受陌生账号。
+        let both = vec!["a".to_owned(), "b".to_owned()];
+        assert_eq!(
+            form.payload(&input, &both).unwrap()["author"],
+            json!(["a", "b"])
+        );
+        for invalid in [
+            vec![],
+            vec!["a"],
+            vec!["b", "b"],
+            vec!["b", "unknown"],
+            vec!["b", ""],
+        ] {
+            let invalid = invalid.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(form.payload(&input, &invalid).is_err());
+        }
+        for id in ["9", "unknown"] {
+            input.modules.push(id.into());
+            assert!(form.payload(&input, &both).is_err());
+            input.modules.pop();
+        }
         input.modules.clear();
-        assert_eq!(form.payload(&input).unwrap()["mode"], json!([]));
+        assert_eq!(
+            form.payload(&input, std::slice::from_ref(&input.user))
+                .unwrap()["mode"],
+            json!([])
+        );
         input.branch_suffix = "a/b".into();
-        assert!(form.payload(&input).is_err());
+        assert!(form
+            .payload(&input, std::slice::from_ref(&input.user))
+            .is_err());
+    }
+    #[test]
+    fn fallback_only_returns_a_unique_new_project() {
+        let ids = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<HashSet<_>>();
+        let before = ids(&["10", "20"]);
+        assert_eq!(
+            newly_created_id(&before, &ids(&["10", "20", "30"])).as_deref(),
+            Some("30")
+        );
+        assert_eq!(newly_created_id(&before, &before), None);
+        assert_eq!(newly_created_id(&before, &ids(&["20", "30", "40"])), None);
     }
     #[test]
     fn requires_confirmed_success_and_valid_project_id() {

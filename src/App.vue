@@ -77,6 +77,11 @@ const sidebar = useSidebarResize();
 const config = ref<AppConfig>(defaultConfig());
 const selectedId = ref('');
 const page = ref<'project' | 'settings' | 'help' | 'history'>('project');
+const focusProjectScm = ref(false);
+function openSettings(projectScm = false) {
+  focusProjectScm.value = projectScm;
+  page.value = 'settings';
+}
 const search = ref('');
 const selectedPlatform = ref('app');
 const editing = ref<Project | null>(null);
@@ -679,7 +684,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         <button
           :class="['settings-button', { active: page === 'settings' }]"
           :disabled="loadFailed"
-          @click="page = 'settings'"
+          @click="openSettings()"
         >
           <Settings2 :size="18" />偏好设置<span>↗</span>
         </button>
@@ -770,6 +775,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
       </div>
       <SettingsPage
         v-else-if="page === 'settings'"
+        :focus-project-scm="focusProjectScm"
         :settings="config.settings"
         :tools="tools"
         :detecting="detecting"
@@ -835,7 +841,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         <div class="welcome-footer">
           <span class="local-dot"></span>源码留在本机，工具各司其职。<button
             class="text-button"
-            @click="page = 'settings'"
+            @click="openSettings()"
           >
             配置开发工具 <ArrowUpRight :size="14" />
           </button>
@@ -903,7 +909,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
           :busy="busy || submitting || saving"
           @select="selectProjectAiTool"
           @launch="openProjectTerminal"
-          @configure="page = 'settings'"
+          @configure="openSettings()"
         />
         <nav v-if="project.platforms.length" class="tabs platform-tabs" aria-label="项目平台">
           <button
@@ -1077,6 +1083,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
         </template>
         <BackendWorkbench
           v-else-if="project.type === 'backend'"
+          @open-project-scm="openSettings(true)"
           :key="project.id"
           :project="project"
           :saving="saving"
@@ -1270,7 +1277,7 @@ function closeProjectMenuOnEscape(event: KeyboardEvent) {
       @close="showEnvironment = false"
       @settings="
         showEnvironment = false;
-        page = 'settings';
+        openSettings();
       "
       @edit="
         showEnvironment = false;

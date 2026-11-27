@@ -28,6 +28,7 @@ vi.mock('../api', () => ({
     scmCreateProject: vi.fn(),
     scmEditProjectOptions: vi.fn(),
     scmUpdateProject: vi.fn(),
+    scmRemoveProjectModule: vi.fn(),
     scmProjectModules: vi.fn(),
     backendRepositoryStatuses: vi.fn(),
     backendRepositoryRemoteUrls: vi.fn(),
@@ -81,6 +82,7 @@ async function mount(initial = fixture()) {
   const busy = ref(false);
   const save = vi.fn();
   const edit = vi.fn();
+  const openProjectScm = vi.fn();
   const task = vi.fn();
   const notice = vi.fn();
   const root = document.createElement('div');
@@ -92,13 +94,25 @@ async function mount(initial = fixture()) {
         busy: busy.value,
         onSave: save,
         onEdit: edit,
+        onOpenProjectScm: openProjectScm,
         onTask: task,
         onNotice: notice,
       }),
   });
   app.mount(root);
   await flush();
-  return { project, saving, busy, save, edit, task, notice, root, close: () => app.unmount() };
+  return {
+    project,
+    saving,
+    busy,
+    save,
+    edit,
+    openProjectScm,
+    task,
+    notice,
+    root,
+    close: () => app.unmount(),
+  };
 }
 async function ready(initial = fixture()) {
   const panel = await mount({
@@ -142,7 +156,9 @@ it.each(['789', ''])('创建 SCM 项目后刷新列表并按返回 ID 处理开�
   try {
     click(panel.root, '创建 SCM 项目');
     await flush();
-    expect(panel.root.querySelector<HTMLSelectElement>('[name=user]')?.value).toBe('dev');
+    expect(panel.root.querySelector<HTMLInputElement>('[name=authors][value=dev]')?.checked).toBe(
+      true,
+    );
     input(panel.root, '[name=name]', '新服务');
     input(panel.root, '[name=branchSuffix]', 'payment');
     input(panel.root, '[name=details]', '支付需求');
@@ -175,14 +191,17 @@ it.each(['789', ''])('创建 SCM 项目后刷新列表并按返回 ID 处理开�
       .querySelector('form[aria-label="创建 SCM 项目"]')!
       .dispatchEvent(new Event('submit', { cancelable: true }));
     await flush();
-    expect(api.scmCreateProject).toHaveBeenCalledExactlyOnceWith({
-      name: '新服务',
-      branchSuffix: 'payment',
-      details: '支付需求',
-      projectType: 'feature',
-      user: 'dev',
-      modules: ['99'],
-    });
+    expect(api.scmCreateProject).toHaveBeenCalledExactlyOnceWith(
+      {
+        name: '新服务',
+        branchSuffix: 'payment',
+        details: '支付需求',
+        projectType: 'feature',
+        user: 'dev',
+        modules: ['99'],
+      },
+      ['dev'],
+    );
     expect(api.scmProjects).toHaveBeenCalledOnce();
     expect(panel.root.querySelector<HTMLInputElement>('#scm-development-project')?.value).toBe(
       id || '123',
@@ -286,6 +305,37 @@ it('保存失败保留草稿与版本，允许重试', async () => {
     panel.close();
   }
 });
+it('解除关联单独提交，保留其他草稿；后续保存使用新版本', async () => {
+  vi.mocked(api.scmEditProjectOptions).mockResolvedValue(structuredClone(editOptions));
+  vi.mocked(api.scmRemoveProjectModule).mockResolvedValue('after-removal');
+  const panel = await mount();
+  try {
+    click(panel.root, '修改 SCM 项目');
+    await flush();
+    const form = panel.root.querySelector<HTMLFormElement>('form[aria-label="修改 SCM 项目"]')!;
+    input(form, '[name=name]', '未保存草稿');
+    form.querySelector<HTMLButtonElement>('[aria-label="解除关联 支付服务"]')!.click();
+    await flush();
+    expect(api.scmRemoveProjectModule).not.toHaveBeenCalled();
+    panel.root
+      .querySelector<HTMLButtonElement>('[role=alertdialog] [data-action=confirm]')!
+      .click();
+    await flush();
+    expect(api.scmRemoveProjectModule).toHaveBeenCalledExactlyOnceWith('123', '42', 'rev-1');
+    expect(form.querySelector('[aria-label="解除关联 支付服务"]')).toBeNull();
+    expect(form.querySelector<HTMLInputElement>('[name=name]')?.value).toBe('未保存草稿');
+    form.dispatchEvent(new Event('submit', { cancelable: true }));
+    await flush();
+    expect(api.scmUpdateProject).toHaveBeenCalledWith(
+      '123',
+      expect.objectContaining({ name: '未保存草稿' }),
+      editOptions.authors,
+      'after-removal',
+    );
+  } finally {
+    panel.close();
+  }
+});
 it('切换工作台后丢弃晚到的编辑选项，即使开发项目 ID 相同', async () => {
   let finish!: (options: typeof editOptions) => void;
   vi.mocked(api.scmEditProjectOptions).mockImplementationOnce(
@@ -315,6 +365,8 @@ it('未登录时隐藏创建和修改项目入口', async () => {
   try {
     expect(panel.root.querySelector('input[type=password]')).toBeNull();
     expect(panel.root.textContent).toContain('偏好设置 → MCP 服务 → 连接与权限');
+    button(panel.root, '去登录').click();
+    expect(panel.openProjectScm).toHaveBeenCalledOnce();
     expect(panel.root.textContent).not.toContain('创建 SCM 项目');
     expect(panel.root.textContent).not.toContain('修改 SCM 项目');
   } finally {
@@ -341,6 +393,7 @@ it('空后缀和空模块可以提交一次，切换项目后忽略创建回执'
     form.dispatchEvent(new Event('submit', { cancelable: true }));
     expect(api.scmCreateProject).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ branchSuffix: '', modules: [] }),
+      ['dev'],
     );
     panel.project.value = { ...fixture(), id: 'other' };
     await flush();

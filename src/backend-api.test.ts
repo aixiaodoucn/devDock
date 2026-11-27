@@ -36,6 +36,22 @@ describe('后端 Git 与 SCM 桌面接口', () => {
     expect(invoke).toHaveBeenLastCalledWith('scm_create_project', {
       input: { ...input, modules: ['42'] },
     });
+    const authors = reactive([input.user, 'reviewer']);
+    await api.scmCreateProject(input, authors);
+    authors.pop();
+    expect(invoke).toHaveBeenLastCalledWith('scm_create_project', {
+      input: { ...input, modules: ['42', '99'] },
+      authors: [input.user, 'reviewer'],
+    });
+  });
+  it('解除指定模块时传递编辑版本并返回预期的新版本', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce('rev-2');
+    await expect(api.scmRemoveProjectModule('123', '42', 'rev-1')).resolves.toBe('rev-2');
+    expect(invoke).toHaveBeenLastCalledWith('scm_remove_project_module', {
+      projectId: '123',
+      moduleId: '42',
+      revision: 'rev-1',
+    });
   });
   it('通过项目 ID 加载 SCM 编辑选项', async () => {
     const result = {

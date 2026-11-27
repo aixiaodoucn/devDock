@@ -22,6 +22,7 @@ const props = defineProps<{ project: Project; saving: boolean; busy: boolean }>(
 const emit = defineEmits<{
   save: [project: Project];
   edit: [];
+  openProjectScm: [];
   task: [taskId: string, title: string];
   notice: [message: string, error?: boolean];
 }>();
@@ -126,9 +127,12 @@ const checkingProjectSession = ref(true);
 const sessionExpired = ref(false);
 const projects = ref<ScmProject[]>([]);
 const createOptions = ref<ScmCreateProjectOptions | null>(null);
-const editProject = ref<{ projectId: string; data: ScmEditProjectOptions; saving: boolean } | null>(
-  null,
-);
+const editProject = ref<{
+  projectId: string;
+  data: ScmEditProjectOptions;
+  saving: boolean;
+  removedModule?: boolean;
+} | null>(null);
 const formOptions = computed(() => editProject.value?.data.options ?? createOptions.value);
 function closeProjectForm() {
   createOptions.value = null;
@@ -762,12 +766,50 @@ async function updateProject(input: ScmCreateProjectInput, authors: string[]) {
     await loadModules();
   }
 }
-async function createProject(input: ScmCreateProjectInput) {
+async function removeProjectModule(moduleId: string) {
+  const target = editProject.value;
+  if (
+    !desktop ||
+    !connected.value ||
+    locked.value ||
+    !target?.data.existingModules.includes(moduleId)
+  )
+    return;
+  target.saving = true;
+  error.value = '';
+  try {
+    const revision = await api.scmRemoveProjectModule(
+      target.projectId,
+      moduleId,
+      target.data.revision,
+    );
+    if (disposed || editProject.value !== target) return;
+    // 解除关联已在 SCM 生效；原位更新版本，保留弹框中尚未提交的其他修改。
+    target.data.revision = revision;
+    target.data.existingModules = target.data.existingModules.filter((id) => id !== moduleId);
+    target.removedModule = true;
+    invalidateRepositoryRefresh();
+    loadedDevelopmentId.value = '';
+    plan.value = null;
+    emit('notice', `已从 SCM 项目 ${target.projectId} 解除模块关联`);
+  } catch (reason) {
+    if (!disposed && editProject.value === target) failure(reason);
+  } finally {
+    target.saving = false;
+  }
+}
+function cancelProjectForm() {
+  if (locked.value) return;
+  const reload = editProject.value?.removedModule;
+  closeProjectForm();
+  if (reload) void loadModules();
+}
+async function createProject(input: ScmCreateProjectInput, authors: string[]) {
   if (!connected.value || !createOptions.value) return;
   const token = generation;
   let projectId = '';
   await perform('创建 SCM 项目', async () => {
-    const id = (await api.scmCreateProject(input)).trim();
+    const id = (await api.scmCreateProject(input, authors)).trim();
     if (!valid(token)) return;
     createOptions.value = null;
     projectId = id;
@@ -999,6 +1041,7 @@ onBeforeUnmount(() => {
     <p v-if="desktop && !connected && !checkingProjectSession" class="hint">
       {{ sessionExpired ? '项目 SCM 会话已过期' : '项目 SCM 尚未连接' }}，请前往「偏好设置 → MCP
       服务 → 连接与权限」中的「项目 SCM 登录」。
+      <button type="button" class="button small" @click="emit('openProjectScm')">去登录</button>
     </p>
     <section class="workbench-card" aria-label="SCM 项目与仓库">
       <div class="section-heading">
@@ -1038,9 +1081,11 @@ onBeforeUnmount(() => {
         :edit="editProject?.data"
         :project-id="editProject?.projectId"
         :disabled="locked"
+        :error="error"
         @submit="createProject"
         @update="updateProject"
-        @cancel="closeProjectForm"
+        @remove-module="removeProjectModule"
+        @cancel="cancelProjectForm"
       />
       <fieldset :disabled="locked">
         <div class="scm-projects">

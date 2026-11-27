@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   Download,
   Upload,
@@ -31,6 +31,7 @@ const props = defineProps<{
   saving: boolean;
   busy: boolean;
   projectCount: number;
+  focusProjectScm?: boolean;
 }>();
 const emit = defineEmits<{
   save: [settings: Settings];
@@ -71,7 +72,14 @@ const SETTINGS_SECTIONS = [
   { id: 'mcp', label: 'MCP 服务', icon: Plug },
   { id: 'appearance', label: '外观主题', icon: Palette },
 ] as const;
-const activeSection = ref<(typeof SETTINGS_SECTIONS)[number]['id']>('tools');
+const activeSection = ref<(typeof SETTINGS_SECTIONS)[number]['id']>(
+  props.focusProjectScm ? 'mcp' : 'tools',
+);
+const projectScm = ref<InstanceType<typeof ScmConnection>>();
+onMounted(() => {
+  // 聚焦卡片会同时将其滚动到可视区域。
+  if (props.focusProjectScm) projectScm.value?.$el.focus();
+});
 const settingsForm = ref<HTMLFormElement>();
 // 保存和导出共用草稿；错误字段可能在另一个模块，先切换再聚焦。
 function focusField(section: 'tools' | 'commands', selector: string) {
@@ -530,7 +538,7 @@ watch(
               :hidden="mcpTab !== 'connections'"
             >
               <div v-if="mcpTab === 'connections'" class="settings-log-tools">
-                <ScmConnection scope="project" />
+                <ScmConnection ref="projectScm" scope="project" tabindex="-1" />
                 <div class="connection-accounts" role="group" aria-label="生产数据源登录">
                   <ScmConnection scope="logs" @change="logSessionRevision++">
                     <template #options="{ connected }">

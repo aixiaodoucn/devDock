@@ -8,8 +8,8 @@ fn unlink_payload(
     module: &str,
     revision: &str,
     account: &str,
-) -> Result<Value> {
-    let form = parse_edit(html, project, account)?;
+) -> Result<(Value, String)> {
+    let mut form = parse_edit(html, project, account)?;
     if form.data.revision != revision {
         return Err("Conflict: 项目已变化，请重新读取编辑选项".into());
     }
@@ -59,7 +59,15 @@ fn unlink_payload(
             param["mode"] = Value::Null;
         }
     }
-    Ok(param)
+    // 只移除本次命中的关联，不吸收并发编辑产生的其他状态。
+    form.data.existing_modules.retain(|id| id != module);
+    let next = project_revision(
+        &form.original,
+        &form.data.input,
+        &form.data.authors,
+        &form.data.existing_modules,
+    )?;
+    Ok((param, next))
 }
 
 impl Runtime {
@@ -70,20 +78,42 @@ impl Runtime {
         module_id: String,
         revision: String,
     ) -> Result<()> {
+        self.remove_module_with_binding(Some(binding), project_id, module_id, revision)
+            .await
+            .map(|_| ())
+    }
+    pub async fn remove_module(
+        &self,
+        project_id: String,
+        module_id: String,
+        revision: String,
+    ) -> Result<String> {
+        self.remove_module_with_binding(None, project_id, module_id, revision)
+            .await
+    }
+    async fn remove_module_with_binding(
+        &self,
+        binding: Option<&SessionBinding>,
+        project_id: String,
+        module_id: String,
+        revision: String,
+    ) -> Result<String> {
         if !numeric_id(&project_id) || !numeric_id(&module_id) {
             return Err("InvalidInput: 项目和模块 ID 必须是数字".into());
         }
         self.project_form_session(async |session| {
-            binding.check(session)?;
+            if let Some(binding) = binding {
+                binding.check(session)?;
+            }
             let html = session
                 .get("/kpi/project/modify", &[("id", &project_id)])
                 .await?;
-            let param =
+            let (param, next) =
                 unlink_payload(&html, &project_id, &module_id, &revision, &session.username)?;
             let body = session
                 .submit_form("/kpi/project/deleteMode", param.to_string(), "解除模块关联")
                 .await?;
-            write_response(&body, "解除模块关联").map(|_| ())
+            write_response(&body, "解除模块关联").map(|_| next)
         })
         .await
     }
@@ -101,10 +131,11 @@ mod tests {
     fn unlinks_only_the_selected_association_in_the_current_revision() {
         let html = fixture();
         let revision = parse_edit(&html, "11", "a").unwrap().data.revision;
-        assert_eq!(
-            unlink_payload(&html, "11", "1", &revision, "a").unwrap(),
-            json!({"id":11,"git_pid":"1","mode":"1"})
-        );
+        let (param, next) = unlink_payload(&html, "11", "1", &revision, "a").unwrap();
+        let after = html.replace(" git_pid='1'", "");
+        assert_eq!(next, parse_edit(&after, "11", "a").unwrap().data.revision);
+        assert_ne!(next, revision);
+        assert_eq!(param, json!({"id":11,"git_pid":"1","mode":"1"}));
         for (project, module, version) in [
             ("12", "1", revision.as_str()),
             ("11", "2", revision.as_str()),
