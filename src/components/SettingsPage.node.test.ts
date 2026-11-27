@@ -687,13 +687,13 @@ it('偏好设置使用独立日志 SCM 凭据，登录和退出均清除旧令�
     expect(panel.root.querySelector('[aria-label="日志 SCM 登录"]')).not.toBeNull();
     const menu = [...panel.root.querySelectorAll<HTMLButtonElement>('nav button')];
     expect(menu.map((item) => item.textContent?.trim())).toEqual([
+      'MCP 服务',
       '开发工具',
       '终端命令',
       '配置随你迁移',
-      'MCP 服务',
       '外观主题',
     ]);
-    expect(menu[3].getAttribute('aria-current')).toBe('page');
+    expect(menu[0].getAttribute('aria-current')).toBe('page');
     const tabs = [...panel.root.querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent?.trim())).toEqual([
       '连接与权限',

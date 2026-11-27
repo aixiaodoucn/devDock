@@ -67,10 +67,10 @@ function navigateMcpTabs(event: KeyboardEvent) {
     ?.focus();
 }
 const SETTINGS_SECTIONS = [
+  { id: 'mcp', label: 'MCP 服务', icon: Plug },
   { id: 'tools', label: '开发工具', icon: SlidersHorizontal },
   { id: 'commands', label: '终端命令', icon: Terminal },
   { id: 'backup', label: '配置随你迁移', icon: ShieldCheck },
-  { id: 'mcp', label: 'MCP 服务', icon: Plug },
   { id: 'appearance', label: '外观主题', icon: Palette },
 ] as const;
 const activeSection = ref<(typeof SETTINGS_SECTIONS)[number]['id']>(props.initialSection ?? 'mcp');
